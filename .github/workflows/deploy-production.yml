@@ -63,7 +63,7 @@ jobs:
           API_URL: ${{ vars.PRODUCTION_URL }}
           LIVE: "1"
         run: |
-          sleep 10
+          node scripts/wait-for-version.js "$API_URL" "$VERSION"
           npm run test:e2e || { sleep 30; npm run test:e2e; }
 
       - name: Roll back to the previous version
