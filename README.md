@@ -5,6 +5,8 @@ Backend for ZapaKid, an end-to-end encrypted chat for families. The apps encrypt
 decrypt a chat. The server has no cryptography of its own beyond verifying sign-in tokens and hashing session tokens.
 
 - Cloudflare Workers + D1 (EU jurisdiction), TypeScript. Staging: `api-staging.zapakid.ro`.
+- The contract the apps build against: [`openapi.yaml`](openapi.yaml) (stable: health, sign-in, account; the rest is
+  marked draft). `npm run lint:api` validates it.
 - Node 24 (`.nvmrc`). `npm ci`, then:
   - `npm test`: unit tests (`test/scripts`, node:test) and Worker tests in the Workers runtime (`test/worker`, Vitest).
   - `npm run dev` in one terminal, then `API_URL=http://127.0.0.1:8787 npm run test:e2e` (`test/e2e`).

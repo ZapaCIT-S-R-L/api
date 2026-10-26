@@ -1,0 +1,3 @@
+# False positives only, one gitleaks fingerprint per line with the reason above it.
+# 34b832a: the lint:api script set REDOCLY_SUPPRESS_UPDATE_NOTICE=true (no secret); removed in the next commit.
+34b832af4c6a264f4e8c0f1c4cf9f2f3839bff85:package.json:generic-api-key:11
