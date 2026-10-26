@@ -1,0 +1,71 @@
+# Deploys a released version (a vX.Y.Z tag that already passed staging) to production. Manual only (Actions →
+# deploy-production → Run workflow) and the `production` environment requires approval by @stefan-zpc.
+# Until the v1 cutover the production Worker has no route (wrangler.jsonc): api.zapakid.ro still serves v0.1.
+# The e2e check and rollback run once the PRODUCTION_URL variable is set on the production environment (cutover).
+# Credentials live only in the `production` environment: secret CLOUDFLARE_API_TOKEN, variable CLOUDFLARE_ACCOUNT_ID.
+name: deploy-production
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Release tag to deploy (vMAJOR.MINOR.PATCH)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  production:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      VERSION: ${{ inputs.version }}
+    steps:
+      - name: Check the version is a release tag
+        run: |
+          if ! [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "::error::Not a release tag: $VERSION"; exit 1; fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: refs/tags/${{ inputs.version }}
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci
+      - run: npm test
+      - run: npx wrangler deploy --dry-run --env production --outdir dist
+
+      - name: D1 database (EU) and migrations
+        run: |
+          node scripts/d1-database.js production
+          npx wrangler d1 migrations apply DB --env production --remote
+
+      - name: Deploy
+        env:
+          VERSION_URL: https://github.com/${{ github.repository }}/tree/${{ inputs.version }}
+        run: >-
+          npx wrangler deploy --env production --tag "$VERSION" --message "deploy $VERSION"
+          --var "VERSION:$VERSION" --var "VERSION_URL:$VERSION_URL"
+
+      - name: End-to-end tests against production
+        id: e2e
+        if: vars.PRODUCTION_URL != ''
+        env:
+          API_URL: ${{ vars.PRODUCTION_URL }}
+          LIVE: "1"
+        run: |
+          sleep 10
+          npm run test:e2e || { sleep 30; npm run test:e2e; }
+
+      - name: Roll back to the previous version
+        if: failure() && steps.e2e.conclusion == 'failure'
+        run: npx wrangler rollback --env production --yes --message "e2e failed after deploy of $VERSION"
