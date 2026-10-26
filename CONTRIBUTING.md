@@ -8,6 +8,9 @@ Thanks for helping. Issues and pull requests are welcome.
 - **API changes** start in [`openapi.yaml`](openapi.yaml): the apps build against it.
 - **Database changes** are new files in `migrations/`, never edits to applied ones. A migration must keep working with
   the previous Worker version, because a failed deploy rolls back the Worker but not the database.
+- **Before you push**, run `scripts/check.sh`: the same checks as CI (lint, unit and Worker tests, dry-run build,
+  e2e against `wrangler dev`, npm audit, OSV-Scanner, SBOM, gitleaks). Push only when it is green, and paste its
+  table into the pull request. Needs `gitleaks`, `actionlint` and `osv-scanner` installed.
 - **No credentials** in code, commits or issues. CI scans every pull request.
 - **No plaintext.** The server stores only public keys and ciphertext. Never add an endpoint that accepts message
   content, private keys or anything that would let the server decrypt a chat.
