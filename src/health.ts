@@ -1,6 +1,7 @@
 // GET /health: liveness plus a config check. Problems name the binding or variable only, never its value.
 import type { Env } from "./env";
 import { json } from "./http";
+import { parseCredentials } from "./play-integrity";
 import { ttlSeconds } from "./sessions";
 
 // The types say every field is there; a deployed environment may still lack one (bindings and vars are per
@@ -20,6 +21,15 @@ function problems(env: Env): string[] {
     ttlSeconds(env);
   } catch {
     found.push("SESSION_TTL_SECONDS invalid");
+  }
+  if (present.ATTESTATION_POLICY !== "required" && present.ATTESTATION_POLICY !== "optional") {
+    found.push("ATTESTATION_POLICY not required or optional");
+  }
+  if (!present.PLAY_PACKAGE_NAME) found.push("PLAY_PACKAGE_NAME empty");
+  if (present.ATTESTATION_POLICY === "required") {
+    if (!parseCredentials(present.PLAY_INTEGRITY_CREDENTIALS))
+      found.push("PLAY_INTEGRITY_CREDENTIALS missing or invalid");
+    if (!present.PLAY_CERT_SHA256?.trim()) found.push("PLAY_CERT_SHA256 empty");
   }
   return found;
 }

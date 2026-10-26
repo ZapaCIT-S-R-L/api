@@ -20,6 +20,7 @@ import {
   type ErrorBody,
   type JwksStub,
   type TestIssuer,
+  workerRequest,
 } from "./helpers";
 import { resetPlayIntegrityCache } from "../../src/play-integrity";
 
@@ -68,7 +69,7 @@ afterEach(() => {
 // Google's OAuth token endpoint: accepts only a JWT grant signed by the service account for Play Integrity.
 async function oauthToken(init: RequestInit | undefined): Promise<Response> {
   tokenCalls++;
-  const form = new URLSearchParams(String(init?.body));
+  const form = new URLSearchParams(init?.body as string);
   if (form.get("grant_type") !== "urn:ietf:params:oauth:grant-type:jwt-bearer")
     return new Response("bad grant", { status: 400 });
   try {
@@ -89,7 +90,7 @@ function decode(init: RequestInit | undefined): Promise<Response> {
   const auth = new Headers(init?.headers).get("authorization");
   if (auth !== "Bearer ya29.test-access-token")
     return Promise.resolve(new Response("unauthenticated", { status: 401 }));
-  const { integrity_token } = JSON.parse(String(init?.body)) as { integrity_token: string };
+  const { integrity_token } = JSON.parse(init?.body as string) as { integrity_token: string };
   const payload = verdicts.get(integrity_token);
   if (!payload) return Promise.resolve(new Response(JSON.stringify({ error: { code: 400 } }), { status: 400 }));
   return Promise.resolve(Response.json({ tokenPayloadExternal: payload }));
@@ -117,7 +118,7 @@ const REQUIRED = () => ({
 });
 
 async function send(path: string, body: string, headers: Record<string, string>, overrides: Record<string, unknown>) {
-  const request = new Request(`https://api.test${path}`, {
+  const request = workerRequest(`https://api.test${path}`, {
     method: "POST",
     headers: {
       "content-type": "application/json",
@@ -125,8 +126,8 @@ async function send(path: string, body: string, headers: Record<string, string>,
       ...headers,
     },
     body,
-  }) as Parameters<typeof worker.fetch>[0];
-  return worker.fetch(request, { ...env, ...overrides } as typeof env);
+  });
+  return worker.fetch(request, { ...env, ...overrides });
 }
 
 // A Google sign-in body for the pending nonce, and a Play Integrity token bound to exactly that body.
@@ -229,7 +230,7 @@ describe("policy required", () => {
       const { body, token } = await googleSignIn();
       const v = verdicts.get(token) as { requestDetails: { requestHash: string } };
       const fixed = overrides.requestDetails
-        ? { requestDetails: { ...(overrides.requestDetails as object), requestHash: v.requestDetails.requestHash } }
+        ? { requestDetails: { ...overrides.requestDetails, requestHash: v.requestDetails.requestHash } }
         : {};
       verdicts.set(token, { ...v, ...overrides, ...fixed });
       await expectError(
@@ -345,10 +346,7 @@ describe("policy optional (staging until Play Integrity is set up)", () => {
 
 describe("health", () => {
   const health = (overrides: Record<string, unknown>) =>
-    worker.fetch(
-      new Request("https://api.test/health") as Parameters<typeof worker.fetch>[0],
-      { ...env, ...overrides } as typeof env,
-    );
+    worker.fetch(workerRequest("https://api.test/health"), { ...env, ...overrides });
 
   it("required without a service account → 503 naming PLAY_INTEGRITY_CREDENTIALS", async () => {
     const res = await health({ ATTESTATION_POLICY: "required", PLAY_CERT_SHA256: CERT });

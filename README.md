@@ -46,6 +46,21 @@ Each GitHub environment (`staging`, `production`) has its own secret `CLOUDFLARE
 Account resources: only the ZapaCIT account; zone resources: only `zapakid.ro`. Add Account → Workers R2 Storage: Edit
 when R2 (attachments) arrives; Durable Objects need no extra permission (they deploy with the Worker script).
 
+Play Integrity (Android app attestation on sign-in, `ATTESTATION_POLICY` in `wrangler.jsonc`):
+
+1. Google Cloud (the project linked to the app in Play Console → Test and release → App integrity): enable the
+   Play Integrity API, create a service account with no project roles, and create a JSON key for it.
+2. Play Console → App integrity → Play Integrity API: link that Cloud project, and grant the service account
+   access (Users and permissions, app `ro.zapakid.app`, "View app information").
+3. Store the key as a Worker secret, never in git: `npx wrangler secret put PLAY_INTEGRITY_CREDENTIALS --env staging`
+   (paste the JSON), then delete the downloaded file.
+4. Set `PLAY_CERT_SHA256` per environment to the app signing key's SHA-256 as Play Integrity reports it
+   (base64url, no padding; Play Console → App integrity → App signing), and switch staging's `ATTESTATION_POLICY`
+   to `required`, in a PR.
+
+`/health` answers 503 and names what is missing when the policy is `required` and the secret or certificate is not
+set.
+
 Zone settings (dashboard, or the infra repo), not set by this repo:
 
 - **TLS 1.3 only** for `api-staging.zapakid.ro` and `api.zapakid.ro`. Options, cheapest first:

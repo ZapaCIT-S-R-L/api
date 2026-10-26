@@ -108,6 +108,12 @@ export const ADULT_GOOGLE = {
 } as const;
 
 // Calls the Worker module directly (same module instance as the test), so tests can reset its JWKS cache.
+// A Request typed as the Worker's fetch expects (the runtime adds `cf`; tests don't).
+export function workerRequest(url: string, init: RequestInit = {}): Parameters<typeof worker.fetch>[0] {
+  const request: Request = new Request(url, init);
+  return request as Parameters<typeof worker.fetch>[0];
+}
+
 // Each call comes from a random private IP (unless the test sets cf-connecting-ip), so the auth rate
 // limit only applies in test/worker/rate-limit.test.ts.
 export function call(path: string, init: RequestInit = {}): Promise<Response> {
