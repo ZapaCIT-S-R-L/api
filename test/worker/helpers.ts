@@ -46,17 +46,21 @@ export interface JwksStub {
   google: JWK[];
   calls: string[];
   fail: boolean;
+  // Other URLs a test serves (Google's OAuth and Play Integrity endpoints); undefined = unexpected.
+  other?: (url: string, init: RequestInit | undefined) => Promise<Response> | undefined;
 }
 
 // Replaces global fetch for the two JWKS URLs; anything else fails the test.
 export function stubJwks(apple: TestIssuer[], google: TestIssuer[]): JwksStub {
   const stub: JwksStub = { apple: apple.map((i) => i.jwk), google: google.map((i) => i.jwk), calls: [], fail: false };
-  vi.spyOn(globalThis, "fetch").mockImplementation((input: RequestInfo | URL) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
     const url = input instanceof Request ? input.url : input.toString();
     stub.calls.push(url);
     if (stub.fail) return Promise.resolve(new Response("unavailable", { status: 503 }));
     if (url === APPLE_JWKS) return Promise.resolve(Response.json({ keys: stub.apple }));
     if (url === GOOGLE_JWKS) return Promise.resolve(Response.json({ keys: stub.google }));
+    const other = stub.other?.(url, init);
+    if (other) return other;
     return Promise.reject(new Error(`unexpected fetch ${url}`));
   });
   return stub;
