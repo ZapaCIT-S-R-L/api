@@ -45,3 +45,20 @@ test("staging has its own D1 database", () => {
   assert.equal(staging.d1_databases[0].binding, "DB");
   assert.equal(staging.d1_databases[0].database_name, "zapakid-api-staging");
 });
+
+const production = rawConfig.env.production;
+
+test("production has no route and no public URL until the v1 cutover", () => {
+  assert.equal(production.routes, undefined);
+  assert.equal(production.route, undefined);
+  assert.equal(production.workers_dev, false);
+  assert.equal(production.preview_urls, false);
+});
+
+test("production trusts only the real keys and the ZapaKid app", () => {
+  assert.equal(production.vars.APPLE_JWKS_URL, undefined);
+  assert.equal(production.vars.GOOGLE_JWKS_URL, undefined);
+  assert.equal(production.vars.APPLE_AUDIENCES, "com.zapacit.cuzaai");
+  assert.ok(!production.vars.GOOGLE_CLIENT_IDS.includes("local-test"));
+  assert.equal(production.d1_databases[0].database_name, "zapakid-api-production");
+});

@@ -1,0 +1,113 @@
+# Deploys the API to staging (api-staging.zapakid.ro) when a PR is merged to main, then runs the end-to-end tests
+# against it and rolls back to the previous Worker version if they fail.
+# Before deploying it tags the commit vMAJOR.MINOR.PATCH (scripts/next-version.js): patch by default, minor when
+# the merged PR has the `minor` label, major when it has the `major` label. The release gets an SBOM (CycloneDX).
+# D1 migrations run before the deploy and are not rolled back: every migration must work with the previous Worker.
+# Credentials live only in the `staging` environment of this repo (Settings → Environments):
+#   secret:   CLOUDFLARE_API_TOKEN (permissions: see README.md, "Deploying")
+#   variable: CLOUDFLARE_ACCOUNT_ID
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write # push the release tag, create the release with the SBOM
+  pull-requests: read # read the merged PR's labels
+
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  staging:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: staging
+      url: https://api-staging.zapakid.ro/health
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci
+      - run: npm test
+      - run: npx wrangler deploy --dry-run --env staging --outdir dist
+
+      - name: Check the Cloudflare credentials are set
+        run: |
+          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::Set the CLOUDFLARE_API_TOKEN secret and CLOUDFLARE_ACCOUNT_ID variable in the staging environment."
+            exit 1
+          fi
+
+      - name: Tag the release
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          pr=$(gh api "repos/$REPO/commits/$SHA/pulls" --jq '.[0] // {}')
+          labels=$(jq -r '(.labels // [])[].name' <<<"$pr")
+          title=$(jq -r 'if .number then "PR #\(.number) \(.title)" else empty end' <<<"$pr")
+          # shellcheck disable=SC2086 # one argument per label
+          version=$(git tag -l | node scripts/next-version.js $labels)
+          previous=$(git tag -l 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | head -1 || true)
+          if [ -n "$previous" ]; then url="https://github.com/$REPO/compare/$previous...$version"
+          else url="https://github.com/$REPO/tree/$version"; fi
+          message=${title:-$(git log -1 --format=%s "$SHA")}
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$version" -m "$message" "$SHA"
+          git push origin "$version"
+          { echo "version=$version"; echo "message=$message"; echo "url=$url"; } >> "$GITHUB_OUTPUT"
+          echo "Releasing $version: $message" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: SBOM (CycloneDX) on the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.version.outputs.version }}
+          MESSAGE: ${{ steps.version.outputs.message }}
+        run: |
+          npm sbom --sbom-format cyclonedx --omit dev > "$RUNNER_TEMP/zapakid-api-$VERSION.cdx.json"
+          gh release create "$VERSION" --verify-tag --title "$VERSION" --notes "$MESSAGE" \
+            "$RUNNER_TEMP/zapakid-api-$VERSION.cdx.json"
+
+      - name: D1 database (EU) and migrations
+        run: |
+          node scripts/d1-database.js staging
+          npx wrangler d1 migrations apply DB --env staging --remote
+
+      - name: Deploy
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          MESSAGE: ${{ steps.version.outputs.message }}
+          VERSION_URL: ${{ steps.version.outputs.url }}
+        run: >-
+          npx wrangler deploy --env staging --tag "$VERSION" --message "$MESSAGE"
+          --var "VERSION:$VERSION" --var "VERSION_URL:$VERSION_URL"
+
+      - name: End-to-end tests against staging
+        id: e2e
+        env:
+          API_URL: https://api-staging.zapakid.ro
+          LIVE: "1"
+        run: |
+          sleep 10
+          npm run test:e2e || { sleep 30; npm run test:e2e; }
+
+      - name: Roll back to the previous version
+        if: failure() && steps.e2e.conclusion == 'failure'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: npx wrangler rollback --env staging --yes --message "e2e failed after deploy of $VERSION"

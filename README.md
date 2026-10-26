@@ -21,7 +21,45 @@ decrypt a chat. The server has no cryptography of its own beyond verifying sign-
 1. Open a pull request. CI (`.github/workflows/ci.yml`) runs lint, the unit and Worker tests, builds the Worker (dry
    run), runs the end-to-end tests on a local server, audits dependencies and scans the whole history for credentials.
 2. A maintainer reviews and merges it.
-3. The merge to `main` deploys to staging.
+3. The merge to `main` deploys to staging (`.github/workflows/deploy.yml`, environment `staging`): tests, release
+   tag + SBOM, D1 database (created in the EU jurisdiction if missing) and migrations, `wrangler deploy --env staging`,
+   then the end-to-end tests against api-staging.zapakid.ro, rolling back the Worker if they fail.
+4. Production is manual: Actions → `deploy-production` → Run workflow with a release tag; the `production`
+   environment needs @stefan-zpc's approval. Until the v1 cutover the production Worker has no route.
+
+D1 migrations are not rolled back with the Worker, so every migration must keep working with the previous version.
+
+## Deploying: Cloudflare settings
+
+Each GitHub environment (`staging`, `production`) has its own secret `CLOUDFLARE_API_TOKEN` and variable
+`CLOUDFLARE_ACCOUNT_ID`. Create one custom API token per environment (My Profile → API Tokens → Create Custom Token):
+
+| Scope             | Permission             | Why                                                                     |
+| ----------------- | ---------------------- | ----------------------------------------------------------------------- |
+| Account           | Workers Scripts: Edit  | upload the Worker and its versions, roll back, attach the custom domain |
+| Account           | D1: Edit               | find or create the EU database, apply migrations                        |
+| Account           | Account Settings: Read | Wrangler reads the account                                              |
+| Zone `zapakid.ro` | Workers Routes: Edit   | routes on the zone                                                      |
+| Zone `zapakid.ro` | DNS: Edit              | the custom domain's DNS record (`api-staging`)                          |
+| Zone `zapakid.ro` | Zone: Read             | Wrangler looks up the zone                                              |
+
+Account resources: only the ZapaCIT account; zone resources: only `zapakid.ro`. Add Account → Workers R2 Storage: Edit
+when R2 (attachments) arrives; Durable Objects need no extra permission (they deploy with the Worker script).
+
+Zone settings (dashboard, or the infra repo), not set by this repo:
+
+- **TLS 1.3 only** for `api-staging.zapakid.ro` and `api.zapakid.ro`. Options, cheapest first:
+  1. A WAF custom rule (free plan includes some): Security → WAF → Custom rules, expression
+     `(http.host in {"api-staging.zapakid.ro" "api.zapakid.ro"} and cf.tls_version ne "TLSv1.3")`, action Block.
+     Recommended: free, API hosts only, the website keeps its own minimum.
+  2. Zone-wide SSL/TLS → Edge Certificates → Minimum TLS Version 1.3 (also applies to www.zapakid.ro).
+  3. Per-hostname minimum TLS (`PUT /zones/{zone_id}/hostnames/settings/min_tls_version/{hostname}`,
+     `{"value": "1.3"}`): needs Advanced Certificate Manager (paid).
+
+  Also keep SSL/TLS → Edge Certificates → TLS 1.3 on.
+
+- **HSTS**: the API sends `Strict-Transport-Security` itself on every response; "Always Use HTTPS" on.
+- **Non-EU traffic** is blocked by a zone rule (later, infra).
 
 ## Versions
 
