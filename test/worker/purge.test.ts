@@ -1,5 +1,5 @@
 // The daily cron deletes expired sessions and sign-in nonces, and keeps the live ones.
-import { createExecutionContext, createScheduledController, waitOnExecutionContext } from "cloudflare:test";
+import { createScheduledController } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { describe, expect, it } from "vitest";
 import worker from "../../src/index";
@@ -10,9 +10,7 @@ const future = () => new Date(Date.now() + 3_600_000).toISOString();
 const hex = (c: string) => c.repeat(64);
 
 async function runCron() {
-  const ctx = createExecutionContext();
-  await worker.scheduled(createScheduledController({ cron: "17 3 * * *" }), env, ctx);
-  await waitOnExecutionContext(ctx);
+  await worker.scheduled(createScheduledController({ cron: "17 3 * * *" }), env);
 }
 
 describe("daily purge", () => {
