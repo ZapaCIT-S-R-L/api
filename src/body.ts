@@ -1,5 +1,6 @@
 // Request bodies: JSON only, at most 16 KiB, validated field by field. Unknown fields are rejected.
-import type { AgeRange, AgeSource } from "./age";
+import type { AgeAvailability, AgeRange, AgeSource } from "./age";
+import { NONCE_PATTERN } from "./nonces";
 
 export const MAX_BODY_BYTES = 16 * 1024;
 const MAX_TOKEN_LENGTH = 8192;
@@ -80,12 +81,17 @@ function bound(value: unknown, field: string): number | null {
   return value;
 }
 
+const AVAILABILITY: AgeAvailability[] = ["shared", "declined", "unavailable"];
 const SOURCES: AgeSource[] = ["apple_declared_age_range", "google_play_age_signals"];
 
 function ageRange(value: unknown): AgeRange {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw invalid("ageRange is required.");
   const range = value as Record<string, unknown>;
-  onlyFields(range, ["source", "lowerBound", "upperBound", "platformStatus"], "ageRange");
+  onlyFields(range, ["availability", "source", "lowerBound", "upperBound", "platformStatus"], "ageRange");
+  if (!AVAILABILITY.includes(range.availability as AgeAvailability)) {
+    throw invalid(`ageRange.availability must be one of ${AVAILABILITY.join(", ")}.`);
+  }
+  const availability = range.availability as AgeAvailability;
   if (!SOURCES.includes(range.source as AgeSource))
     throw invalid(`ageRange.source must be one of ${SOURCES.join(", ")}.`);
   if (!("lowerBound" in range) || !("upperBound" in range)) {
@@ -96,6 +102,12 @@ function ageRange(value: unknown): AgeRange {
   if (lowerBound !== null && upperBound !== null && lowerBound > upperBound) {
     throw invalid("ageRange.lowerBound is above ageRange.upperBound.");
   }
+  if (availability === "shared" && lowerBound === null && upperBound === null) {
+    throw invalid("A shared ageRange needs lowerBound or upperBound.");
+  }
+  if (availability !== "shared" && (lowerBound !== null || upperBound !== null)) {
+    throw invalid(`A ${availability} ageRange has no bounds (null).`);
+  }
   let platformStatus: string | null = null;
   if (range.platformStatus !== undefined) {
     if (typeof range.platformStatus !== "string" || !/^[A-Za-z_]{1,40}$/.test(range.platformStatus)) {
@@ -103,17 +115,25 @@ function ageRange(value: unknown): AgeRange {
     }
     platformStatus = range.platformStatus;
   }
-  return { source: range.source as AgeSource, lowerBound, upperBound, platformStatus };
+  return { availability, source: range.source as AgeSource, lowerBound, upperBound, platformStatus };
+}
+
+function nonce(body: Record<string, unknown>): string {
+  if (typeof body.nonce !== "string" || !NONCE_PATTERN.test(body.nonce)) {
+    throw invalid("nonce is required: the value from POST /v1/auth/nonce.");
+  }
+  return body.nonce;
 }
 
 export interface SignInRequest {
   token: string;
+  nonce: string;
   ageRange: AgeRange;
   displayName: string | null;
 }
 
 export function appleSignIn(body: Record<string, unknown>): SignInRequest {
-  onlyFields(body, ["identityToken", "ageRange", "displayName"], "the body");
+  onlyFields(body, ["identityToken", "ageRange", "nonce", "displayName"], "the body");
   let displayName: string | null = null;
   if (body.displayName !== undefined && body.displayName !== null) {
     if (typeof body.displayName !== "string" || body.displayName.length > 100) {
@@ -121,10 +141,10 @@ export function appleSignIn(body: Record<string, unknown>): SignInRequest {
     }
     displayName = body.displayName.trim() || null;
   }
-  return { token: token(body, "identityToken"), ageRange: ageRange(body.ageRange), displayName };
+  return { token: token(body, "identityToken"), nonce: nonce(body), ageRange: ageRange(body.ageRange), displayName };
 }
 
 export function googleSignIn(body: Record<string, unknown>): SignInRequest {
-  onlyFields(body, ["idToken", "ageRange"], "the body");
-  return { token: token(body, "idToken"), ageRange: ageRange(body.ageRange), displayName: null };
+  onlyFields(body, ["idToken", "ageRange", "nonce"], "the body");
+  return { token: token(body, "idToken"), nonce: nonce(body), ageRange: ageRange(body.ageRange), displayName: null };
 }

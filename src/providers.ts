@@ -11,6 +11,8 @@ export interface Identity {
   subject: string;
   email: string | null;
   name: string | null;
+  // The token's `nonce` claim, checked by the caller against the sign-in nonce.
+  nonce: unknown;
 }
 
 export class InvalidToken extends Error {}
@@ -92,5 +94,5 @@ export async function verifyIdToken(provider: Provider, token: string, env: Env)
   const email = verified && typeof payload.email === "string" && payload.email.length <= 320 ? payload.email : null;
   const name =
     provider === "google" && typeof payload.name === "string" ? payload.name.trim().slice(0, 100) || null : null;
-  return { provider, subject: payload.sub, email, name };
+  return { provider, subject: payload.sub, email, name, nonce: payload.nonce };
 }

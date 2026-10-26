@@ -38,7 +38,17 @@ tags:
   - name: Health
     description: Liveness, for monitoring and the post-deploy checks.
   - name: Sign-in
-    description: Parents sign in with Apple or Google. Parents must be adults (18+).
+    description: |
+      Parents sign in with Apple or Google. Parents must be adults (18+).
+
+      **Flow.** 1) `POST /v1/auth/nonce` → `nonce`. 2) Start Sign in with Apple / Google with the lowercase hex
+      SHA-256 of `nonce` as the provider nonce (Apple: `ASAuthorizationAppleIDRequest.nonce`; Android Credential
+      Manager: `GetGoogleIdOption.Builder().setNonce(...)` / `GetSignInWithGoogleOption`; Google Sign-In on iOS:
+      the `nonce` parameter). 3) `POST /v1/auth/apple` or `/v1/auth/google` with the token, the age range and the
+      raw `nonce`. Each nonce works once, for 10 minutes; a replayed token is rejected (`401 invalid_nonce`).
+
+      **Before launch** sign-in will also require app attestation (see `Draft: App attestation`). The apps must
+      integrate App Attest and Play Integrity before launch.
   - name: Account
     description: The signed-in parent's own account.
   - name: "Draft: App attestation"
@@ -46,8 +56,8 @@ tags:
       Planned. Only genuine ZapaKid apps may call the API: Apple App Attest on iOS, Google Play Integrity on
       Android, both verified on the server. A device first registers an attestation, then signs sensitive requests
       with an assertion (iOS) or sends a fresh integrity token (Android) in the `ZapaKid-Attestation` header.
-      When this ships, sign-in will require the header too; apps should integrate App Attest / Play Integrity
-      before launch. Requests from clients that fail the checks get `403 attestation_failed`.
+      **Required on sign-in from launch** (decided 2026-10-26): the apps must integrate App Attest and Play
+      Integrity before launch. Requests from clients that fail the checks get `403 attestation_failed`.
   - name: "Draft: Families"
     description: Planned. A family has one or more parents and the kids they add.
   - name: "Draft: Kids"
@@ -103,6 +113,28 @@ paths:
                     description: The deployed release tag (vMAJOR.MINOR.PATCH), `dev` locally.
                     examples: [v1.0.3]
 
+  /v1/auth/nonce:
+    post:
+      tags: [Sign-in]
+      operationId: createSignInNonce
+      summary: A one-time nonce for the next sign-in.
+      description: |
+        Random (32 bytes, base64url), single use, valid for 10 minutes. The server stores only a hash of it. Pass
+        the lowercase hex SHA-256 of `nonce` to Apple or Google as the sign-in nonce; their token then carries it
+        in its `nonce` claim, and the server checks it against the `nonce` you send with the token.
+      security: []
+      responses:
+        "200":
+          description: The nonce.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [nonce, expiresAt]
+                properties:
+                  nonce: { $ref: "#/components/schemas/Nonce" }
+                  expiresAt: { type: string, format: date-time }
+
   /v1/auth/apple:
     post:
       tags: [Sign-in]
@@ -123,8 +155,8 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/SignedIn" }
         "400": { $ref: "#/components/responses/InvalidRequest" }
-        "401": { $ref: "#/components/responses/InvalidToken" }
-        "403": { $ref: "#/components/responses/MinorNotAllowed" }
+        "401": { $ref: "#/components/responses/InvalidTokenOrNonce" }
+        "403": { $ref: "#/components/responses/AgeNotAllowed" }
         "413": { $ref: "#/components/responses/TooLarge" }
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
         "503": { $ref: "#/components/responses/ProviderUnavailable" }
@@ -149,8 +181,8 @@ paths:
       responses:
         "200": { $ref: "#/components/responses/SignedIn" }
         "400": { $ref: "#/components/responses/InvalidRequest" }
-        "401": { $ref: "#/components/responses/InvalidToken" }
-        "403": { $ref: "#/components/responses/MinorNotAllowed" }
+        "401": { $ref: "#/components/responses/InvalidTokenOrNonce" }
+        "403": { $ref: "#/components/responses/AgeNotAllowed" }
         "413": { $ref: "#/components/responses/TooLarge" }
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
         "503": { $ref: "#/components/responses/ProviderUnavailable" }
@@ -625,17 +657,20 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
-    InvalidToken:
+    InvalidTokenOrNonce:
       description: |
         `invalid_token`: the Apple/Google token is malformed, expired, for another app (audience), from another
-        issuer, or its signature does not verify. Sign in with the provider again.
+        issuer, or its signature does not verify. `invalid_nonce`: the token's `nonce` claim is missing or isn't
+        the SHA-256 of the `nonce` sent, or that nonce is unknown, expired or already used (a replay). Either way:
+        get a new nonce and sign in with the provider again.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
-    MinorNotAllowed:
+    AgeNotAllowed:
       description: |
-        `minor_not_allowed`: the platform age range says the user is under 18. Only parents (18+) can create an
-        account. Nothing is stored.
+        Only adults (18+) can sign in as parents. Nothing is stored, and the nonce is used up.
+        `minor_not_allowed`: the shared age range is under 18, or doesn't show 18+ (for example "16 and up").
+        `age_declined`: the user declined to share their age range. The app can ask again and retry.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -684,18 +719,25 @@ components:
     AgeRange:
       type: object
       description: |
-        What the platform age API returned, passed through by the app. The server classifies it:
-        `upperBound` < 18 → minor (rejected, `403 minor_not_allowed`); `lowerBound` ≥ 18 → adult; anything else
-        (user declined, API not available in the country) → unknown. Unknown is accepted and recorded for now.
+        What the platform age API returned, passed through by the app.
 
-        - Apple Declared Age Range: `lowerBound` / `upperBound` of the declared range (`nil` → `null`); declined →
-          both `null`, `platformStatus: "declined"`.
-        - Google Play Age Signals: `VERIFIED` → `lowerBound: 18`, `upperBound: null`; `SUPERVISED` and the other
-          supervised statuses → `ageLower` / `ageUpper`; `UNKNOWN` or not available → both `null`. Put the
-          `userStatus` in `platformStatus`.
-      required: [source, lowerBound, upperBound]
+        | `availability` | When | Bounds | Server |
+        | --- | --- | --- | --- |
+        | `shared` | the user shared a range | the range (`null` = open end) | 18+ (`lowerBound` ≥ 18) → adult; anything else → `403 minor_not_allowed` |
+        | `declined` | the user declined to share | both `null` | `403 age_declined` |
+        | `unavailable` | the API isn't offered (country, OS version, account type) | both `null` | allowed, recorded as `unavailable`; the 18+ declaration in the parental agreement covers it |
+
+        - Apple Declared Age Range: response `.sharing(range)` → `shared` with `range.lowerBound` /
+          `range.upperBound`; `.declinedSharing` → `declined`; API not offered (older iOS, region, or the framework reports it unavailable) → `unavailable`.
+        - Google Play Age Signals: `VERIFIED` → `shared`, `lowerBound: 18`, `upperBound: null`; `SUPERVISED` and the
+          other supervised statuses → `shared` with `ageLower` / `ageUpper`; `UNKNOWN`, or the API not offered (country, or the API reports it unavailable) → `unavailable`. Play has no "declined" outcome.
+        - Put the platform's raw status in `platformStatus`.
+      required: [availability, source, lowerBound, upperBound]
       additionalProperties: false
       properties:
+        availability:
+          type: string
+          enum: [shared, declined, unavailable]
         source:
           type: string
           enum: [apple_declared_age_range, google_play_age_signals]
@@ -705,13 +747,19 @@ components:
           type: string
           maxLength: 40
           pattern: "^[A-Za-z_]+$"
-          description: The platform's raw status, recorded as is (for example `VERIFIED`, `SUPERVISED`, `declined`).
+          description: The platform's raw status, recorded as is (for example `VERIFIED`, `SUPERVISED`, `declinedSharing`).
+
+    Nonce:
+      type: string
+      pattern: "^[A-Za-z0-9_-]{43}$"
+      description: From `POST /v1/auth/nonce`. Send the raw value; the provider gets its lowercase hex SHA-256.
 
     AppleSignInRequest:
       type: object
-      required: [identityToken, ageRange]
+      required: [identityToken, ageRange, nonce]
       additionalProperties: false
       properties:
+        nonce: { $ref: "#/components/schemas/Nonce" }
         identityToken:
           type: string
           maxLength: 8192
@@ -728,9 +776,10 @@ components:
 
     GoogleSignInRequest:
       type: object
-      required: [idToken, ageRange]
+      required: [idToken, ageRange, nonce]
       additionalProperties: false
       properties:
+        nonce: { $ref: "#/components/schemas/Nonce" }
         idToken:
           type: string
           maxLength: 8192
@@ -771,7 +820,10 @@ components:
           required: [category, source, lowerBound, upperBound, checkedAt]
           description: The latest age range, recorded at sign-in.
           properties:
-            category: { type: string, enum: [adult, unknown] }
+            category:
+              type: string
+              enum: [adult, unavailable]
+              description: "`adult`: the platform showed 18+. `unavailable`: the platform's age API wasn't offered."
             source: { type: string, enum: [apple_declared_age_range, google_play_age_signals] }
             lowerBound: { type: [integer, "null"] }
             upperBound: { type: [integer, "null"] }

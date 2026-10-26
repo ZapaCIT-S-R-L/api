@@ -2,12 +2,13 @@
 import { BadRequest } from "./body";
 import type { Env } from "./env";
 import { error, json } from "./http";
-import { handleLogout, handleMe, handleSignIn } from "./routes";
+import { handleLogout, handleMe, handleNonce, handleSignIn } from "./routes";
 
 type Handler = (request: Request, env: Env) => Response | Promise<Response>;
 
 const ROUTES: Record<string, { method: string; handler: Handler }> = {
   "/health": { method: "GET", handler: (_request, env) => json({ status: "ok", version: env.VERSION }) },
+  "/v1/auth/nonce": { method: "POST", handler: handleNonce },
   "/v1/auth/apple": { method: "POST", handler: (request, env) => handleSignIn(request, env, "apple") },
   "/v1/auth/google": { method: "POST", handler: (request, env) => handleSignIn(request, env, "google") },
   "/v1/auth/logout": { method: "POST", handler: handleLogout },

@@ -1,6 +1,7 @@
 // Sign-in end to end over HTTP. Locally (wrangler dev started with APPLE_JWKS_URL / GOOGLE_JWKS_URL pointing at
 // the JWKS server below, see the e2e job in ci.yml) the full flow runs with test keys. Against a deployed
 // environment (LIVE=1) only the checks that need no valid token run: the real Apple and Google keys reject ours.
+import { createHash } from "node:crypto";
 import { createServer, type Server } from "node:http";
 import { exportJWK, generateKeyPair, SignJWT, type JWK, type JWTPayload } from "jose";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -54,15 +55,27 @@ afterAll(async () => {
   });
 });
 
-const adult = { source: "apple_declared_age_range", lowerBound: 18, upperBound: null };
+const adult = { availability: "shared", source: "apple_declared_age_range", lowerBound: 18, upperBound: null };
 const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
   api(path, {
     method: "POST",
     headers: { "content-type": "application/json", ...headers },
     body: JSON.stringify(body),
   });
-const appleToken = (claims: JWTPayload = {}, exp?: number) =>
-  apple.sign({ iss: "https://appleid.apple.com", aud: "com.zapacit.cuzaai", sub: `e2e-${run}`, ...claims }, exp);
+// A fresh one-time nonce from the API; the token carries its SHA-256 (hex).
+async function freshNonce(): Promise<{ nonce: string; hash: string }> {
+  const res = await api("/v1/auth/nonce", { method: "POST" });
+  expect(res.status).toBe(200);
+  const { nonce } = await bodyOf<{ nonce: string }>(res);
+  return { nonce, hash: createHash("sha256").update(nonce).digest("hex") };
+}
+
+// An Apple sign-in body for a fresh nonce.
+async function appleSignIn(claims: JWTPayload = {}, ageRange: object = adult, exp?: number) {
+  const { nonce, hash } = await freshNonce();
+  const base = { iss: "https://appleid.apple.com", aud: "com.zapacit.cuzaai", sub: `e2e-${run}`, nonce: hash };
+  return { identityToken: await apple.sign({ ...base, ...claims }, exp), ageRange, nonce };
+}
 
 interface SignIn {
   session: { token: string };
@@ -71,14 +84,19 @@ interface SignIn {
 }
 
 describe("sign-in, everywhere (no valid token needed)", () => {
+  it("POST /v1/auth/nonce issues a nonce", async () => {
+    expect((await freshNonce()).nonce).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  });
+
   it("a token signed by a key Apple doesn't have → 401", async () => {
-    const res = await post("/v1/auth/apple", { identityToken: await appleToken(), ageRange: adult });
+    const res = await post("/v1/auth/apple", await appleSignIn());
     if (LIVE) expect(res.status).toBe(401);
     else expect([200, 401]).toContain(res.status);
   });
 
   it("garbage token → 401 invalid_token", async () => {
-    const res = await post("/v1/auth/google", { idToken: "a.b.c", ageRange: adult });
+    const { nonce } = await freshNonce();
+    const res = await post("/v1/auth/google", { idToken: "a.b.c", ageRange: adult, nonce });
     expect(res.status).toBe(401);
     expect((await bodyOf<{ error: { code: string } }>(res)).error.code).toBe("invalid_token");
   });
@@ -105,11 +123,7 @@ describe("sign-in, everywhere (no valid token needed)", () => {
 
 describe.skipIf(LIVE)("sign-in flow with test keys (local only)", () => {
   it("Apple: sign in, /me, logout, /me again", async () => {
-    const res = await post("/v1/auth/apple", {
-      identityToken: await appleToken(),
-      ageRange: adult,
-      displayName: "E2E",
-    });
+    const res = await post("/v1/auth/apple", { ...(await appleSignIn()), displayName: "E2E" });
     expect(res.status).toBe(200);
     const { session, parent } = await bodyOf<SignIn>(res);
     const auth = { authorization: `Bearer ${session.token}` };
@@ -123,7 +137,9 @@ describe.skipIf(LIVE)("sign-in flow with test keys (local only)", () => {
   });
 
   it("Google: sign in", async () => {
+    const { nonce, hash } = await freshNonce();
     const idToken = await google.sign({
+      nonce: hash,
       iss: "https://accounts.google.com",
       aud: GOOGLE_AUDIENCE,
       sub: `e2e-${run}`,
@@ -131,30 +147,45 @@ describe.skipIf(LIVE)("sign-in flow with test keys (local only)", () => {
       email_verified: true,
     });
     const ageRange = {
+      availability: "shared",
       source: "google_play_age_signals",
       lowerBound: 18,
       upperBound: null,
       platformStatus: "VERIFIED",
     };
-    expect((await post("/v1/auth/google", { idToken, ageRange })).status).toBe(200);
+    expect((await post("/v1/auth/google", { idToken, ageRange, nonce })).status).toBe(200);
   });
 
   it("wrong audience → 401", async () => {
-    const res = await post("/v1/auth/apple", {
-      identityToken: await appleToken({ aud: "com.other" }),
-      ageRange: adult,
-    });
+    const res = await post("/v1/auth/apple", await appleSignIn({ aud: "com.other" }));
     expect(res.status).toBe(401);
   });
 
   it("expired → 401", async () => {
-    const token = await appleToken({}, Math.floor(Date.now() / 1000) - 300);
-    expect((await post("/v1/auth/apple", { identityToken: token, ageRange: adult })).status).toBe(401);
+    const body = await appleSignIn({}, adult, Math.floor(Date.now() / 1000) - 300);
+    expect((await post("/v1/auth/apple", body)).status).toBe(401);
   });
 
   it("minor → 403", async () => {
-    const ageRange = { source: "apple_declared_age_range", lowerBound: 13, upperBound: 15 };
-    const res = await post("/v1/auth/apple", { identityToken: await appleToken({ sub: `kid-${run}` }), ageRange });
+    const ageRange = { availability: "shared", source: "apple_declared_age_range", lowerBound: 13, upperBound: 15 };
+    const res = await post("/v1/auth/apple", await appleSignIn({ sub: `kid-${run}` }, ageRange));
     expect(res.status).toBe(403);
+  });
+
+  it("declined to share the age range → 403", async () => {
+    const ageRange = {
+      availability: "declined",
+      source: "apple_declared_age_range",
+      lowerBound: null,
+      upperBound: null,
+    };
+    const res = await post("/v1/auth/apple", await appleSignIn({ sub: `declined-${run}` }, ageRange));
+    expect(res.status).toBe(403);
+  });
+
+  it("a replayed token and nonce → 401", async () => {
+    const body = await appleSignIn({ sub: `replay-${run}` });
+    expect((await post("/v1/auth/apple", body)).status).toBe(200);
+    expect((await post("/v1/auth/apple", body)).status).toBe(401);
   });
 });

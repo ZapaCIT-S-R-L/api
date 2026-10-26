@@ -96,21 +96,26 @@ describe("valid token", () => {
     expect(await count("sessions")).toBe(2);
   });
 
-  it("records an unknown age range (declined) as unknown", async () => {
+  it("age API not available (unavailable) → allowed, recorded as unavailable", async () => {
     const ageRange = {
+      availability: "unavailable",
       source: "apple_declared_age_range",
       lowerBound: null,
       upperBound: null,
-      platformStatus: "declined",
+      platformStatus: "notAvailable",
     };
     const res = await signIn({ identityToken: await apple.sign(appleClaims()), ageRange });
     expect(res.status).toBe(200);
     const { parent } = await res.json<SignInBody>();
-    expect(parent.ageRange).toMatchObject({ category: "unknown", lowerBound: null, platformStatus: "declined" });
+    expect(parent.ageRange).toMatchObject({
+      category: "unavailable",
+      lowerBound: null,
+      platformStatus: "notAvailable",
+    });
   });
 
   it("an adult range with an upper bound (25-34) is adult", async () => {
-    const ageRange = { source: "apple_declared_age_range", lowerBound: 25, upperBound: 34 };
+    const ageRange = { availability: "shared", source: "apple_declared_age_range", lowerBound: 25, upperBound: 34 };
     const res = await signIn({ identityToken: await apple.sign(appleClaims()), ageRange });
     expect((await res.json<SignInBody>()).parent.ageRange.category).toBe("adult");
   });
@@ -123,7 +128,7 @@ describe("valid token", () => {
 
   it("accepts a key Apple rotated in (unknown kid → fetch the keys again)", async () => {
     await signIn({ identityToken: await apple.sign(appleClaims()), ageRange: ADULT });
-    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + 10 * 60_000 });
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + 6 * 60_000 }); // past the 5-minute refetch cooldown, within the nonce TTL
     const rotated = await makeIssuer();
     jwks.apple = [apple.jwk, rotated.jwk];
     const res = await signIn({ identityToken: await rotated.sign(appleClaims()), ageRange: ADULT });
@@ -211,7 +216,7 @@ describe("invalid token → 401 invalid_token", () => {
 
 describe("minor → 403 minor_not_allowed", () => {
   it("rejects an upper bound under 18 and stores nothing", async () => {
-    const ageRange = { source: "apple_declared_age_range", lowerBound: 13, upperBound: 15 };
+    const ageRange = { availability: "shared", source: "apple_declared_age_range", lowerBound: 13, upperBound: 15 };
     await expectError(
       await signIn({ identityToken: await apple.sign(appleClaims()), ageRange }),
       403,
@@ -223,7 +228,7 @@ describe("minor → 403 minor_not_allowed", () => {
   });
 
   it("rejects 17 as the upper bound", async () => {
-    const ageRange = { source: "apple_declared_age_range", lowerBound: null, upperBound: 17 };
+    const ageRange = { availability: "shared", source: "apple_declared_age_range", lowerBound: null, upperBound: 17 };
     await expectError(
       await signIn({ identityToken: await apple.sign(appleClaims()), ageRange }),
       403,
@@ -233,7 +238,7 @@ describe("minor → 403 minor_not_allowed", () => {
 
   it("an existing parent who now reports a minor range gets no session", async () => {
     await signIn({ identityToken: await apple.sign(appleClaims()), ageRange: ADULT });
-    const ageRange = { source: "apple_declared_age_range", lowerBound: null, upperBound: 12 };
+    const ageRange = { availability: "shared", source: "apple_declared_age_range", lowerBound: null, upperBound: 12 };
     await expectError(
       await signIn({ identityToken: await apple.sign(appleClaims()), ageRange }),
       403,
@@ -243,8 +248,43 @@ describe("minor → 403 minor_not_allowed", () => {
   });
 
   it("checks the token before the age range (a bad token is 401, not 403)", async () => {
-    const ageRange = { source: "apple_declared_age_range", lowerBound: null, upperBound: 12 };
+    const ageRange = { availability: "shared", source: "apple_declared_age_range", lowerBound: null, upperBound: 12 };
     await expectError(await signIn({ identityToken: "x.y.z", ageRange }), 401, "invalid_token");
+  });
+});
+
+describe("age range not shared or not adult → 403", () => {
+  it("declined to share → 403 age_declined, nothing stored", async () => {
+    const ageRange = {
+      availability: "declined",
+      source: "apple_declared_age_range",
+      lowerBound: null,
+      upperBound: null,
+    };
+    await expectError(await signIn({ identityToken: await apple.sign(appleClaims()), ageRange }), 403, "age_declined");
+    expect(await count("parents")).toBe(0);
+    expect(await count("sessions")).toBe(0);
+  });
+
+  it("a shared range that doesn't prove 18+ (16 and up) → 403 minor_not_allowed", async () => {
+    const ageRange = { availability: "shared", source: "apple_declared_age_range", lowerBound: 16, upperBound: null };
+    await expectError(
+      await signIn({ identityToken: await apple.sign(appleClaims()), ageRange }),
+      403,
+      "minor_not_allowed",
+    );
+  });
+
+  it("an existing parent who now declines gets no session", async () => {
+    await signIn({ identityToken: await apple.sign(appleClaims()), ageRange: ADULT });
+    const ageRange = {
+      availability: "declined",
+      source: "apple_declared_age_range",
+      lowerBound: null,
+      upperBound: null,
+    };
+    await expectError(await signIn({ identityToken: await apple.sign(appleClaims()), ageRange }), 403, "age_declined");
+    expect(await count("sessions")).toBe(1);
   });
 });
 
@@ -253,9 +293,22 @@ describe("bad requests", () => {
     ["no token", { ageRange: ADULT }],
     ["no age range", { identityToken: "a.b.c" }],
     ["token not a string", { identityToken: 5, ageRange: ADULT }],
+    [
+      "no availability",
+      { identityToken: "a.b.c", ageRange: { source: ADULT.source, lowerBound: 18, upperBound: null } },
+    ],
+    ["unknown availability", { identityToken: "a.b.c", ageRange: { ...ADULT, availability: "maybe" } }],
+    ["shared without bounds", { identityToken: "a.b.c", ageRange: { ...ADULT, lowerBound: null } }],
+    ["declined with bounds", { identityToken: "a.b.c", ageRange: { ...ADULT, availability: "declined" } }],
+    ["unavailable with bounds", { identityToken: "a.b.c", ageRange: { ...ADULT, availability: "unavailable" } }],
+    ["no nonce", { identityToken: "a.b.c", ageRange: ADULT, nonce: undefined }],
+    ["nonce not a string", { identityToken: "a.b.c", ageRange: ADULT, nonce: 7 }],
     ["unknown source", { identityToken: "a.b.c", ageRange: { ...ADULT, source: "selfie" } }],
     ["bound not an integer", { identityToken: "a.b.c", ageRange: { ...ADULT, lowerBound: 18.5 } }],
-    ["bound missing", { identityToken: "a.b.c", ageRange: { source: ADULT.source, lowerBound: 18 } }],
+    [
+      "bound missing",
+      { identityToken: "a.b.c", ageRange: { availability: "shared", source: ADULT.source, lowerBound: 18 } },
+    ],
     ["negative bound", { identityToken: "a.b.c", ageRange: { ...ADULT, lowerBound: -1 } }],
     ["lower above upper", { identityToken: "a.b.c", ageRange: { ...ADULT, lowerBound: 30, upperBound: 20 } }],
     ["bad platformStatus", { identityToken: "a.b.c", ageRange: { ...ADULT, platformStatus: "<script>" } }],

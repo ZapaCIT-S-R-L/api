@@ -68,6 +68,7 @@ export function appleClaims(overrides: Record<string, unknown> = {}): JWTPayload
     sub: "001234.apple-subject.0001",
     email: "parent@privaterelay.appleid.com",
     email_verified: "true",
+    nonce: pending?.hash,
     ...overrides,
   };
 }
@@ -81,12 +82,19 @@ export function googleClaims(overrides: Record<string, unknown> = {}): JWTPayloa
     email: "parent@example.com",
     email_verified: true,
     name: "Test Parent",
+    nonce: pending?.hash,
     ...overrides,
   };
 }
 
-export const ADULT = { source: "apple_declared_age_range", lowerBound: 18, upperBound: null } as const;
+export const ADULT = {
+  availability: "shared",
+  source: "apple_declared_age_range",
+  lowerBound: 18,
+  upperBound: null,
+} as const;
 export const ADULT_GOOGLE = {
+  availability: "shared",
   source: "google_play_age_signals",
   lowerBound: 18,
   upperBound: null,
@@ -99,12 +107,36 @@ export function call(path: string, init: RequestInit = {}): Promise<Response> {
   return worker.fetch(request, env);
 }
 
-export function postJson(path: string, body: unknown, headers: Record<string, string> = {}): Promise<Response> {
-  return call(path, {
+// Sign-in needs a one-time nonce from POST /v1/auth/nonce, and the token must carry its SHA-256 (hex) in the
+// `nonce` claim. The tests keep one pending nonce: appleClaims()/googleClaims() put its hash in the token,
+// postJson() adds it to sign-in bodies that have no `nonce` key and then fetches the next one.
+let pending: { nonce: string; hash: string } | null = null;
+
+export async function primeNonce(): Promise<{ nonce: string; hash: string }> {
+  const res = await call("/v1/auth/nonce", { method: "POST" });
+  if (res.status !== 200) throw new Error(`POST /v1/auth/nonce answered ${res.status}`);
+  const { nonce } = await res.json<{ nonce: string }>();
+  pending = { nonce, hash: await sha256Hex(nonce) };
+  return pending;
+}
+
+export function pendingNonce(): { nonce: string; hash: string } | null {
+  return pending;
+}
+
+const SIGN_IN = new Set(["/v1/auth/apple", "/v1/auth/google"]);
+
+export async function postJson(path: string, body: unknown, headers: Record<string, string> = {}): Promise<Response> {
+  const isObject = typeof body === "object" && body !== null && !Array.isArray(body);
+  const signIn = SIGN_IN.has(path);
+  const withNonce = signIn && isObject && pending && !("nonce" in body) ? { ...body, nonce: pending.nonce } : body;
+  const res = await call(path, {
     method: "POST",
     headers: { "content-type": "application/json", ...headers },
-    body: typeof body === "string" ? body : JSON.stringify(body),
+    body: typeof withNonce === "string" ? withNonce : JSON.stringify(withNonce),
   });
+  if (signIn) await primeNonce();
+  return res;
 }
 
 export function bearer(token: string): Record<string, string> {
@@ -116,7 +148,7 @@ export async function sha256Hex(text: string): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-export async function count(table: "parents" | "parent_identities" | "sessions"): Promise<number> {
+export async function count(table: "parents" | "parent_identities" | "sessions" | "sign_in_nonces"): Promise<number> {
   const row = await env.DB.prepare(`SELECT count(*) AS n FROM ${table}`).first<{ n: number }>();
   return row?.n ?? 0;
 }
