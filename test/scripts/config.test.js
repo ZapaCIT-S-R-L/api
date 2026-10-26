@@ -25,8 +25,22 @@ test("staging never overrides the Apple or Google key URLs", () => {
   assert.equal(staging.vars.GOOGLE_JWKS_URL, undefined);
 });
 
-test("staging accepts Apple tokens for the ZapaKid app only", () => {
-  assert.equal(staging.vars.APPLE_AUDIENCES, "com.zapacit.cuzaai");
+// The iOS bundle id first; then, once Stefan provides it, the Apple Services ID of the web flow (Android).
+function appleAudiences(env) {
+  const ids = env.vars.APPLE_AUDIENCES.split(",").map((id) => id.trim());
+  assert.equal(ids[0], "com.zapacit.cuzaai");
+  for (const id of ids) assert.match(id, /^[a-z0-9-]+(\.[a-z0-9-]+)+$/i);
+  assert.ok(!ids.some((id) => id.endsWith(".local")), "no local test ids");
+  return ids;
+}
+
+test("staging accepts Apple tokens for the ZapaKid app and its Services ID only", () => {
+  assert.ok(appleAudiences(staging).length <= 2);
+});
+
+test("the Apple web flow hands back to the app link on zapakid.ro", () => {
+  for (const env of [staging, production])
+    assert.equal(env.vars.APPLE_WEB_REDIRECT_URL, "https://zapakid.ro/app/apple");
 });
 
 test("staging Google client ids are real OAuth client ids or empty (Google sign-in off)", () => {
@@ -58,7 +72,7 @@ test("production has no route and no public URL until the v1 cutover", () => {
 test("production trusts only the real keys and the ZapaKid app", () => {
   assert.equal(production.vars.APPLE_JWKS_URL, undefined);
   assert.equal(production.vars.GOOGLE_JWKS_URL, undefined);
-  assert.equal(production.vars.APPLE_AUDIENCES, "com.zapacit.cuzaai");
+  assert.ok(appleAudiences(production).length <= 2);
   assert.ok(!production.vars.GOOGLE_CLIENT_IDS.includes("local-test"));
   assert.equal(production.d1_databases[0].database_name, "zapakid-api-production");
 });

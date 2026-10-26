@@ -13,6 +13,8 @@ export const GOOGLE_JWKS = "https://www.googleapis.com/oauth2/v3/certs";
 export const APPLE_ISSUER = "https://appleid.apple.com";
 export const GOOGLE_ISSUER = "https://accounts.google.com";
 export const APPLE_AUDIENCE = "com.zapacit.cuzaai";
+// Matches the local test Services ID in APPLE_AUDIENCES (top-level vars of wrangler.jsonc).
+export const APPLE_SERVICES_ID = "ro.zapakid.signin.local";
 // Matches GOOGLE_CLIENT_IDS in the top level (local) vars of wrangler.jsonc.
 export const GOOGLE_AUDIENCE = "000000000000-zapakidlocaltest.apps.googleusercontent.com";
 
@@ -158,7 +160,9 @@ export async function sha256Hex(text: string): Promise<string> {
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-export async function count(table: "parents" | "parent_identities" | "sessions" | "sign_in_nonces"): Promise<number> {
+export async function count(
+  table: "parents" | "parent_identities" | "sessions" | "sign_in_nonces" | "apple_web_flows",
+): Promise<number> {
   const row = await env.DB.prepare(`SELECT count(*) AS n FROM ${table}`).first<{ n: number }>();
   return row?.n ?? 0;
 }
