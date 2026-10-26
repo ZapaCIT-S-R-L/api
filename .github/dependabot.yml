@@ -1,0 +1,29 @@
+# Update PRs for npm packages and the pinned GitHub Actions. CI must pass before merging, as for any PR.
+# Security updates (repo setting "Dependabot security updates", on) open as soon as an advisory is published,
+# grouped per ecosystem, without waiting for the schedule. Version updates come weekly, grouped.
+# The daily `audit` workflow fails on high or critical advisories in the meantime.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    versioning-strategy: increase
+    groups:
+      npm-security:
+        applies-to: security-updates
+        patterns: ["*"]
+      npm:
+        applies-to: version-updates
+        patterns: ["*"]
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions-security:
+        applies-to: security-updates
+        patterns: ["*"]
+      actions:
+        applies-to: version-updates
+        patterns: ["*"]

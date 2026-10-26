@@ -1,0 +1,34 @@
+# ZapaKid API
+
+Backend for ZapaKid, an end-to-end encrypted chat for families. The apps encrypt with
+[libsignal](https://github.com/signalapp/libsignal); this API only stores public keys and ciphertext and can never
+decrypt a chat. The server has no cryptography of its own beyond verifying sign-in tokens and hashing session tokens.
+
+- Cloudflare Workers + D1 (EU jurisdiction), TypeScript. Staging: `api-staging.zapakid.ro`.
+- Node 24 (`.nvmrc`). `npm ci`, then:
+  - `npm test`: unit tests (`test/scripts`, node:test) and Worker tests in the Workers runtime (`test/worker`, Vitest).
+  - `npm run dev` in one terminal, then `API_URL=http://127.0.0.1:8787 npm run test:e2e` (`test/e2e`).
+  - `npm run lint` (Prettier, ESLint, TypeScript); `npm run format` fixes formatting.
+- Dependencies are pinned to exact versions (`.npmrc`), updated by Dependabot, and audited on every PR and daily.
+
+## How changes ship
+
+1. Open a pull request. CI (`.github/workflows/ci.yml`) runs lint, the unit and Worker tests, builds the Worker (dry
+   run), runs the end-to-end tests on a local server, audits dependencies and scans the whole history for credentials.
+2. A maintainer reviews and merges it.
+3. The merge to `main` deploys to staging.
+
+## Versions
+
+Every deploy tags the merged commit `vMAJOR.MINOR.PATCH` before it goes live (`scripts/next-version.js`):
+
+- no label: patch (`v1.0.4` → `v1.0.5`)
+- label `minor`: a large feature (`v1.0.4` → `v1.1.0`)
+- label `major`: a change that breaks compatibility with the previous version (`v1.3.7` → `v2.0.0`)
+
+Add the label to the PR before merging it. Never deploy from a laptop.
+
+## License
+
+[AGPL-3.0](LICENSE). Contributions need the CLA, see [CONTRIBUTING.md](CONTRIBUTING.md). Security reports:
+[SECURITY.md](SECURITY.md).

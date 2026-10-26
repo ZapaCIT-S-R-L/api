@@ -1,0 +1,107 @@
+# Checks every pull request and every push to main. No secrets are used here, so PRs from forks are safe.
+#   unit     node:test for scripts/, Vitest inside the Workers runtime for the Worker (npm test)
+#   build    wrangler bundles the Worker (dry run, nothing uploaded)
+#   e2e      the API over HTTP on a local wrangler dev server (npm run test:e2e)
+#   secrets  gitleaks scan of the whole history
+#   audit    npm audit of the runtime dependencies: fails on high or critical advisories (also daily, audit.yml)
+#   cla      the PR author signed the CLA (CLA-SIGNATURES.md), or is ZapaCIT staff or a bot
+#   lint     Prettier, ESLint, TypeScript, actionlint (workflows)
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci
+      - run: npm test
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci
+      - run: npx wrangler deploy --dry-run --env staging --outdir dist
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci
+      - name: Start the API locally
+        run: |
+          nohup npx wrangler dev --port 8787 --ip 127.0.0.1 --show-interactive-dev-session=false < /dev/null > "$RUNNER_TEMP/wrangler.log" 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf --max-time 2 -o /dev/null http://127.0.0.1:8787/health && { echo "up after ${i}s"; exit 0; }
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/wrangler.log"; exit 1
+      - run: npm run test:e2e
+        env:
+          API_URL: http://127.0.0.1:8787
+      - if: failure()
+        run: cat "$RUNNER_TEMP/wrangler.log"
+
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - run: docker run --rm -v "$PWD:/repo" ghcr.io/gitleaks/gitleaks:v8.30.1 git /repo --no-banner --redact
+
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - run: npm audit --omit=dev --audit-level=high
+
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci
+      - run: npm run lint
+      - run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -color
+
+  cla:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      # Staff come from CODEOWNERS on the base branch, not from the pull request.
+      - run: git fetch --depth=1 origin "$BASE_REF" && git show "FETCH_HEAD:.github/CODEOWNERS" > "$RUNNER_TEMP/CODEOWNERS"
+        env:
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
+      - run: node scripts/cla-check.js
+        env:
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_ASSOCIATION: ${{ github.event.pull_request.author_association }}
+          CODEOWNERS_FILE: ${{ runner.temp }}/CODEOWNERS
