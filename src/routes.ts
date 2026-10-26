@@ -1,11 +1,12 @@
 // The stable v1 endpoints: sign-in with Apple or Google, the signed-in parent, logout.
 import { decide, type AgeRange } from "./age";
-import { appleSignIn, googleSignIn, readJson, type SignInRequest } from "./body";
+import { appleSignIn, googleSignIn, readJsonBody, type SignInRequest } from "./body";
 import type { Env } from "./env";
 import { empty, error, json } from "./http";
 import { ProviderUnavailable } from "./jwks";
 import { checkNonceClaim, consumeNonce, InvalidNonce, issueNonce } from "./nonces";
 import { getParent, signIn } from "./parents";
+import { AttestationFailed, AttestationUnavailable, checkAttestation } from "./play-integrity";
 import { InvalidToken, verifyIdToken, type Identity, type Provider } from "./providers";
 import { authenticate } from "./sessions";
 
@@ -15,8 +16,10 @@ const unauthorized = () =>
   });
 
 export async function handleSignIn(request: Request, env: Env, provider: Provider): Promise<Response> {
-  const body = await readJson(request);
+  const { body, bytes } = await readJsonBody(request);
   const input: SignInRequest = provider === "apple" ? appleSignIn(body) : googleSignIn(body);
+  const refused = await attest(request, bytes, env);
+  if (refused) return refused;
 
   let identity;
   try {
@@ -65,6 +68,30 @@ export async function finishSignIn(
   }
 
   return json(await signIn(env, identity, ageRange, age, displayName));
+}
+
+// App attestation before anything is verified or used up: a refused request leaves the nonce and codes intact.
+export async function attest(request: Request, bytes: Uint8Array, env: Env): Promise<Response | null> {
+  try {
+    await checkAttestation(request, bytes, env);
+    return null;
+  } catch (e) {
+    if (e instanceof AttestationFailed) {
+      console.log(
+        JSON.stringify({ msg: "attestation failed", path: new URL(request.url).pathname, reason: e.message }),
+      );
+      return error(
+        403,
+        "attestation_failed",
+        "Use the ZapaKid app from Google Play or the App Store on a genuine device.",
+      );
+    }
+    if (e instanceof AttestationUnavailable) {
+      console.error(JSON.stringify({ msg: "attestation unavailable", reason: e.message }));
+      return error(503, "attestation_unavailable", "Sign-in is unavailable right now. Try again later.");
+    }
+    throw e;
+  }
 }
 
 export async function handleNonce(_request: Request, env: Env): Promise<Response> {

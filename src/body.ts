@@ -18,6 +18,11 @@ export class BadRequest extends Error {
 export const invalid = (message: string) => new BadRequest(400, "invalid_request", message);
 
 export async function readJson(request: Request): Promise<Record<string, unknown>> {
+  return (await readJsonBody(request)).body;
+}
+
+// The parsed object and the exact bytes received (Play Integrity binds its token to their SHA-256).
+export async function readJsonBody(request: Request): Promise<{ body: Record<string, unknown>; bytes: Uint8Array }> {
   const type = request.headers.get("content-type") ?? "";
   if (!/^application\/json\s*(;|$)/i.test(type)) {
     throw new BadRequest(415, "unsupported_media_type", "Send Content-Type: application/json.");
@@ -32,7 +37,7 @@ export async function readJson(request: Request): Promise<Record<string, unknown
     throw invalid("The body is not valid JSON.");
   }
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw invalid("Send a JSON object.");
-  return value as Record<string, unknown>;
+  return { body: value as Record<string, unknown>, bytes };
 }
 
 // Reads the body but stops as soon as it passes the limit (chunked bodies have no Content-Length).

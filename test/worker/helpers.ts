@@ -46,17 +46,21 @@ export interface JwksStub {
   google: JWK[];
   calls: string[];
   fail: boolean;
+  // Other URLs a test serves (Google's OAuth and Play Integrity endpoints); undefined = unexpected.
+  other?: (url: string, init: RequestInit | undefined) => Promise<Response> | undefined;
 }
 
 // Replaces global fetch for the two JWKS URLs; anything else fails the test.
 export function stubJwks(apple: TestIssuer[], google: TestIssuer[]): JwksStub {
   const stub: JwksStub = { apple: apple.map((i) => i.jwk), google: google.map((i) => i.jwk), calls: [], fail: false };
-  vi.spyOn(globalThis, "fetch").mockImplementation((input: RequestInfo | URL) => {
+  vi.spyOn(globalThis, "fetch").mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
     const url = input instanceof Request ? input.url : input.toString();
     stub.calls.push(url);
     if (stub.fail) return Promise.resolve(new Response("unavailable", { status: 503 }));
     if (url === APPLE_JWKS) return Promise.resolve(Response.json({ keys: stub.apple }));
     if (url === GOOGLE_JWKS) return Promise.resolve(Response.json({ keys: stub.google }));
+    const other = stub.other?.(url, init);
+    if (other) return other;
     return Promise.reject(new Error(`unexpected fetch ${url}`));
   });
   return stub;
@@ -104,6 +108,12 @@ export const ADULT_GOOGLE = {
 } as const;
 
 // Calls the Worker module directly (same module instance as the test), so tests can reset its JWKS cache.
+// A Request typed as the Worker's fetch expects (the runtime adds `cf`; tests don't).
+export function workerRequest(url: string, init: RequestInit = {}): Parameters<typeof worker.fetch>[0] {
+  const request: Request = new Request(url, init);
+  return request as Parameters<typeof worker.fetch>[0];
+}
+
 // Each call comes from a random private IP (unless the test sets cf-connecting-ip), so the auth rate
 // limit only applies in test/worker/rate-limit.test.ts.
 export function call(path: string, init: RequestInit = {}): Promise<Response> {

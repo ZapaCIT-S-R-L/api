@@ -1,13 +1,13 @@
 // Sign in with Apple on Android, through Apple's web flow (openapi.yaml: /v1/auth/apple/web, /callback,
 // /exchange). The app proves it started the flow with PKCE (S256); Apple's identity token is verified at the
 // callback and never leaves the server or is stored; the app gets only a one-time code in the app link fragment.
-import { BadRequest, invalid, nonce, onlyFields, parseAgeRange, readForm, readJson } from "./body";
+import { BadRequest, invalid, nonce, onlyFields, parseAgeRange, readForm, readJson, readJsonBody } from "./body";
 import { randomBase64Url, sha256Base64Url, sha256Hex } from "./crypto";
 import type { Env } from "./env";
 import { error, json } from "./http";
 import { ProviderUnavailable } from "./jwks";
 import { InvalidToken, verifyIdToken, type Identity } from "./providers";
-import { finishSignIn } from "./routes";
+import { attest, finishSignIn } from "./routes";
 
 const FLOW_TTL_SECONDS = 600;
 const CODE_TTL_SECONDS = 120;
@@ -126,7 +126,7 @@ interface FlowRow {
 }
 
 export async function handleAppleWebExchange(request: Request, env: Env): Promise<Response> {
-  const body = await readJson(request);
+  const { body, bytes } = await readJsonBody(request);
   onlyFields(body, ["code", "codeVerifier", "nonce", "ageRange"], "the body");
   if (typeof body.code !== "string" || !TOKEN_43.test(body.code)) throw invalid("code is required.");
   if (typeof body.codeVerifier !== "string" || !VERIFIER.test(body.codeVerifier)) {
@@ -134,6 +134,8 @@ export async function handleAppleWebExchange(request: Request, env: Env): Promis
   }
   const sentNonce = nonce(body);
   const ageRange = parseAgeRange(body.ageRange);
+  const refused = await attest(request, bytes, env);
+  if (refused) return refused;
 
   // Any attempt uses the code up, so a wrong verifier can't be retried.
   const row = await env.DB.prepare("DELETE FROM apple_web_flows WHERE code_hash = ? RETURNING *")

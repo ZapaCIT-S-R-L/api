@@ -47,15 +47,22 @@ tags:
       the `nonce` parameter). 3) `POST /v1/auth/apple` or `/v1/auth/google` with the token, the age range and the
       raw `nonce`. Each nonce works once, for 10 minutes; a replayed token is rejected (`401 invalid_nonce`).
 
-      **Before launch** sign-in will also require app attestation (see `Draft: App attestation`). The apps must
-      integrate App Attest and Play Integrity before launch.
+      **App attestation** (`ZapaKid-Attestation` header). Only genuine ZapaKid apps on genuine devices may sign
+      in. Android: a *standard* Play Integrity token (`StandardIntegrityManager`, cloud project of the app) whose
+      `requestHash` is the lowercase hex SHA-256 of the exact request body bytes, on `POST /v1/auth/google` and
+      `POST /v1/auth/apple/exchange`. The server decodes it with Google (`decodeIntegrityToken`) and requires:
+      package `ro.zapakid.app` (request and app), the request hash, a timestamp under 10 minutes old,
+      `appRecognitionVerdict = PLAY_RECOGNIZED`, ZapaKid's signing certificate, `MEETS_DEVICE_INTEGRITY` and
+      `appLicensingVerdict = LICENSED`. iOS: Apple App Attest (next; see `Draft: App attestation`).
+      Policy per environment: `required` (production, from launch) rejects a missing or failing attestation with
+      `403 attestation_failed`; `optional` (staging until Play Integrity is set up) lets a missing header through
+      but still rejects a failing one. The body hash includes the one-time nonce, so a token can't be replayed.
   - name: Account
     description: The signed-in parent's own account.
   - name: "Draft: App attestation"
     description: |
-      Planned. Only genuine ZapaKid apps may call the API: Apple App Attest on iOS, Google Play Integrity on
-      Android, both verified on the server. A device first registers an attestation, then signs sensitive requests
-      with an assertion (iOS) or sends a fresh integrity token (Android) in the `ZapaKid-Attestation` header.
+      Planned for iOS: Apple App Attest. A device first registers an attested key, then signs sign-in requests with
+      an assertion in the `ZapaKid-Attestation` header. Play Integrity (Android) is implemented: see `Sign-in`.
       **Required on sign-in from launch** (decided 2026-10-26): the apps must integrate App Attest and Play
       Integrity before launch. Requests from clients that fail the checks get `403 attestation_failed`.
   - name: "Draft: Families"
@@ -163,6 +170,7 @@ paths:
         (`https://appleid.apple.com/auth/keys`): signature (RS256), issuer `https://appleid.apple.com`, audience
         (the iOS bundle id, or the Apple Services ID for the web flow on Android), expiry. The first sign-in creates the parent's account. Each sign-in starts a new
         session.
+      parameters: [{ $ref: "#/components/parameters/attestation" }]
       security: []
       requestBody:
         required: true
@@ -268,6 +276,7 @@ paths:
         Checks the code (once, within 2 minutes), PKCE (`base64url(SHA-256(codeVerifier))` = the flow's
         `codeChallenge`), and the nonce rules of `POST /v1/auth/apple` (Apple's token carried SHA-256 of `nonce`;
         the nonce is used up). Then the age range, exactly as for the other sign-ins.
+      parameters: [{ $ref: "#/components/parameters/attestation" }]
       security: []
       requestBody:
         required: true
@@ -294,6 +303,7 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "403": { $ref: "#/components/responses/AgeNotAllowed" }
         "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ProviderUnavailable" }
 
   /v1/auth/google:
     post:
@@ -306,6 +316,7 @@ paths:
         (`https://www.googleapis.com/oauth2/v3/certs`): signature (RS256), issuer `https://accounts.google.com`,
         audience (one of ZapaKid's OAuth client ids), expiry. The email is stored only when Google says it is
         verified.
+      parameters: [{ $ref: "#/components/parameters/attestation" }]
       security: []
       requestBody:
         required: true
@@ -396,33 +407,6 @@ paths:
                 challenge: { $ref: "#/components/schemas/Base64Url" }
       responses:
         "204": { description: "Registered." }
-        "403": { $ref: "#/components/responses/AttestationFailed" }
-
-  /v1/attestation/google:
-    post:
-      tags: ["Draft: App attestation"]
-      operationId: verifyPlayIntegrity
-      x-status: draft
-      summary: Check a Google Play Integrity token for this device.
-      description: |
-        The app requests a standard Play Integrity token with `requestHash` = SHA-256 of the request, or a classic
-        token with the challenge as nonce. The server decodes it with Google's `decodeIntegrityToken` API and
-        requires `appRecognitionVerdict = PLAY_RECOGNIZED`, package `ro.zapakid.app`, the release signing
-        certificate, `deviceRecognitionVerdict` containing `MEETS_DEVICE_INTEGRITY`, `appLicensingVerdict = LICENSED`
-        and a matching, fresh request hash or nonce.
-      security: []
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [integrityToken, challenge]
-              properties:
-                integrityToken: { type: string, maxLength: 16384 }
-                challenge: { $ref: "#/components/schemas/Base64Url" }
-      responses:
-        "204": { description: "Genuine." }
         "403": { $ref: "#/components/responses/AttestationFailed" }
 
   /v1/families:
@@ -776,6 +760,14 @@ components:
       description: The opaque session token from sign-in (`zks_` + 43 base64url characters).
 
   parameters:
+    attestation:
+      name: ZapaKid-Attestation
+      in: header
+      required: false
+      description: |
+        App attestation for this request (see `Sign-in`). Android: the standard Play Integrity token, with
+        `requestHash` = lowercase hex SHA-256 of the body. Required where the policy is `required`.
+      schema: { type: string, maxLength: 16384 }
     familyId: { name: familyId, in: path, required: true, schema: { type: string } }
     kidId: { name: kidId, in: path, required: true, schema: { type: string } }
     connectionId: { name: connectionId, in: path, required: true, schema: { type: string } }
@@ -803,6 +795,9 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
     AgeNotAllowed:
       description: |
+        `attestation_failed`: no valid app attestation (not the genuine ZapaKid app from Google Play / the App
+        Store, or not a genuine device). Nothing is checked or stored after it; the nonce stays usable.
+
         Only adults (18+) can sign in as parents. Nothing is stored, and the nonce is used up.
         `minor_not_allowed`: the shared age range is under 18, or doesn't show 18+ (for example "16 and up").
         `age_declined`: the user declined to share their age range. The app can ask again and retry.
@@ -836,7 +831,9 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     ProviderUnavailable:
-      description: "`provider_unavailable`: Apple's or Google's keys could not be fetched. Retry later."
+      description: |
+        `provider_unavailable`: Apple's or Google's keys could not be fetched. `attestation_unavailable`: Google's
+        Play Integrity API could not be reached or isn't configured. Retry later.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }

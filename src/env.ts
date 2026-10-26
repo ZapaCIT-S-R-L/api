@@ -11,6 +11,14 @@ export interface Env {
   // Where the Apple web flow (Android) hands the result back to the app: an Android App Link.
   APPLE_WEB_REDIRECT_URL: string;
   SESSION_TTL_SECONDS: string;
+  // App attestation on sign-in: "required" (missing or failing → 403) or "optional" (missing is let through).
+  ATTESTATION_POLICY: string;
+  // Play Integrity: the app's package, and its signing certificate SHA-256 digests as Play reports them (comma
+  // separated: Play app signing key, and the upload key for internal testing if needed).
+  PLAY_PACKAGE_NAME: string;
+  PLAY_CERT_SHA256: string;
+  // Secret (wrangler secret put): the Google service account JSON allowed to decode integrity tokens.
+  PLAY_INTEGRITY_CREDENTIALS?: string;
   // Local development only: a JWKS URL on 127.0.0.1/localhost for test keys. Anything else is ignored.
   APPLE_JWKS_URL?: string;
   GOOGLE_JWKS_URL?: string;
