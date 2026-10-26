@@ -69,3 +69,7 @@ test("auth rate limits: staging and production 20 per minute, separate counters 
   const ids = [limiter(rawConfig), limiter(staging), limiter(production)].map((r) => r.namespace_id);
   assert.equal(new Set(ids).size, 3);
 });
+
+test("staging and production purge expired sessions and nonces daily", () => {
+  for (const env of [staging, production]) assert.deepEqual(env.triggers, { crons: ["17 3 * * *"] });
+});
