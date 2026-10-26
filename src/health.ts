@@ -22,10 +22,12 @@ function problems(env: Env): string[] {
   } catch {
     found.push("SESSION_TTL_SECONDS invalid");
   }
-  if (present.ATTESTATION_POLICY !== "required" && present.ATTESTATION_POLICY !== "optional") {
-    found.push("ATTESTATION_POLICY not required or optional");
+  if (!["required", "allowlist", "optional"].includes(present.ATTESTATION_POLICY ?? "")) {
+    found.push("ATTESTATION_POLICY not required, allowlist or optional");
   }
   if (!present.PLAY_PACKAGE_NAME) found.push("PLAY_PACKAGE_NAME empty");
+  // Only "required" can't work without them; under "allowlist" (staging) a missing service account makes attested
+  // requests answer 503 until it is set, which shouldn't fail every deploy.
   if (present.ATTESTATION_POLICY === "required") {
     if (!parseCredentials(present.PLAY_INTEGRITY_CREDENTIALS))
       found.push("PLAY_INTEGRITY_CREDENTIALS missing or invalid");

@@ -55,8 +55,10 @@ Play Integrity (Android app attestation on sign-in, `ATTESTATION_POLICY` in `wra
 3. Store the key as a Worker secret, never in git: `npx wrangler secret put PLAY_INTEGRITY_CREDENTIALS --env staging`
    (paste the JSON), then delete the downloaded file.
 4. Set `PLAY_CERT_SHA256` per environment to the app signing key's SHA-256 as Play Integrity reports it
-   (base64url, no padding; Play Console → App integrity → App signing), and switch staging's `ATTESTATION_POLICY`
-   to `required`, in a PR.
+   (base64url, no padding; Play Console → App integrity → App signing), in a PR.
+5. Staging only, optional: test accounts that may sign in without attestation (debug builds Play doesn't
+   recognise) go in the secret `ATTESTATION_ALLOWLIST`, comma separated `google:<sub>` / `apple:<sub>`:
+   `npx wrangler secret put ATTESTATION_ALLOWLIST --env staging`. Production has no allowlist (`required`).
 
 `/health` answers 503 and names what is missing when the policy is `required` and the secret or certificate is not
 set.

@@ -126,15 +126,28 @@ function check(verdict: Verdict, requestHash: string, env: Env): void {
   if (verdict.accountDetails?.appLicensingVerdict !== "LICENSED") fail("licensing");
 }
 
-// Throws AttestationFailed (→ 403) or AttestationUnavailable (→ 503); returns when the request may go on.
-export async function checkAttestation(request: Request, bytes: Uint8Array, env: Env): Promise<void> {
+// Policies (ATTESTATION_POLICY): "required" (production: no header → refused), "allowlist" (staging: no header
+// only for accounts in the ATTESTATION_ALLOWLIST secret), "optional" (local development: no header → allowed).
+// A header, when present, is always checked in full.
+export type AttestationResult = "attested" | "allowlist" | "unchecked";
+
+// Throws AttestationFailed (→ 403) or AttestationUnavailable (→ 503). "allowlist": the caller must check the
+// verified identity with isAllowlisted() before it uses anything up.
+export async function checkAttestation(request: Request, bytes: Uint8Array, env: Env): Promise<AttestationResult> {
   const header = request.headers.get(ATTESTATION_HEADER);
   if (!header) {
-    if (env.ATTESTATION_POLICY === "optional") return;
+    if (env.ATTESTATION_POLICY === "optional") return "unchecked";
+    if (env.ATTESTATION_POLICY === "allowlist") return "allowlist";
     throw new AttestationFailed("no attestation");
   }
   if (header.length > 16384) throw new AttestationFailed("attestation too long");
   const credentials = parseCredentials(env.PLAY_INTEGRITY_CREDENTIALS);
   if (!credentials) throw new AttestationUnavailable("PLAY_INTEGRITY_CREDENTIALS not set");
   check(await decode(header, env, credentials), await sha256Hex(bytes), env);
+  return "attested";
+}
+
+// Whether this verified identity may sign in without attestation (staging test accounts, "provider:subject").
+export function isAllowlisted(env: Env, provider: string, subject: string): boolean {
+  return list(env.ATTESTATION_ALLOWLIST ?? "").includes(`${provider}:${subject}`);
 }
