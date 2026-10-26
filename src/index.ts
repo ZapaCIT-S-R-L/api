@@ -2,6 +2,7 @@
 import { BadRequest } from "./body";
 import type { Env } from "./env";
 import { error, json } from "./http";
+import { purgeExpired } from "./purge";
 import { limitAuth } from "./rate-limit";
 import { handleLogout, handleMe, handleNonce, handleSignIn } from "./routes";
 
@@ -41,5 +42,9 @@ export default {
       console.error(JSON.stringify({ msg: "unhandled", path: url.pathname, err: String(e) }));
       return error(500, "server_error", "Something went wrong.");
     }
+  },
+
+  async scheduled(_controller, env): Promise<void> {
+    await purgeExpired(env);
   },
 } satisfies ExportedHandler<Env>;
