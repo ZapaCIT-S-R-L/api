@@ -281,6 +281,20 @@ describe("bad requests", () => {
     await expectError(res, 413, "payload_too_large");
   });
 
+  it("a streamed body over 16 KiB without Content-Length → 413", async () => {
+    const chunk = new TextEncoder().encode("x".repeat(4096));
+    let sent = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (sent++ < 10) controller.enqueue(chunk);
+        else controller.close();
+      },
+    });
+    const res = await call("/v1/auth/apple", { method: "POST", headers: { "content-type": "application/json" }, body });
+    await expectError(res, 413, "payload_too_large");
+    expect(sent).toBeLessThan(10);
+  });
+
   it("GET → 405", async () => {
     const res = await call("/v1/auth/apple");
     expect(res.status).toBe(405);

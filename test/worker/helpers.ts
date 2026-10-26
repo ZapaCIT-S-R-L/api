@@ -1,6 +1,5 @@
 // Test-only identity providers: RSA keys generated per test run, tokens signed with them, and a fetch stub that
 // serves their public keys at Apple's and Google's real JWKS URLs. No real token or key is ever used.
-import { createExecutionContext, waitOnExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { exportJWK, generateKeyPair, SignJWT, type JWK, type JWTPayload } from "jose";
 import { vi } from "vitest";
@@ -61,7 +60,8 @@ export function stubJwks(apple: TestIssuer[], google: TestIssuer[]): JwksStub {
   return stub;
 }
 
-export function appleClaims(overrides: JWTPayload = {}): JWTPayload {
+// Overrides may set a claim to undefined to leave it out.
+export function appleClaims(overrides: Record<string, unknown> = {}): JWTPayload {
   return {
     iss: APPLE_ISSUER,
     aud: APPLE_AUDIENCE,
@@ -72,7 +72,7 @@ export function appleClaims(overrides: JWTPayload = {}): JWTPayload {
   };
 }
 
-export function googleClaims(overrides: JWTPayload = {}): JWTPayload {
+export function googleClaims(overrides: Record<string, unknown> = {}): JWTPayload {
   return {
     iss: GOOGLE_ISSUER,
     aud: GOOGLE_AUDIENCE,
@@ -94,11 +94,9 @@ export const ADULT_GOOGLE = {
 } as const;
 
 // Calls the Worker module directly (same module instance as the test), so tests can reset its JWKS cache.
-export async function call(path: string, init: RequestInit = {}): Promise<Response> {
-  const ctx = createExecutionContext();
-  const res = await worker.fetch(new Request(`https://api.test${path}`, init), env, ctx);
-  await waitOnExecutionContext(ctx);
-  return res;
+export function call(path: string, init: RequestInit = {}): Promise<Response> {
+  const request = new Request(`https://api.test${path}`, init) as Parameters<typeof worker.fetch>[0];
+  return worker.fetch(request, env);
 }
 
 export function postJson(path: string, body: unknown, headers: Record<string, string> = {}): Promise<Response> {
