@@ -1,0 +1,47 @@
+// Tests for wrangler.jsonc: deployed environments use only the real Apple and Google keys and ZapaKid's app ids,
+// keep data in the EU, and never get the local test overrides.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { experimental_readRawConfig } from "wrangler";
+
+const { rawConfig } = experimental_readRawConfig({ config: "wrangler.jsonc" });
+const staging = rawConfig.env.staging;
+
+test("staging serves api-staging.zapakid.ro only, no workers.dev or preview URLs", () => {
+  assert.deepEqual(staging.routes, [{ pattern: "api-staging.zapakid.ro", custom_domain: true }]);
+  assert.equal(staging.workers_dev, false);
+  assert.equal(staging.preview_urls, false);
+});
+
+test("no environment touches api.zapakid.ro yet (it still serves v0.1)", () => {
+  for (const [name, env] of Object.entries(rawConfig.env)) {
+    for (const route of env.routes ?? []) assert.notEqual(route.pattern, "api.zapakid.ro", name);
+  }
+  assert.equal(rawConfig.routes, undefined);
+});
+
+test("staging never overrides the Apple or Google key URLs", () => {
+  assert.equal(staging.vars.APPLE_JWKS_URL, undefined);
+  assert.equal(staging.vars.GOOGLE_JWKS_URL, undefined);
+});
+
+test("staging accepts Apple tokens for the ZapaKid app only", () => {
+  assert.equal(staging.vars.APPLE_AUDIENCES, "com.zapacit.cuzaai");
+});
+
+test("staging Google client ids are real OAuth client ids or empty (Google sign-in off)", () => {
+  const ids = staging.vars.GOOGLE_CLIENT_IDS.split(",").filter(Boolean);
+  for (const id of ids) assert.match(id, /^\d+-[a-z0-9]+\.apps\.googleusercontent\.com$/);
+  assert.ok(!ids.some((id) => id.includes("local-test")));
+});
+
+test("staging session TTL is between 1 day and 90 days", () => {
+  const ttl = Number(staging.vars.SESSION_TTL_SECONDS);
+  assert.ok(Number.isInteger(ttl) && ttl >= 86_400 && ttl <= 7_776_000, String(ttl));
+});
+
+test("staging has its own D1 database", () => {
+  assert.equal(staging.d1_databases.length, 1);
+  assert.equal(staging.d1_databases[0].binding, "DB");
+  assert.equal(staging.d1_databases[0].database_name, "zapakid-api-staging");
+});
