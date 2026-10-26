@@ -1,4 +1,5 @@
 // ZapaKid API Worker. The server only ever sees public keys and ciphertext; it can never decrypt a chat.
+import { handleAppleAttestation, handleChallenge } from "./app-attest";
 import { handleAppleWebCallback, handleAppleWebExchange, handleAppleWebStart } from "./apple-web";
 import { BadRequest } from "./body";
 import { handleHealth } from "./health";
@@ -14,6 +15,8 @@ type Handler = (request: Request, env: Env) => Response | Promise<Response>;
 const ROUTES: Record<string, { method: string; handler: Handler; limited?: true }> = {
   "/health": { method: "GET", handler: handleHealth },
   "/v1/auth/nonce": { method: "POST", handler: handleNonce, limited: true },
+  "/v1/attestation/challenge": { method: "POST", handler: handleChallenge, limited: true },
+  "/v1/attestation/apple": { method: "POST", handler: handleAppleAttestation, limited: true },
   "/v1/auth/apple": { method: "POST", handler: (request, env) => handleSignIn(request, env, "apple"), limited: true },
   "/v1/auth/apple/web": { method: "POST", handler: handleAppleWebStart, limited: true },
   "/v1/auth/apple/callback": { method: "POST", handler: handleAppleWebCallback, limited: true },

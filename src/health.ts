@@ -26,6 +26,8 @@ function problems(env: Env): string[] {
     found.push("ATTESTATION_POLICY not required, allowlist or optional");
   }
   if (!present.PLAY_PACKAGE_NAME) found.push("PLAY_PACKAGE_NAME empty");
+  if (!/^[A-Z0-9]{10}\.[a-z0-9.-]+$/i.test(present.APP_ATTEST_APP_ID ?? "")) found.push("APP_ATTEST_APP_ID invalid");
+  if (!present.APP_ATTEST_ENVIRONMENTS?.trim()) found.push("APP_ATTEST_ENVIRONMENTS empty");
   // Only "required" can't work without them; under "allowlist" (staging) a missing service account makes attested
   // requests answer 503 until it is set, which shouldn't fail every deploy.
   if (present.ATTESTATION_POLICY === "required") {

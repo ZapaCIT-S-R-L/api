@@ -5,7 +5,7 @@ import * as asn1js from "asn1js";
 import { encode } from "cborg";
 import * as pkijs from "pkijs";
 
-pkijs.setEngine("workerd-tests", new pkijs.CryptoEngine({ name: "workerd-tests", crypto }));
+const engine = new pkijs.CryptoEngine({ name: "workerd-tests", crypto }) as unknown as pkijs.ICryptoEngine;
 
 export const APP_ID = "9572LYGZ7S.ro.zapakid.app";
 const NONCE_OID = "1.2.840.113635.100.8.2";
@@ -50,7 +50,7 @@ async function certificate(options: {
   cert.issuer = name(options.issuer);
   cert.notBefore.value = new Date(Date.now() - 86_400_000);
   cert.notAfter.value = options.notAfter ?? new Date(Date.now() + 365 * 86_400_000);
-  await cert.subjectPublicKeyInfo.importKey(options.publicKey);
+  await cert.subjectPublicKeyInfo.importKey(options.publicKey, engine);
   cert.extensions = [
     new pkijs.Extension({
       extnID: "2.5.29.19",
@@ -59,7 +59,7 @@ async function certificate(options: {
     }),
     ...(options.extensions ?? []),
   ];
-  await cert.sign(options.signingKey, options.hash);
+  await cert.sign(options.signingKey, options.hash, engine);
   return cert;
 }
 
@@ -115,7 +115,7 @@ export class FakeDevice {
 
   static async create(apple: FakeApple): Promise<FakeDevice> {
     const keys = (await crypto.subtle.generateKey(P256, true, ["sign", "verify"])) as CryptoKeyPair;
-    const point = new Uint8Array(await crypto.subtle.exportKey("raw", keys.publicKey));
+    const point = new Uint8Array((await crypto.subtle.exportKey("raw", keys.publicKey)) as ArrayBuffer);
     return new FakeDevice(keys, await sha256(point), apple);
   }
 

@@ -60,6 +60,11 @@ Play Integrity (Android app attestation on sign-in, `ATTESTATION_POLICY` in `wra
    recognise) go in the secret `ATTESTATION_ALLOWLIST`, comma separated `google:<sub>` / `apple:<sub>`:
    `npx wrangler secret put ATTESTATION_ALLOWLIST --env staging`. Production has no allowlist (`required`).
 
+App Attest (iOS app attestation): nothing to set up on Cloudflare. The App ID `ro.zapakid.app` (team `9572LYGZ7S`)
+has App Attest enabled; the API pins Apple's App Attestation Root CA (`src/app-attest-root.ts`) and accepts
+development keys (Xcode builds) on staging only (`APP_ATTEST_ENVIRONMENTS`). Simulators can't attest: on staging
+they sign in as allowlisted test accounts (`ATTESTATION_ALLOWLIST`).
+
 `/health` answers 503 and names what is missing when the policy is `required` and the secret or certificate is not
 set.
 

@@ -18,6 +18,9 @@ export interface Env {
   // separated: Play app signing key, and the upload key for internal testing if needed).
   PLAY_PACKAGE_NAME: string;
   PLAY_CERT_SHA256: string;
+  // App Attest: "<team id>.<bundle id>", and the key environments accepted ("development" = Xcode builds).
+  APP_ATTEST_APP_ID: string;
+  APP_ATTEST_ENVIRONMENTS: string;
   // Secret (wrangler secret put): the Google service account JSON allowed to decode integrity tokens.
   PLAY_INTEGRITY_CREDENTIALS?: string;
   // Secret (staging): "provider:subject" test accounts allowed to sign in without attestation, comma separated.
