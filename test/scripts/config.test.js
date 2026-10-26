@@ -87,3 +87,21 @@ test("auth rate limits: staging and production 20 per minute, separate counters 
 test("staging and production purge expired sessions and nonces daily", () => {
   for (const env of [staging, production]) assert.deepEqual(env.triggers, { crons: ["17 3 * * *"] });
 });
+
+// Regression guard: every binding and variable the Worker requires (non-optional fields of Env in src/env.ts)
+// is defined for each deployed environment, since bindings and vars are not inherited from the top level.
+test("staging and production define every binding and var the Worker reads", async () => {
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(new URL("../../src/env.ts", import.meta.url), "utf8");
+  const envBlock = source.slice(source.indexOf("export interface Env {"), source.indexOf("\n}\n"));
+  const required = [...envBlock.matchAll(/^\s+([A-Z][A-Z0-9_]*):/gm)].map((m) => m[1]);
+  assert.ok(required.includes("DB") && required.includes("VERSION"), "parsed src/env.ts");
+  for (const [name, env] of Object.entries({ staging, production })) {
+    const defined = new Set([
+      ...Object.keys(env.vars ?? {}),
+      ...(env.d1_databases ?? []).map((d) => d.binding),
+      ...(env.ratelimits ?? []).map((r) => r.name),
+    ]);
+    for (const key of required) assert.ok(defined.has(key), `${name} is missing ${key}`);
+  }
+});
