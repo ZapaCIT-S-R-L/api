@@ -4,6 +4,7 @@ import type { Env } from "./env";
 import type { Identity } from "./providers";
 import { hashToken, newToken, ttlSeconds } from "./sessions";
 
+// D1 column age_category: "adult", or "unknown" = the platform's age API was unavailable (API: "unavailable").
 interface ParentRow {
   id: string;
   email: string | null;
@@ -22,7 +23,7 @@ export interface Parent {
   email: string | null;
   displayName: string | null;
   ageRange: {
-    category: "adult" | "unknown";
+    category: "adult" | "unavailable";
     source: AgeRange["source"];
     lowerBound: number | null;
     upperBound: number | null;
@@ -38,7 +39,7 @@ function toParent(row: ParentRow): Parent {
     email: row.email,
     displayName: row.display_name,
     ageRange: {
-      category: row.age_category,
+      category: row.age_category === "adult" ? "adult" : "unavailable",
       source: row.age_source,
       lowerBound: row.age_lower,
       upperBound: row.age_upper,
@@ -61,12 +62,12 @@ export interface SignInResult {
 }
 
 // Finds or creates the parent for this identity, records the age range and starts a session, in one D1 batch
-// (a transaction). The age category here is never "minor": the caller rejects minors before.
+// (a transaction). The caller has already rejected minors and declined age ranges.
 export async function signIn(
   env: Env,
   identity: Identity,
   age: AgeRange,
-  category: "adult" | "unknown",
+  category: "adult" | "unavailable",
   displayName: string | null,
 ): Promise<SignInResult> {
   const now = new Date();
@@ -82,7 +83,8 @@ export async function signIn(
       .bind(identity.provider, identity.subject)
       .first<{ parent_id: string }>();
     const parentId = existing?.parent_id ?? crypto.randomUUID();
-    const ageValues = [category, age.source, age.lowerBound, age.upperBound, age.platformStatus, nowIso] as const;
+    const dbCategory = category === "adult" ? "adult" : "unknown";
+    const ageValues = [dbCategory, age.source, age.lowerBound, age.upperBound, age.platformStatus, nowIso] as const;
     const statements = existing
       ? [
           db

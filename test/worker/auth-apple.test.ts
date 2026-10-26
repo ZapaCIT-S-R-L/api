@@ -128,7 +128,7 @@ describe("valid token", () => {
 
   it("accepts a key Apple rotated in (unknown kid → fetch the keys again)", async () => {
     await signIn({ identityToken: await apple.sign(appleClaims()), ageRange: ADULT });
-    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + 10 * 60_000 });
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() + 6 * 60_000 }); // past the 5-minute refetch cooldown, within the nonce TTL
     const rotated = await makeIssuer();
     jwks.apple = [apple.jwk, rotated.jwk];
     const res = await signIn({ identityToken: await rotated.sign(appleClaims()), ageRange: ADULT });

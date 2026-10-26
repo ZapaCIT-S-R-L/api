@@ -1,9 +1,10 @@
 // The stable v1 endpoints: sign-in with Apple or Google, the signed-in parent, logout.
-import { classify } from "./age";
+import { decide } from "./age";
 import { appleSignIn, googleSignIn, readJson, type SignInRequest } from "./body";
 import type { Env } from "./env";
 import { empty, error, json } from "./http";
 import { ProviderUnavailable } from "./jwks";
+import { checkNonceClaim, consumeNonce, InvalidNonce, issueNonce } from "./nonces";
 import { getParent, signIn } from "./parents";
 import { InvalidToken, verifyIdToken, type Provider } from "./providers";
 import { authenticate } from "./sessions";
@@ -32,14 +33,31 @@ export async function handleSignIn(request: Request, env: Env, provider: Provide
     throw e;
   }
 
-  const category = classify(input.ageRange);
-  if (category === "minor") {
-    console.log(JSON.stringify({ msg: "sign-in rejected", provider, reason: "minor", source: input.ageRange.source }));
-    return error(403, "minor_not_allowed", "Only adults (18+) can create a ZapaKid parent account.");
+  // The token must carry this sign-in's nonce; the nonce is used up only for a genuine token, before the age
+  // check, so a rejected age range can't be retried with the same token.
+  try {
+    const claim = await checkNonceClaim(identity.nonce, input.nonce);
+    await consumeNonce(env, claim);
+  } catch (e) {
+    if (!(e instanceof InvalidNonce)) throw e;
+    console.log(JSON.stringify({ msg: "sign-in rejected", provider, reason: e.message }));
+    return error(401, "invalid_nonce", "The sign-in nonce is missing, wrong, expired or used. Get a new one.");
   }
 
-  const result = await signIn(env, identity, input.ageRange, category, input.displayName);
+  const age = decide(input.ageRange);
+  if (age === "minor" || age === "declined") {
+    console.log(JSON.stringify({ msg: "sign-in rejected", provider, reason: age, source: input.ageRange.source }));
+    return age === "minor"
+      ? error(403, "minor_not_allowed", "Only adults (18+) can create a ZapaKid parent account.")
+      : error(403, "age_declined", "Share your age range to sign in: only adults (18+) can be parents.");
+  }
+
+  const result = await signIn(env, identity, input.ageRange, age, input.displayName);
   return json(result);
+}
+
+export async function handleNonce(_request: Request, env: Env): Promise<Response> {
+  return json(await issueNonce(env));
 }
 
 export async function handleMe(request: Request, env: Env): Promise<Response> {
