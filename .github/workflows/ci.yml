@@ -86,6 +86,8 @@ jobs:
           node-version-file: .nvmrc
       - run: npm ci
       - run: npm run lint
+        env:
+          REDOCLY_TELEMETRY: "off"
       - run: docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12 -color
 
   cla:

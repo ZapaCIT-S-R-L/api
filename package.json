@@ -8,7 +8,7 @@
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.node.json",
     "lint": "prettier --check . && eslint . && npm run typecheck && npm run lint:api",
-    "lint:api": "REDOCLY_TELEMETRY=off REDOCLY_SUPPRESS_UPDATE_NOTICE=true redocly lint openapi.yaml",
+    "lint:api": "redocly lint openapi.yaml",
     "format": "prettier --write ."
   },
   "dependencies": {
