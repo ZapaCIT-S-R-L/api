@@ -127,6 +127,7 @@ describe("invalid token → 401 invalid_token", () => {
 describe("minor", () => {
   it("a supervised account (13-15) → 403, nothing stored", async () => {
     const ageRange = {
+      availability: "shared",
       source: "google_play_age_signals",
       lowerBound: 13,
       upperBound: 15,
