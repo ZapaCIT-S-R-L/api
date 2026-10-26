@@ -1,0 +1,844 @@
+openapi: 3.1.0
+info:
+  title: ZapaKid API
+  version: 1.0.0
+  summary: Backend for ZapaKid, an end-to-end encrypted chat for families.
+  description: |
+    The apps encrypt and decrypt with [libsignal](https://github.com/signalapp/libsignal). This API only stores
+    public keys, ciphertext and the metadata it needs to route messages. It can never decrypt a chat, and it has no
+    cryptography of its own beyond verifying Apple and Google sign-in tokens and hashing session tokens.
+
+    **Stability.** Endpoints tagged `Health`, `Sign-in` and `Account` are stable: the apps build against them and
+    they only change in a backward-compatible way. Every endpoint tagged `Draft: ...` (and marked `x-status: draft`)
+    is a plan, not implemented yet, and will change.
+
+    **Transport.** HTTPS only, TLS 1.3 only, HSTS. No cookies and no CORS: the API is for the ZapaKid apps, not for
+    browsers.
+
+    **Data location.** All data stays in the EU (Cloudflare D1 and R2 with EU jurisdiction).
+
+    **Errors** are JSON `{"error": {"code": "...", "message": "..."}}`. Apps branch on `code`; `message` is for logs
+    and may change.
+
+    **Sessions.** Sign-in returns an opaque session token. Send it as `Authorization: Bearer <token>`. The server
+    stores only its SHA-256 hash. A session expires at `expiresAt`; sign in again after that.
+  license:
+    name: AGPL-3.0-only
+    identifier: AGPL-3.0-only
+  contact:
+    name: ZapaCIT SRL
+    url: https://github.com/ZapaCIT-S-R-L/api
+servers:
+  - url: https://api-staging.zapakid.ro
+    description: Staging
+  - url: https://api.zapakid.ro
+    description: Production (after the v1 cutover; today it still serves the old v0.1 API)
+
+tags:
+  - name: Health
+    description: Liveness, for monitoring and the post-deploy checks.
+  - name: Sign-in
+    description: Parents sign in with Apple or Google. Parents must be adults (18+).
+  - name: Account
+    description: The signed-in parent's own account.
+  - name: "Draft: App attestation"
+    description: |
+      Planned. Only genuine ZapaKid apps may call the API: Apple App Attest on iOS, Google Play Integrity on
+      Android, both verified on the server. A device first registers an attestation, then signs sensitive requests
+      with an assertion (iOS) or sends a fresh integrity token (Android) in the `ZapaKid-Attestation` header.
+      When this ships, sign-in will require the header too; apps should integrate App Attest / Play Integrity
+      before launch. Requests from clients that fail the checks get `403 attestation_failed`.
+  - name: "Draft: Families"
+    description: Planned. A family has one or more parents and the kids they add.
+  - name: "Draft: Kids"
+    description: Planned. A parent adds a kid and pairs the kid's phone by showing a QR code.
+  - name: "Draft: Connections"
+    description: Planned. Parents of different families connect, then each family shares chosen kids.
+  - name: "Draft: Devices and keys"
+    description: |
+      Planned. The key directory for libsignal (X3DH/PQXDH). Each account has one identity key, shared by its
+      devices through the phone keychain. Each device has a registration id, a signed EC prekey, a signed Kyber
+      last-resort prekey and batches of one-time EC and Kyber prekeys. The server stores only public keys and the
+      signatures libsignal made over them; it never sees a private key.
+
+      **Key verification (never silent).** An identity key changes only when the account itself uploads a new one.
+      The server then records the change, tells every peer (an `identity_changed` event in their message stream)
+      and serves the change history. Apps compute safety numbers with libsignal's fingerprint API from both identity
+      keys, let users compare them in person (QR scan), and show a key-change warning before sending to a changed
+      identity. Apps must also check the key themselves (libsignal `IdentityKeyStore`): the server's announcement
+      helps, but the guarantee is that the app never trusts a new key silently, even if the server lies.
+  - name: "Draft: Messages"
+    description: |
+      Planned. Sealed envelopes per recipient device: 1:1 messages are libsignal `PreKeySignalMessage` or
+      `SignalMessage`; group messages are `SenderKeyMessage`, and sender keys travel as pairwise-encrypted
+      `SenderKeyDistributionMessage`. The server sees ciphertext, sender, recipient and time, nothing else.
+      Every chat that includes a kid includes the parents of all families in it; the server enforces that list.
+  - name: "Draft: Attachments"
+    description: |
+      Planned. Photos and voice messages are encrypted on the phone (keys and digest travel inside the encrypted
+      message) and uploaded as opaque blobs to R2 (EU).
+
+security:
+  - session: []
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      operationId: health
+      summary: Is the API up?
+      security: []
+      responses:
+        "200":
+          description: Up.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, version]
+                properties:
+                  status: { const: ok }
+                  version:
+                    type: string
+                    description: The deployed release tag (vMAJOR.MINOR.PATCH), `dev` locally.
+                    examples: [v1.0.3]
+
+  /v1/auth/apple:
+    post:
+      tags: [Sign-in]
+      operationId: signInWithApple
+      summary: Sign in a parent with Sign in with Apple.
+      description: |
+        Send the `identityToken` from Sign in with Apple (`ASAuthorizationAppleIDCredential.identityToken`) and the
+        age range from Apple's Declared Age Range. The server verifies the token against Apple's keys
+        (`https://appleid.apple.com/auth/keys`): signature (RS256), issuer `https://appleid.apple.com`, audience
+        (the app's bundle id), expiry. The first sign-in creates the parent's account. Each sign-in starts a new
+        session.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AppleSignInRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/SignedIn" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/InvalidToken" }
+        "403": { $ref: "#/components/responses/MinorNotAllowed" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "503": { $ref: "#/components/responses/ProviderUnavailable" }
+
+  /v1/auth/google:
+    post:
+      tags: [Sign-in]
+      operationId: signInWithGoogle
+      summary: Sign in a parent with Google.
+      description: |
+        Send the Google ID token (Credential Manager `GoogleIdTokenCredential.idToken`, or Google Sign-In on iOS)
+        and the age range from Google Play Age Signals. The server verifies the token against Google's keys
+        (`https://www.googleapis.com/oauth2/v3/certs`): signature (RS256), issuer `https://accounts.google.com`,
+        audience (one of ZapaKid's OAuth client ids), expiry. The email is stored only when Google says it is
+        verified.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/GoogleSignInRequest" }
+      responses:
+        "200": { $ref: "#/components/responses/SignedIn" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/InvalidToken" }
+        "403": { $ref: "#/components/responses/MinorNotAllowed" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
+        "503": { $ref: "#/components/responses/ProviderUnavailable" }
+
+  /v1/auth/logout:
+    post:
+      tags: [Sign-in]
+      operationId: logout
+      summary: End this session.
+      description: Deletes the session the token belongs to. Other sessions of the same parent stay valid.
+      responses:
+        "204": { description: "Signed out. The token no longer works." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/me:
+    get:
+      tags: [Account]
+      operationId: getMe
+      summary: The signed-in parent.
+      responses:
+        "200":
+          description: The parent's profile.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Parent" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  # ---------------------------------------------------------------------------------------------------------------
+  # Draft endpoints below: planned, not implemented, will change.
+  # ---------------------------------------------------------------------------------------------------------------
+
+  /v1/attestation/challenge:
+    post:
+      tags: ["Draft: App attestation"]
+      operationId: createAttestationChallenge
+      x-status: draft
+      summary: A one-time challenge for App Attest or Play Integrity.
+      description: Random, single use, expires after 5 minutes. Works without a session (needed before sign-in).
+      security: []
+      responses:
+        "200":
+          description: The challenge.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [challenge, expiresAt]
+                properties:
+                  challenge: { $ref: "#/components/schemas/Base64Url" }
+                  expiresAt: { type: string, format: date-time }
+
+  /v1/attestation/apple:
+    post:
+      tags: ["Draft: App attestation"]
+      operationId: registerAppAttestKey
+      x-status: draft
+      summary: Register an Apple App Attest key for this device.
+      description: |
+        The server verifies the attestation object as Apple documents it ("Validating apps that connect to your
+        server"): certificate chain to Apple's App Attest root, nonce = SHA-256(authData ‖ SHA-256(challenge)),
+        App ID `9572LYGZ7S.com.zapacit.cuzaai`, key id, counter 0, and production `aaguid` in production. It stores
+        the public key and counter. Later requests carry an assertion over the request body hash in the
+        `ZapaKid-Attestation` header; the server checks the signature and that the counter increases. Verification
+        uses the platform libraries' formats and WebCrypto only, no custom primitives.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [keyId, attestationObject, challenge]
+              properties:
+                keyId: { $ref: "#/components/schemas/Base64" }
+                attestationObject: { $ref: "#/components/schemas/Base64" }
+                challenge: { $ref: "#/components/schemas/Base64Url" }
+      responses:
+        "204": { description: "Registered." }
+        "403": { $ref: "#/components/responses/AttestationFailed" }
+
+  /v1/attestation/google:
+    post:
+      tags: ["Draft: App attestation"]
+      operationId: verifyPlayIntegrity
+      x-status: draft
+      summary: Check a Google Play Integrity token for this device.
+      description: |
+        The app requests a standard Play Integrity token with `requestHash` = SHA-256 of the request, or a classic
+        token with the challenge as nonce. The server decodes it with Google's `decodeIntegrityToken` API and
+        requires `appRecognitionVerdict = PLAY_RECOGNIZED`, package `com.zapacit.cuzaai`, the release signing
+        certificate, `deviceRecognitionVerdict` containing `MEETS_DEVICE_INTEGRITY`, `appLicensingVerdict = LICENSED`
+        and a matching, fresh request hash or nonce.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [integrityToken, challenge]
+              properties:
+                integrityToken: { type: string, maxLength: 16384 }
+                challenge: { $ref: "#/components/schemas/Base64Url" }
+      responses:
+        "204": { description: "Genuine." }
+        "403": { $ref: "#/components/responses/AttestationFailed" }
+
+  /v1/families:
+    post:
+      tags: ["Draft: Families"]
+      operationId: createFamily
+      x-status: draft
+      summary: Create a family; the caller becomes its first parent.
+      responses:
+        "201": { description: "Created." }
+    get:
+      tags: ["Draft: Families"]
+      operationId: listFamilies
+      x-status: draft
+      summary: The families the caller belongs to.
+      responses:
+        "200": { description: "Families with their parents and kids." }
+
+  /v1/families/{familyId}/parents/invitations:
+    post:
+      tags: ["Draft: Families"]
+      operationId: inviteCoParent
+      x-status: draft
+      summary: Invite another parent into the family (QR, link or email).
+      parameters: [{ $ref: "#/components/parameters/familyId" }]
+      responses:
+        "201": { description: "Invitation created." }
+
+  /v1/families/{familyId}/kids:
+    post:
+      tags: ["Draft: Kids"]
+      operationId: addKid
+      x-status: draft
+      summary: Add a kid (nickname and avatar only).
+      parameters: [{ $ref: "#/components/parameters/familyId" }]
+      responses:
+        "201": { description: "Created." }
+
+  /v1/families/{familyId}/kids/{kidId}/pairing:
+    post:
+      tags: ["Draft: Kids"]
+      operationId: createKidPairing
+      x-status: draft
+      summary: A one-time pairing code for the kid's phone, shown as a QR code.
+      description: |
+        Valid for 5 minutes, single use. The QR also carries the parent's identity key fingerprint, so the kid's
+        phone verifies the parent's key out of band at pairing (no trust on first use).
+      parameters: [{ $ref: "#/components/parameters/familyId" }, { $ref: "#/components/parameters/kidId" }]
+      responses:
+        "201": { description: "Pairing code and QR payload." }
+
+  /v1/pairing/redeem:
+    post:
+      tags: ["Draft: Kids"]
+      operationId: redeemKidPairing
+      x-status: draft
+      summary: The kid's phone redeems the pairing code and gets a kid session.
+      security: []
+      responses:
+        "200": { description: "Kid session and profile." }
+        "410": { description: "Code expired or already used." }
+
+  /v1/connections/requests:
+    post:
+      tags: ["Draft: Connections"]
+      operationId: requestConnection
+      x-status: draft
+      summary: Ask another parent to connect (QR, invite link, email invite, or exact phone/email search).
+      description: |
+        Always answers `202 request sent`, whether or not the person exists (no account enumeration). About 10
+        searches a day per parent. Parents can opt out of being found.
+      responses:
+        "202": { description: "Request sent." }
+        "429": { description: "Too many searches today." }
+    get:
+      tags: ["Draft: Connections"]
+      operationId: listConnectionRequests
+      x-status: draft
+      summary: Incoming and outgoing requests.
+      responses:
+        "200": { description: "Requests." }
+
+  /v1/connections/requests/{requestId}:
+    post:
+      tags: ["Draft: Connections"]
+      operationId: answerConnectionRequest
+      x-status: draft
+      summary: Accept or decline (any parent of the family; the others are notified and can undo).
+      parameters: [{ name: requestId, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: "Answered." }
+
+  /v1/connections/{connectionId}/shared-kids/{kidId}:
+    put:
+      tags: ["Draft: Connections"]
+      operationId: shareKid
+      x-status: draft
+      summary: Share one kid with the connected family (each direction separately).
+      parameters: [{ $ref: "#/components/parameters/connectionId" }, { $ref: "#/components/parameters/kidId" }]
+      responses:
+        "204": { description: "Shared." }
+    delete:
+      tags: ["Draft: Connections"]
+      operationId: unshareKid
+      x-status: draft
+      summary: Stop sharing a kid. Chats close (history read-only) and group keys rotate.
+      parameters: [{ $ref: "#/components/parameters/connectionId" }, { $ref: "#/components/parameters/kidId" }]
+      responses:
+        "204": { description: "No longer shared." }
+
+  /v1/connections/{connectionId}:
+    delete:
+      tags: ["Draft: Connections"]
+      operationId: removeConnection
+      x-status: draft
+      summary: Disconnect the two families.
+      parameters: [{ $ref: "#/components/parameters/connectionId" }]
+      responses:
+        "204": { description: "Disconnected." }
+
+  /v1/blocks:
+    post:
+      tags: ["Draft: Connections"]
+      operationId: block
+      x-status: draft
+      summary: A parent blocks a person or a whole family.
+      responses:
+        "204": { description: "Blocked." }
+
+  /v1/devices:
+    post:
+      tags: ["Draft: Devices and keys"]
+      operationId: registerDevice
+      x-status: draft
+      summary: Register this phone and upload its public keys.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeviceKeys" }
+      responses:
+        "201":
+          description: The device id (libsignal `ProtocolAddress` device id).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deviceId]
+                properties:
+                  deviceId: { $ref: "#/components/schemas/DeviceId" }
+
+  /v1/keys/prekeys:
+    put:
+      tags: ["Draft: Devices and keys"]
+      operationId: uploadPreKeys
+      x-status: draft
+      summary: Top up one-time prekeys, or rotate the signed prekeys.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                signedPreKey: { $ref: "#/components/schemas/SignedPreKey" }
+                pqLastResortPreKey: { $ref: "#/components/schemas/SignedPreKey" }
+                preKeys: { type: array, maxItems: 100, items: { $ref: "#/components/schemas/PreKey" } }
+                pqPreKeys: { type: array, maxItems: 100, items: { $ref: "#/components/schemas/SignedPreKey" } }
+      responses:
+        "204": { description: "Stored." }
+    get:
+      tags: ["Draft: Devices and keys"]
+      operationId: countPreKeys
+      x-status: draft
+      summary: How many one-time prekeys this device has left (top up below 20).
+      responses:
+        "200": { description: "`{ preKeys, pqPreKeys }` counts." }
+
+  /v1/keys/identity:
+    put:
+      tags: ["Draft: Devices and keys"]
+      operationId: changeIdentityKey
+      x-status: draft
+      summary: Replace the account's identity key (new phone without keychain restore, or reset).
+      description: |
+        Never silent: the server stores the change in the account's key history, sends `identity_changed` to every
+        peer, and peers show a key-change warning and new safety number before the next message. All devices of the
+        account must then upload new signed prekeys.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identityKey, signedPreKey, pqLastResortPreKey]
+              properties:
+                identityKey: { $ref: "#/components/schemas/PublicKey" }
+                signedPreKey: { $ref: "#/components/schemas/SignedPreKey" }
+                pqLastResortPreKey: { $ref: "#/components/schemas/SignedPreKey" }
+      responses:
+        "204": { description: "Changed; peers are notified." }
+
+  /v1/accounts/{accountId}/identity:
+    get:
+      tags: ["Draft: Devices and keys"]
+      operationId: getIdentity
+      x-status: draft
+      summary: An account's current identity key and its change history (for safety numbers and warnings).
+      description: Only for accounts the caller may chat with (same family, or a connected family's parent or shared kid).
+      parameters: [{ $ref: "#/components/parameters/accountId" }]
+      responses:
+        "200":
+          description: Identity key and history.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [identityKey, changes]
+                properties:
+                  identityKey: { $ref: "#/components/schemas/PublicKey" }
+                  changes:
+                    type: array
+                    items:
+                      type: object
+                      required: [identityKey, changedAt]
+                      properties:
+                        identityKey: { $ref: "#/components/schemas/PublicKey" }
+                        changedAt: { type: string, format: date-time }
+
+  /v1/keys/{accountId}/{deviceId}:
+    get:
+      tags: ["Draft: Devices and keys"]
+      operationId: getPreKeyBundle
+      x-status: draft
+      summary: Prekey bundles to start a session (`*` = all devices of the account).
+      description: |
+        Returns what libsignal's `PreKeyBundle` needs: registration id, device id, identity key, signed EC prekey,
+        signed Kyber prekey (one-time if left, else last resort) and one one-time EC prekey if left. Each fetch
+        consumes the one-time keys it returns. Only for accounts the caller may chat with; rate limited.
+      parameters:
+        - { $ref: "#/components/parameters/accountId" }
+        - name: deviceId
+          in: path
+          required: true
+          schema: { oneOf: [{ $ref: "#/components/schemas/DeviceId" }, { const: "*" }] }
+      responses:
+        "200":
+          description: One bundle per device.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [identityKey, devices]
+                properties:
+                  identityKey: { $ref: "#/components/schemas/PublicKey" }
+                  devices: { type: array, items: { $ref: "#/components/schemas/PreKeyBundle" } }
+        "404": { description: "No such account or device, or not allowed." }
+
+  /v1/conversations:
+    post:
+      tags: ["Draft: Messages"]
+      operationId: createConversation
+      x-status: draft
+      summary: Start a 1:1 or group chat.
+      description: The server adds the parents of every family whose kid is in the chat, as readers.
+      responses:
+        "201": { description: "Conversation id and the full member list." }
+    get:
+      tags: ["Draft: Messages"]
+      operationId: listConversations
+      x-status: draft
+      summary: The caller's chats (members only; no content).
+      responses:
+        "200": { description: "Conversations." }
+
+  /v1/messages:
+    post:
+      tags: ["Draft: Messages"]
+      operationId: sendMessage
+      x-status: draft
+      summary: Send one encrypted envelope per recipient device.
+      description: |
+        `409` if the device list is stale (missing or extra devices), `410` if a registration id changed; the app
+        refreshes keys and retries. Recipients must be members of the conversation.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [conversationId, envelopes]
+              properties:
+                conversationId: { type: string }
+                envelopes: { type: array, maxItems: 256, items: { $ref: "#/components/schemas/OutgoingEnvelope" } }
+      responses:
+        "202": { description: "Queued for every device." }
+        "409": { description: "Stale device list." }
+        "410": { description: "Stale registration id." }
+    get:
+      tags: ["Draft: Messages"]
+      operationId: fetchMessages
+      x-status: draft
+      summary: Queued envelopes for this device (when the live stream is not connected).
+      responses:
+        "200": { description: "Envelopes, oldest first." }
+
+  /v1/messages/{envelopeId}:
+    delete:
+      tags: ["Draft: Messages"]
+      operationId: ackMessage
+      x-status: draft
+      summary: Acknowledge an envelope; the server deletes it.
+      parameters: [{ name: envelopeId, in: path, required: true, schema: { type: string } }]
+      responses:
+        "204": { description: "Deleted from the queue." }
+
+  /v1/stream:
+    get:
+      tags: ["Draft: Messages"]
+      operationId: stream
+      x-status: draft
+      summary: WebSocket for live envelopes and events (`identity_changed`, membership changes).
+      description: One Durable Object per account fans out to its connected devices.
+      responses:
+        "101": { description: "Switching protocols." }
+
+  /v1/attachments:
+    post:
+      tags: ["Draft: Attachments"]
+      operationId: createAttachment
+      x-status: draft
+      summary: Reserve an upload for an encrypted photo or voice message.
+      responses:
+        "201": { description: "`{ attachmentId, uploadUrl, expiresAt }`; max size per type." }
+
+  /v1/attachments/{attachmentId}:
+    get:
+      tags: ["Draft: Attachments"]
+      operationId: downloadAttachment
+      x-status: draft
+      summary: Download the encrypted blob (conversation members only).
+      parameters: [{ name: attachmentId, in: path, required: true, schema: { type: string } }]
+      responses:
+        "200": { description: "The ciphertext." }
+
+components:
+  securitySchemes:
+    session:
+      type: http
+      scheme: bearer
+      description: The opaque session token from sign-in (`zks_` + 43 base64url characters).
+
+  parameters:
+    familyId: { name: familyId, in: path, required: true, schema: { type: string } }
+    kidId: { name: kidId, in: path, required: true, schema: { type: string } }
+    connectionId: { name: connectionId, in: path, required: true, schema: { type: string } }
+    accountId: { name: accountId, in: path, required: true, schema: { type: string } }
+
+  responses:
+    SignedIn:
+      description: Signed in. Store the token in the keychain / Android Keystore-backed storage.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/SignInResponse" }
+    InvalidRequest:
+      description: "`invalid_request`: the body is not valid JSON or misses a field."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    InvalidToken:
+      description: |
+        `invalid_token`: the Apple/Google token is malformed, expired, for another app (audience), from another
+        issuer, or its signature does not verify. Sign in with the provider again.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    MinorNotAllowed:
+      description: |
+        `minor_not_allowed`: the platform age range says the user is under 18. Only parents (18+) can create an
+        account. Nothing is stored.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: "`unauthorized`: no session token, or it is unknown, expired or signed out."
+      headers:
+        WWW-Authenticate: { schema: { type: string, const: Bearer } }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    TooLarge:
+      description: "`payload_too_large`: the body is over 16 KiB."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    UnsupportedMediaType:
+      description: "`unsupported_media_type`: send `Content-Type: application/json`."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ProviderUnavailable:
+      description: "`provider_unavailable`: Apple's or Google's keys could not be fetched. Retry later."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    AttestationFailed:
+      description: "`attestation_failed`: not a genuine ZapaKid app on a genuine device."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              examples: [invalid_token]
+            message: { type: string }
+
+    AgeRange:
+      type: object
+      description: |
+        What the platform age API returned, passed through by the app. The server classifies it:
+        `upperBound` < 18 → minor (rejected, `403 minor_not_allowed`); `lowerBound` ≥ 18 → adult; anything else
+        (user declined, API not available in the country) → unknown. Unknown is accepted and recorded for now.
+
+        - Apple Declared Age Range: `lowerBound` / `upperBound` of the declared range (`nil` → `null`); declined →
+          both `null`, `platformStatus: "declined"`.
+        - Google Play Age Signals: `VERIFIED` → `lowerBound: 18`, `upperBound: null`; `SUPERVISED` and the other
+          supervised statuses → `ageLower` / `ageUpper`; `UNKNOWN` or not available → both `null`. Put the
+          `userStatus` in `platformStatus`.
+      required: [source, lowerBound, upperBound]
+      additionalProperties: false
+      properties:
+        source:
+          type: string
+          enum: [apple_declared_age_range, google_play_age_signals]
+        lowerBound: { type: [integer, "null"], minimum: 0, maximum: 150 }
+        upperBound: { type: [integer, "null"], minimum: 0, maximum: 150 }
+        platformStatus:
+          type: string
+          maxLength: 40
+          pattern: "^[A-Za-z_]+$"
+          description: The platform's raw status, recorded as is (for example `VERIFIED`, `SUPERVISED`, `declined`).
+
+    AppleSignInRequest:
+      type: object
+      required: [identityToken, ageRange]
+      additionalProperties: false
+      properties:
+        identityToken:
+          type: string
+          maxLength: 8192
+          description: The JWT from Sign in with Apple.
+        ageRange:
+          allOf: [{ $ref: "#/components/schemas/AgeRange" }]
+          description: The platform's age API on this phone (Declared Age Range on iOS, Play Age Signals on Android).
+        displayName:
+          type: string
+          maxLength: 100
+          description: |
+            Apple gives the user's name to the app only on the first sign-in and never in the token. Used only when
+            the account is new.
+
+    GoogleSignInRequest:
+      type: object
+      required: [idToken, ageRange]
+      additionalProperties: false
+      properties:
+        idToken:
+          type: string
+          maxLength: 8192
+          description: The Google ID token (JWT).
+        ageRange:
+          allOf: [{ $ref: "#/components/schemas/AgeRange" }]
+          description: The platform's age API on this phone (Play Age Signals on Android, Declared Age Range on iOS).
+
+    SignInResponse:
+      type: object
+      required: [session, parent, newAccount]
+      properties:
+        session:
+          type: object
+          required: [token, expiresAt]
+          properties:
+            token:
+              type: string
+              pattern: "^zks_[A-Za-z0-9_-]{43}$"
+              description: "Opaque. Send as `Authorization: Bearer <token>`. Never log it."
+            expiresAt: { type: string, format: date-time }
+        parent: { $ref: "#/components/schemas/Parent" }
+        newAccount:
+          type: boolean
+          description: True when this sign-in created the account.
+
+    Parent:
+      type: object
+      required: [id, email, displayName, ageRange, createdAt]
+      properties:
+        id: { type: string, format: uuid }
+        email:
+          type: [string, "null"]
+          description: From the provider, only if verified. Apple may give a private relay address.
+        displayName: { type: [string, "null"] }
+        ageRange:
+          type: object
+          required: [category, source, lowerBound, upperBound, checkedAt]
+          description: The latest age range, recorded at sign-in.
+          properties:
+            category: { type: string, enum: [adult, unknown] }
+            source: { type: string, enum: [apple_declared_age_range, google_play_age_signals] }
+            lowerBound: { type: [integer, "null"] }
+            upperBound: { type: [integer, "null"] }
+            platformStatus: { type: [string, "null"] }
+            checkedAt: { type: string, format: date-time }
+        createdAt: { type: string, format: date-time }
+
+    Base64:
+      type: string
+      contentEncoding: base64
+    Base64Url:
+      type: string
+      pattern: "^[A-Za-z0-9_-]+$"
+    DeviceId:
+      type: integer
+      minimum: 1
+      maximum: 127
+    PublicKey:
+      description: A libsignal public key, serialized (type byte + key), base64.
+      allOf: [{ $ref: "#/components/schemas/Base64" }]
+    PreKey:
+      type: object
+      required: [keyId, publicKey]
+      properties:
+        keyId: { type: integer, minimum: 0, maximum: 16777215 }
+        publicKey: { $ref: "#/components/schemas/PublicKey" }
+    SignedPreKey:
+      type: object
+      description: An EC signed prekey or a Kyber prekey, with the identity key's signature over the public key.
+      required: [keyId, publicKey, signature]
+      properties:
+        keyId: { type: integer, minimum: 0, maximum: 16777215 }
+        publicKey: { $ref: "#/components/schemas/PublicKey" }
+        signature: { $ref: "#/components/schemas/Base64" }
+    DeviceKeys:
+      type: object
+      required: [registrationId, identityKey, signedPreKey, pqLastResortPreKey, preKeys, pqPreKeys]
+      properties:
+        registrationId: { type: integer, minimum: 1, maximum: 16383 }
+        identityKey:
+          allOf: [{ $ref: "#/components/schemas/PublicKey" }]
+          description: Must match the account's current identity key; changing it is `PUT /v1/keys/identity`.
+        signedPreKey: { $ref: "#/components/schemas/SignedPreKey" }
+        pqLastResortPreKey: { $ref: "#/components/schemas/SignedPreKey" }
+        preKeys: { type: array, maxItems: 100, items: { $ref: "#/components/schemas/PreKey" } }
+        pqPreKeys: { type: array, maxItems: 100, items: { $ref: "#/components/schemas/SignedPreKey" } }
+        pushToken: { type: string, maxLength: 4096, description: APNs or FCM token (no message content in pushes). }
+    PreKeyBundle:
+      type: object
+      required: [deviceId, registrationId, signedPreKey, pqPreKey]
+      properties:
+        deviceId: { $ref: "#/components/schemas/DeviceId" }
+        registrationId: { type: integer }
+        signedPreKey: { $ref: "#/components/schemas/SignedPreKey" }
+        pqPreKey: { $ref: "#/components/schemas/SignedPreKey" }
+        preKey: { $ref: "#/components/schemas/PreKey" }
+    OutgoingEnvelope:
+      type: object
+      required: [recipientAccountId, recipientDeviceId, recipientRegistrationId, type, content]
+      properties:
+        recipientAccountId: { type: string }
+        recipientDeviceId: { $ref: "#/components/schemas/DeviceId" }
+        recipientRegistrationId: { type: integer }
+        type:
+          type: string
+          enum: [prekey_message, message, sender_key_message]
+          description: The libsignal ciphertext type. There is no plaintext type.
+        content:
+          allOf: [{ $ref: "#/components/schemas/Base64" }]
+          description: libsignal ciphertext, at most 64 KiB.
