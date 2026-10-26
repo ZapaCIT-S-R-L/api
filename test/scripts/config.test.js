@@ -43,10 +43,16 @@ test("the Apple web flow hands back to the app link on zapakid.ro", () => {
     assert.equal(env.vars.APPLE_WEB_REDIRECT_URL, "https://zapakid.ro/app/apple");
 });
 
-test("staging Google client ids are real OAuth client ids or empty (Google sign-in off)", () => {
-  const ids = staging.vars.GOOGLE_CLIENT_IDS.split(",").filter(Boolean);
-  for (const id of ids) assert.match(id, /^\d+-[a-z0-9]+\.apps\.googleusercontent\.com$/);
-  assert.ok(!ids.some((id) => id.includes("local-test")));
+// Google ID tokens carry the client the app asked with as `aud`: Android (Credential Manager, setServerClientId)
+// uses the web (server) client, iOS (GoogleSignIn) the iOS client. The Android client id is never an audience.
+const GOOGLE_WEB = "64042746735-r70nv5pmlro7hpksk1te3ur008ungss1.apps.googleusercontent.com";
+const GOOGLE_IOS = "64042746735-lgdmtj9vvd3kiu7g9qc2elu22la6o1id.apps.googleusercontent.com";
+const GOOGLE_ANDROID = "64042746735-mbidtcoq0nsrka4b60vjmspdit6h095b.apps.googleusercontent.com";
+
+test("staging accepts Google ID tokens for ZapaKid's web and iOS clients only", () => {
+  const ids = staging.vars.GOOGLE_CLIENT_IDS.split(",");
+  assert.deepEqual(ids, [GOOGLE_WEB, GOOGLE_IOS]);
+  assert.ok(!ids.includes(GOOGLE_ANDROID));
 });
 
 test("staging session TTL is between 1 day and 90 days", () => {
