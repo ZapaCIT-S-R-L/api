@@ -393,7 +393,8 @@ paths:
         Apple's App Attestation Root CA, the nonce (SHA-256(authData ‖ clientDataHash)) in the leaf certificate,
         `keyId` = SHA-256 of the leaf's public key, the RP ID hash of App ID `9572LYGZ7S.ro.zapakid.app`, counter 0,
         the credential id, and the environment (`appattestdevelop` is accepted on staging only). The challenge is
-        used up either way. It stores the public key and counter, nothing about the user.
+        used up either way. It stores the public key and counter, nothing about the user. A key unused for 180 days
+        is deleted; the next sign-in then gets `403 attestation_failed` and the app registers a new key.
       security: []
       requestBody:
         required: true
