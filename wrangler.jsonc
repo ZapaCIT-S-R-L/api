@@ -18,6 +18,9 @@
     "GOOGLE_CLIENT_IDS": "000000000000-zapakidlocaltest.apps.googleusercontent.com",
     "SESSION_TTL_SECONDS": "2592000",
   },
+  // Auth rate limit (nonce + sign-in) per client address per minute and Cloudflare location. High locally so the
+  // e2e suite fits; each environment has its own namespace_id (separate counters).
+  "ratelimits": [{ "name": "AUTH_LIMITER", "namespace_id": "1001", "simple": { "limit": 1000, "period": 60 } }],
   // Local only (wrangler dev, tests): Miniflare keeps it on disk under .wrangler/.
   "d1_databases": [
     {
@@ -45,6 +48,7 @@
         "GOOGLE_CLIENT_IDS": "",
         "SESSION_TTL_SECONDS": "2592000",
       },
+      "ratelimits": [{ "name": "AUTH_LIMITER", "namespace_id": "2001", "simple": { "limit": 20, "period": 60 } }],
       // EU jurisdiction. scripts/d1-database.js creates it if needed and puts its id in place of this placeholder
       // at deploy time (deploy.yml); the real id is never committed.
       "d1_databases": [
@@ -70,6 +74,7 @@
         "GOOGLE_CLIENT_IDS": "",
         "SESSION_TTL_SECONDS": "2592000",
       },
+      "ratelimits": [{ "name": "AUTH_LIMITER", "namespace_id": "3001", "simple": { "limit": 20, "period": 60 } }],
       "d1_databases": [
         {
           "binding": "DB",

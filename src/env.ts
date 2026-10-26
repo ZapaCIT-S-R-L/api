@@ -1,6 +1,8 @@
 // Bindings and variables from wrangler.jsonc.
 export interface Env {
   DB: D1Database;
+  // Nonce + sign-in requests per client address per minute (wrangler.jsonc ratelimits).
+  AUTH_LIMITER: RateLimit;
   VERSION: string;
   VERSION_URL: string;
   // Comma-separated accepted audiences: Apple bundle / services ids, Google OAuth client ids. Empty = provider off.

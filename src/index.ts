@@ -2,15 +2,21 @@
 import { BadRequest } from "./body";
 import type { Env } from "./env";
 import { error, json } from "./http";
+import { limitAuth } from "./rate-limit";
 import { handleLogout, handleMe, handleNonce, handleSignIn } from "./routes";
 
 type Handler = (request: Request, env: Env) => Response | Promise<Response>;
 
-const ROUTES: Record<string, { method: string; handler: Handler }> = {
+// `limited`: counted against AUTH_LIMITER before anything else is done (unauthenticated endpoints).
+const ROUTES: Record<string, { method: string; handler: Handler; limited?: true }> = {
   "/health": { method: "GET", handler: (_request, env) => json({ status: "ok", version: env.VERSION }) },
-  "/v1/auth/nonce": { method: "POST", handler: handleNonce },
-  "/v1/auth/apple": { method: "POST", handler: (request, env) => handleSignIn(request, env, "apple") },
-  "/v1/auth/google": { method: "POST", handler: (request, env) => handleSignIn(request, env, "google") },
+  "/v1/auth/nonce": { method: "POST", handler: handleNonce, limited: true },
+  "/v1/auth/apple": { method: "POST", handler: (request, env) => handleSignIn(request, env, "apple"), limited: true },
+  "/v1/auth/google": {
+    method: "POST",
+    handler: (request, env) => handleSignIn(request, env, "google"),
+    limited: true,
+  },
   "/v1/auth/logout": { method: "POST", handler: handleLogout },
   "/v1/me": { method: "GET", handler: handleMe },
 };
@@ -23,6 +29,10 @@ export default {
       if (!route) return error(404, "not_found", "No such endpoint.");
       if (request.method !== route.method) {
         return error(405, "method_not_allowed", `Use ${route.method}.`, { allow: route.method });
+      }
+      if (route.limited) {
+        const limited = await limitAuth(request, env);
+        if (limited) return limited;
       }
       return await route.handler(request, env);
     } catch (e) {

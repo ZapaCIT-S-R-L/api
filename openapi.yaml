@@ -134,6 +134,7 @@ paths:
                 properties:
                   nonce: { $ref: "#/components/schemas/Nonce" }
                   expiresAt: { type: string, format: date-time }
+        "429": { $ref: "#/components/responses/RateLimited" }
 
   /v1/auth/apple:
     post:
@@ -158,6 +159,7 @@ paths:
         "401": { $ref: "#/components/responses/InvalidTokenOrNonce" }
         "403": { $ref: "#/components/responses/AgeNotAllowed" }
         "413": { $ref: "#/components/responses/TooLarge" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
         "503": { $ref: "#/components/responses/ProviderUnavailable" }
 
@@ -184,6 +186,7 @@ paths:
         "401": { $ref: "#/components/responses/InvalidTokenOrNonce" }
         "403": { $ref: "#/components/responses/AgeNotAllowed" }
         "413": { $ref: "#/components/responses/TooLarge" }
+        "429": { $ref: "#/components/responses/RateLimited" }
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
         "503": { $ref: "#/components/responses/ProviderUnavailable" }
 
@@ -678,6 +681,15 @@ components:
       description: "`unauthorized`: no session token, or it is unknown, expired or signed out."
       headers:
         WWW-Authenticate: { schema: { type: string, const: Bearer } }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: |
+        `rate_limited`: too many nonce and sign-in requests from this network (20 a minute per IPv4 address or
+        IPv6 /64, per Cloudflare location). Wait `Retry-After` seconds.
+      headers:
+        Retry-After: { schema: { type: integer, const: 60 } }
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
