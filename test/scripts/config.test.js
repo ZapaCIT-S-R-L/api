@@ -106,9 +106,10 @@ test("staging and production define every binding and var the Worker reads", asy
   }
 });
 
-test("app attestation: production required, staging optional until Play Integrity is set up", () => {
+test("app attestation: production fails closed, staging exempts only allowlisted test accounts", () => {
   assert.equal(production.vars.ATTESTATION_POLICY, "required");
-  assert.equal(staging.vars.ATTESTATION_POLICY, "optional");
+  assert.equal(staging.vars.ATTESTATION_POLICY, "allowlist");
+  for (const env of [staging, production]) assert.equal(env.vars.ATTESTATION_ALLOWLIST, undefined, "a secret");
   for (const env of [staging, production]) {
     assert.equal(env.vars.PLAY_PACKAGE_NAME, "ro.zapakid.app");
     assert.equal(env.vars.PLAY_INTEGRITY_CREDENTIALS, undefined, "a secret, never a var");
