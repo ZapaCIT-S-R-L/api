@@ -9,7 +9,10 @@ decrypt a chat. The server has no cryptography of its own beyond verifying sign-
   marked draft). `npm run lint:api` validates it.
 - Node 24 (`.nvmrc`). `npm ci`, then:
   - `npm test`: unit tests (`test/scripts`, node:test) and Worker tests in the Workers runtime (`test/worker`, Vitest).
-  - `npm run dev` in one terminal, then `API_URL=http://127.0.0.1:8787 npm run test:e2e` (`test/e2e`).
+  - End-to-end (`test/e2e`): `npx wrangler d1 migrations apply DB --local`, then in one terminal
+    `npx wrangler dev --var APPLE_JWKS_URL:http://127.0.0.1:8788/apple --var GOOGLE_JWKS_URL:http://127.0.0.1:8788/google`
+    and in another `API_URL=http://127.0.0.1:8787 npm run test:e2e`. The tests serve their own test keys on port
+    8788; the Worker accepts a key URL override only on 127.0.0.1/localhost.
   - `npm run lint` (Prettier, ESLint, TypeScript); `npm run format` fixes formatting.
 - Dependencies are pinned to exact versions (`.npmrc`), updated by Dependabot, and audited on every PR and daily.
 

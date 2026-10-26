@@ -1,7 +1,15 @@
 // Bindings and variables from wrangler.jsonc.
 export interface Env {
+  DB: D1Database;
   VERSION: string;
   VERSION_URL: string;
+  // Comma-separated accepted audiences: Apple bundle / services ids, Google OAuth client ids. Empty = provider off.
+  APPLE_AUDIENCES: string;
+  GOOGLE_CLIENT_IDS: string;
+  SESSION_TTL_SECONDS: string;
+  // Local development only: a JWKS URL on 127.0.0.1/localhost for test keys. Anything else is ignored.
+  APPLE_JWKS_URL?: string;
+  GOOGLE_JWKS_URL?: string;
 }
 
 type AppEnv = Env;
@@ -10,8 +18,10 @@ declare global {
   // `env` from cloudflare:workers and cloudflare:test has this shape.
   // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace Cloudflare {
-    // eslint-disable-next-line @typescript-eslint/no-empty-object-type
-    interface Env extends AppEnv {}
+    interface Env extends AppEnv {
+      // Tests only (vitest.config.ts).
+      TEST_MIGRATIONS: import("cloudflare:test").D1Migration[];
+    }
     // Types `exports` from cloudflare:workers (tests call exports.default.fetch).
     interface GlobalProps {
       mainModule: typeof import("./index");
