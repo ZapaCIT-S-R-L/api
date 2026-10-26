@@ -9,7 +9,11 @@ export default defineConfig({
   plugins: [
     cloudflareTest({
       wrangler: { configPath: "./wrangler.jsonc" },
-      miniflare: { bindings: { TEST_MIGRATIONS: migrations } },
+      miniflare: {
+        bindings: { TEST_MIGRATIONS: migrations },
+        // A small auth rate limit, so test/worker/rate-limit.test.ts can reach it.
+        ratelimits: { AUTH_LIMITER: { namespace_id: "9001", simple: { limit: 5, period: 60 } } },
+      },
     }),
   ],
   test: { include: ["test/worker/**/*.test.ts"], setupFiles: ["./test/worker/setup.ts"] },
