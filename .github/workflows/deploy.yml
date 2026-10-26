@@ -78,8 +78,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ steps.version.outputs.version }}
           MESSAGE: ${{ steps.version.outputs.message }}
+        # package.json stays at 0.0.0 in git; the release's SBOM carries the release version.
         run: |
-          npm sbom --sbom-format cyclonedx --omit dev > "$RUNNER_TEMP/zapakid-api-$VERSION.cdx.json"
+          npm version "${VERSION#v}" --no-git-tag-version --allow-same-version
+          npm sbom --sbom-format cyclonedx --omit dev --package-lock-only > "$RUNNER_TEMP/zapakid-api-$VERSION.cdx.json"
+          git checkout -- package.json package-lock.json
           gh release create "$VERSION" --verify-tag --title "$VERSION" --notes "$MESSAGE" \
             "$RUNNER_TEMP/zapakid-api-$VERSION.cdx.json"
 

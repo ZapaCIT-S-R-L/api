@@ -10,8 +10,8 @@ test("npm sbom (CycloneDX, runtime dependencies) builds and names the API and jo
   });
   const sbom = JSON.parse(out);
   assert.equal(sbom.bomFormat, "CycloneDX");
-  assert.equal(sbom.metadata.component.name, "zapakid-api");
-  assert.match(sbom.metadata.component.version, /^\d+\.\d+\.\d+$/);
+  // npm takes metadata.component.name from the folder; the purl has the package name and version.
+  assert.match(sbom.metadata.component.purl, /^pkg:npm\/zapakid-api@\d+\.\d+\.\d+$/);
   assert.ok(sbom.components.some((c) => c.name === "jose"));
   assert.ok(!sbom.components.some((c) => c.name === "wrangler"), "dev dependencies are left out");
 });
