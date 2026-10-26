@@ -171,7 +171,14 @@ export async function sha256Hex(text: string): Promise<string> {
 }
 
 export async function count(
-  table: "parents" | "parent_identities" | "sessions" | "sign_in_nonces" | "apple_web_flows",
+  table:
+    | "parents"
+    | "parent_identities"
+    | "sessions"
+    | "sign_in_nonces"
+    | "apple_web_flows"
+    | "app_attest_challenges"
+    | "app_attest_keys",
 ): Promise<number> {
   const row = await env.DB.prepare(`SELECT count(*) AS n FROM ${table}`).first<{ n: number }>();
   return row?.n ?? 0;

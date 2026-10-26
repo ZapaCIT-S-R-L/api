@@ -115,3 +115,19 @@ test("app attestation: production fails closed, staging exempts only allowlisted
     assert.equal(env.vars.PLAY_INTEGRITY_CREDENTIALS, undefined, "a secret, never a var");
   }
 });
+
+test("App Attest: app id 9572LYGZ7S.ro.zapakid.app; development keys on staging only", () => {
+  for (const env of [staging, production]) assert.equal(env.vars.APP_ATTEST_APP_ID, "9572LYGZ7S.ro.zapakid.app");
+  assert.equal(staging.vars.APP_ATTEST_ENVIRONMENTS, "development,production");
+  assert.equal(production.vars.APP_ATTEST_ENVIRONMENTS, "production");
+});
+
+test("the pinned App Attest root is Apple's App Attestation Root CA", async () => {
+  const { createHash } = await import("node:crypto");
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(new URL("../../src/app-attest-root.ts", import.meta.url), "utf8");
+  const b64 = /"([A-Za-z0-9+/=\s]+)"/.exec(source.replace(/\n/g, ""))?.[1].replace(/\s/g, "") ?? "";
+  const fingerprint = createHash("sha256").update(Buffer.from(b64, "base64")).digest("hex");
+  // openssl x509 -in Apple_App_Attestation_Root_CA.pem -noout -fingerprint -sha256 (apple.com/certificateauthority)
+  assert.equal(fingerprint, "1cb9823ba28ba6ad2d33a006941de2ae4f513ef1d4e831b9f7e0fa7b6242c932");
+});
