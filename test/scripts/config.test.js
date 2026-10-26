@@ -62,3 +62,10 @@ test("production trusts only the real keys and the ZapaKid app", () => {
   assert.ok(!production.vars.GOOGLE_CLIENT_IDS.includes("local-test"));
   assert.equal(production.d1_databases[0].database_name, "zapakid-api-production");
 });
+
+test("auth rate limits: staging and production 20 per minute, separate counters per environment", () => {
+  const limiter = (env) => (env.ratelimits ?? []).find((r) => r.name === "AUTH_LIMITER");
+  for (const env of [staging, production]) assert.deepEqual(limiter(env).simple, { limit: 20, period: 60 });
+  const ids = [limiter(rawConfig), limiter(staging), limiter(production)].map((r) => r.namespace_id);
+  assert.equal(new Set(ids).size, 3);
+});

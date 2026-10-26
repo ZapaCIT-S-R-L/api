@@ -102,9 +102,19 @@ export const ADULT_GOOGLE = {
 } as const;
 
 // Calls the Worker module directly (same module instance as the test), so tests can reset its JWKS cache.
+// Each call comes from a random private IP (unless the test sets cf-connecting-ip), so the auth rate
+// limit only applies in test/worker/rate-limit.test.ts.
 export function call(path: string, init: RequestInit = {}): Promise<Response> {
-  const request = new Request(`https://api.test${path}`, init) as Parameters<typeof worker.fetch>[0];
+  const headers = new Headers(init.headers);
+  if (!headers.has("cf-connecting-ip")) {
+    headers.set("cf-connecting-ip", `10.${rand()}.${rand()}.${rand()}`);
+  }
+  const request = new Request(`https://api.test${path}`, { ...init, headers }) as Parameters<typeof worker.fetch>[0];
   return worker.fetch(request, env);
+}
+
+function rand(): number {
+  return Math.floor(Math.random() * 256);
 }
 
 // Sign-in needs a one-time nonce from POST /v1/auth/nonce, and the token must carry its SHA-256 (hex) in the
