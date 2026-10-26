@@ -37,13 +37,10 @@ describe("unknown paths", () => {
 // Config checks: /health says what is missing (names only, never values) instead of failing later.
 describe("GET /health with missing config", () => {
   const health = (overrides: Record<string, unknown>) =>
-    worker.fetch(
-      new Request("https://api.test/health") as Parameters<typeof worker.fetch>[0],
-      {
-        ...env,
-        ...overrides,
-      } as typeof env,
-    );
+    worker.fetch(new Request("https://api.test/health"), {
+      ...env,
+      ...overrides,
+    });
 
   it("all config present → 200 ok", async () => {
     expect((await health({})).status).toBe(200);
