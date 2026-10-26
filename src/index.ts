@@ -1,8 +1,9 @@
 // ZapaKid API Worker. The server only ever sees public keys and ciphertext; it can never decrypt a chat.
 import { handleAppleWebCallback, handleAppleWebExchange, handleAppleWebStart } from "./apple-web";
 import { BadRequest } from "./body";
+import { handleHealth } from "./health";
 import type { Env } from "./env";
-import { error, json } from "./http";
+import { error } from "./http";
 import { purgeExpired } from "./purge";
 import { limitAuth } from "./rate-limit";
 import { handleLogout, handleMe, handleNonce, handleSignIn } from "./routes";
@@ -11,7 +12,7 @@ type Handler = (request: Request, env: Env) => Response | Promise<Response>;
 
 // `limited`: counted against AUTH_LIMITER before anything else is done (unauthenticated endpoints).
 const ROUTES: Record<string, { method: string; handler: Handler; limited?: true }> = {
-  "/health": { method: "GET", handler: (_request, env) => json({ status: "ok", version: env.VERSION }) },
+  "/health": { method: "GET", handler: handleHealth },
   "/v1/auth/nonce": { method: "POST", handler: handleNonce, limited: true },
   "/v1/auth/apple": { method: "POST", handler: (request, env) => handleSignIn(request, env, "apple"), limited: true },
   "/v1/auth/apple/web": { method: "POST", handler: handleAppleWebStart, limited: true },

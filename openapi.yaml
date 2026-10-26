@@ -112,6 +112,22 @@ paths:
                     type: string
                     description: The deployed release tag (vMAJOR.MINOR.PATCH), `dev` locally.
                     examples: [v1.0.3]
+        "503":
+          description: |
+            The Worker runs but its configuration is incomplete (a binding or variable missing or invalid, or the
+            database unreachable). `problems` names what is wrong, never a value.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, version, problems]
+                properties:
+                  status: { const: misconfigured }
+                  version: { type: string }
+                  problems:
+                    type: array
+                    items: { type: string }
+                    examples: [["APPLE_AUDIENCES empty"]]
 
   /v1/auth/nonce:
     post:

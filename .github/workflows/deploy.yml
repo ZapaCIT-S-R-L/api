@@ -114,4 +114,17 @@ jobs:
         if: failure() && steps.e2e.conclusion == 'failure'
         env:
           VERSION: ${{ steps.version.outputs.version }}
-        run: npx wrangler rollback --env staging --yes --message "e2e failed after deploy of $VERSION"
+        # The e2e step has already failed the job; this step only reports what happened to the live version.
+        # On a first deploy there is nothing to roll back to: the failing version stays live, said loudly.
+        run: |
+          if out=$(npx wrangler rollback --env staging --yes --message "e2e failed after deploy of $VERSION" 2>&1); then
+            echo "$out"
+            echo "::error::e2e failed after deploying $VERSION; rolled back to the previous version." | tee -a "$GITHUB_STEP_SUMMARY"
+          elif grep -q "Could not find stable Worker Version" <<<"$out"; then
+            echo "$out"
+            echo "::error::e2e failed after deploying $VERSION, and it is the first version of the staging Worker: nothing to roll back to, $VERSION stays live. Fix forward." | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "$out"
+            echo "::error::e2e failed after deploying $VERSION, and the rollback failed too: check the staging Worker now." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          exit 1
