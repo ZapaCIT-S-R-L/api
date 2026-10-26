@@ -5,9 +5,11 @@ export interface Env {
   AUTH_LIMITER: RateLimit;
   VERSION: string;
   VERSION_URL: string;
-  // Comma-separated accepted audiences: Apple bundle / services ids, Google OAuth client ids. Empty = provider off.
+  // Comma-separated accepted audiences: Apple iOS bundle id and web-flow Services id, Google OAuth client ids. Empty = provider off.
   APPLE_AUDIENCES: string;
   GOOGLE_CLIENT_IDS: string;
+  // Where the Apple web flow (Android) hands the result back to the app: an Android App Link.
+  APPLE_WEB_REDIRECT_URL: string;
   SESSION_TTL_SECONDS: string;
   // Local development only: a JWKS URL on 127.0.0.1/localhost for test keys. Anything else is ignored.
   APPLE_JWKS_URL?: string;

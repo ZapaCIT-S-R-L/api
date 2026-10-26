@@ -1,12 +1,12 @@
 // The stable v1 endpoints: sign-in with Apple or Google, the signed-in parent, logout.
-import { decide } from "./age";
+import { decide, type AgeRange } from "./age";
 import { appleSignIn, googleSignIn, readJson, type SignInRequest } from "./body";
 import type { Env } from "./env";
 import { empty, error, json } from "./http";
 import { ProviderUnavailable } from "./jwks";
 import { checkNonceClaim, consumeNonce, InvalidNonce, issueNonce } from "./nonces";
 import { getParent, signIn } from "./parents";
-import { InvalidToken, verifyIdToken, type Provider } from "./providers";
+import { InvalidToken, verifyIdToken, type Identity, type Provider } from "./providers";
 import { authenticate } from "./sessions";
 
 const unauthorized = () =>
@@ -33,10 +33,22 @@ export async function handleSignIn(request: Request, env: Env, provider: Provide
     throw e;
   }
 
-  // The token must carry this sign-in's nonce; the nonce is used up only for a genuine token, before the age
-  // check, so a rejected age range can't be retried with the same token.
+  return finishSignIn(env, identity, input.nonce, input.ageRange, input.displayName);
+}
+
+// Shared by every sign-in: the token (already verified) must carry this sign-in's nonce, which is used up before
+// the age check, so a rejected age range can't be retried with the same token. Then the age rules, then the
+// session.
+export async function finishSignIn(
+  env: Env,
+  identity: Identity,
+  nonce: string,
+  ageRange: AgeRange,
+  displayName: string | null,
+): Promise<Response> {
+  const provider = identity.provider;
   try {
-    const claim = await checkNonceClaim(identity.nonce, input.nonce);
+    const claim = await checkNonceClaim(identity.nonce, nonce);
     await consumeNonce(env, claim);
   } catch (e) {
     if (!(e instanceof InvalidNonce)) throw e;
@@ -44,16 +56,15 @@ export async function handleSignIn(request: Request, env: Env, provider: Provide
     return error(401, "invalid_nonce", "The sign-in nonce is missing, wrong, expired or used. Get a new one.");
   }
 
-  const age = decide(input.ageRange);
+  const age = decide(ageRange);
   if (age === "minor" || age === "declined") {
-    console.log(JSON.stringify({ msg: "sign-in rejected", provider, reason: age, source: input.ageRange.source }));
+    console.log(JSON.stringify({ msg: "sign-in rejected", provider, reason: age, source: ageRange.source }));
     return age === "minor"
       ? error(403, "minor_not_allowed", "Only adults (18+) can create a ZapaKid parent account.")
       : error(403, "age_declined", "Share your age range to sign in: only adults (18+) can be parents.");
   }
 
-  const result = await signIn(env, identity, input.ageRange, age, input.displayName);
-  return json(result);
+  return json(await signIn(env, identity, ageRange, age, displayName));
 }
 
 export async function handleNonce(_request: Request, env: Env): Promise<Response> {

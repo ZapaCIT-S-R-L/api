@@ -1,4 +1,5 @@
 // ZapaKid API Worker. The server only ever sees public keys and ciphertext; it can never decrypt a chat.
+import { handleAppleWebCallback, handleAppleWebExchange, handleAppleWebStart } from "./apple-web";
 import { BadRequest } from "./body";
 import type { Env } from "./env";
 import { error, json } from "./http";
@@ -13,6 +14,9 @@ const ROUTES: Record<string, { method: string; handler: Handler; limited?: true 
   "/health": { method: "GET", handler: (_request, env) => json({ status: "ok", version: env.VERSION }) },
   "/v1/auth/nonce": { method: "POST", handler: handleNonce, limited: true },
   "/v1/auth/apple": { method: "POST", handler: (request, env) => handleSignIn(request, env, "apple"), limited: true },
+  "/v1/auth/apple/web": { method: "POST", handler: handleAppleWebStart, limited: true },
+  "/v1/auth/apple/callback": { method: "POST", handler: handleAppleWebCallback, limited: true },
+  "/v1/auth/apple/exchange": { method: "POST", handler: handleAppleWebExchange, limited: true },
   "/v1/auth/google": {
     method: "POST",
     handler: (request, env) => handleSignIn(request, env, "google"),

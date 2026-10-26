@@ -42,6 +42,26 @@ describe("daily purge", () => {
     expect(rows.results.map((r) => r.nonce_hash)).toEqual([hex("d")]);
   });
 
+  it("deletes expired Apple web flows, keeps a live code", async () => {
+    const now = new Date().toISOString();
+    await env.DB.batch([
+      env.DB.prepare(
+        "INSERT INTO apple_web_flows (state_hash, code_challenge, created_at, expires_at) VALUES (?, 'c', ?, ?)",
+      ).bind(hex("e"), now, past()),
+      env.DB.prepare(
+        "INSERT INTO apple_web_flows (state_hash, code_challenge, created_at, expires_at, code_expires_at) VALUES (?, 'c', ?, ?, ?)",
+      ).bind(hex("f"), now, past(), future()),
+      env.DB.prepare(
+        "INSERT INTO apple_web_flows (state_hash, code_challenge, created_at, expires_at) VALUES (?, 'c', ?, ?)",
+      ).bind(hex("0"), now, future()),
+    ]);
+    await runCron();
+    const rows = await env.DB.prepare("SELECT state_hash FROM apple_web_flows ORDER BY state_hash").all<{
+      state_hash: string;
+    }>();
+    expect(rows.results.map((r) => r.state_hash)).toEqual([hex("0"), hex("f")]);
+  });
+
   it("does nothing on an empty database", async () => {
     await env.DB.prepare("DELETE FROM sign_in_nonces").run();
     await runCron();

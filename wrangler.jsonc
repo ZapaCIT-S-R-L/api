@@ -14,7 +14,9 @@
   "vars": {
     "VERSION": "dev",
     "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/api",
-    "APPLE_AUDIENCES": "com.zapacit.cuzaai",
+    // Local test ids only: the bundle id and a fake Services ID for the web flow tests.
+    "APPLE_AUDIENCES": "com.zapacit.cuzaai,ro.zapakid.signin.local",
+    "APPLE_WEB_REDIRECT_URL": "https://zapakid.ro/app/apple",
     "GOOGLE_CLIENT_IDS": "000000000000-zapakidlocaltest.apps.googleusercontent.com",
     "SESSION_TTL_SECONDS": "2592000",
   },
@@ -44,7 +46,9 @@
       "vars": {
         "VERSION": "dev",
         "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/api",
+        // Add the Apple Services ID (web flow on Android) after the bundle id when Stefan provides it.
         "APPLE_AUDIENCES": "com.zapacit.cuzaai",
+        "APPLE_WEB_REDIRECT_URL": "https://zapakid.ro/app/apple",
         "GOOGLE_CLIENT_IDS": "",
         "SESSION_TTL_SECONDS": "2592000",
       },
@@ -72,7 +76,9 @@
       "vars": {
         "VERSION": "dev",
         "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/api",
+        // Add the Apple Services ID (web flow on Android) after the bundle id when Stefan provides it.
         "APPLE_AUDIENCES": "com.zapacit.cuzaai",
+        "APPLE_WEB_REDIRECT_URL": "https://zapakid.ro/app/apple",
         "GOOGLE_CLIENT_IDS": "",
         "SESSION_TTL_SECONDS": "2592000",
       },
