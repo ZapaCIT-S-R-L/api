@@ -378,7 +378,7 @@ paths:
       description: |
         The server verifies the attestation object as Apple documents it ("Validating apps that connect to your
         server"): certificate chain to Apple's App Attest root, nonce = SHA-256(authData ‖ SHA-256(challenge)),
-        App ID `9572LYGZ7S.com.zapacit.cuzaai`, key id, counter 0, and production `aaguid` in production. It stores
+        App ID `9572LYGZ7S.ro.zapakid.app`, key id, counter 0, and production `aaguid` in production. It stores
         the public key and counter. Later requests carry an assertion over the request body hash in the
         `ZapaKid-Attestation` header; the server checks the signature and that the counter increases. Verification
         uses the platform libraries' formats and WebCrypto only, no custom primitives.
@@ -407,7 +407,7 @@ paths:
       description: |
         The app requests a standard Play Integrity token with `requestHash` = SHA-256 of the request, or a classic
         token with the challenge as nonce. The server decodes it with Google's `decodeIntegrityToken` API and
-        requires `appRecognitionVerdict = PLAY_RECOGNIZED`, package `com.zapacit.cuzaai`, the release signing
+        requires `appRecognitionVerdict = PLAY_RECOGNIZED`, package `ro.zapakid.app`, the release signing
         certificate, `deviceRecognitionVerdict` containing `MEETS_DEVICE_INTEGRITY`, `appLicensingVerdict = LICENSED`
         and a matching, fresh request hash or nonce.
       security: []

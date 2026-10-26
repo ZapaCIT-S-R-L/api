@@ -12,7 +12,7 @@ export const APPLE_JWKS = "https://appleid.apple.com/auth/keys";
 export const GOOGLE_JWKS = "https://www.googleapis.com/oauth2/v3/certs";
 export const APPLE_ISSUER = "https://appleid.apple.com";
 export const GOOGLE_ISSUER = "https://accounts.google.com";
-export const APPLE_AUDIENCE = "com.zapacit.cuzaai";
+export const APPLE_AUDIENCE = "ro.zapakid.app";
 // Matches the local test Services ID in APPLE_AUDIENCES (top-level vars of wrangler.jsonc).
 export const APPLE_SERVICES_ID = "ro.zapakid.signin.local";
 // Matches GOOGLE_CLIENT_IDS in the top level (local) vars of wrangler.jsonc.
