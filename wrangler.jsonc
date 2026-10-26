@@ -44,8 +44,8 @@
       "preview_urls": false,
       "observability": { "enabled": true },
       // VERSION and VERSION_URL are overridden on every deploy (deploy.yml: wrangler deploy --var).
-      // GOOGLE_CLIENT_IDS: ZapaKid's OAuth client ids (web/server client for Android, iOS client), comma separated.
-      // Empty until they are set: Google sign-in then rejects every token.
+      // GOOGLE_CLIENT_IDS: the accepted `aud` of Google ID tokens (Cloud project zapakid, 64042746735): the web
+      // (server) client, which Android's Credential Manager uses (setServerClientId), and the iOS client.
       "vars": {
         "VERSION": "dev",
         "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/api",
@@ -53,7 +53,7 @@
         // https://api-staging.zapakid.ro/v1/auth/apple/callback registered with Apple).
         "APPLE_AUDIENCES": "ro.zapakid.app,ro.zapakid.signin",
         "APPLE_WEB_REDIRECT_URL": "https://zapakid.ro/app/apple",
-        "GOOGLE_CLIENT_IDS": "",
+        "GOOGLE_CLIENT_IDS": "64042746735-r70nv5pmlro7hpksk1te3ur008ungss1.apps.googleusercontent.com,64042746735-lgdmtj9vvd3kiu7g9qc2elu22la6o1id.apps.googleusercontent.com",
         "SESSION_TTL_SECONDS": "2592000",
         // Optional until the Play Integrity service account and signing certificate are set; then "required".
         "ATTESTATION_POLICY": "optional",
@@ -87,6 +87,7 @@
         // Add ",ro.zapakid.signin" at cutover, after api.zapakid.ro and its callback URL are registered with Apple.
         "APPLE_AUDIENCES": "ro.zapakid.app",
         "APPLE_WEB_REDIRECT_URL": "https://zapakid.ro/app/apple",
+        // Empty (Google sign-in off) until the cutover sets the same client ids as staging.
         "GOOGLE_CLIENT_IDS": "",
         "SESSION_TTL_SECONDS": "2592000",
         // Required from launch. Set PLAY_CERT_SHA256 and the PLAY_INTEGRITY_CREDENTIALS secret before cutover.
