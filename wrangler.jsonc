@@ -15,7 +15,7 @@
     "VERSION": "dev",
     "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/api",
     // Local test ids only: the bundle id and a fake Services ID for the web flow tests.
-    "APPLE_AUDIENCES": "com.zapacit.cuzaai,ro.zapakid.signin.local",
+    "APPLE_AUDIENCES": "ro.zapakid.app,ro.zapakid.signin.local",
     "APPLE_WEB_REDIRECT_URL": "https://zapakid.ro/app/apple",
     "GOOGLE_CLIENT_IDS": "000000000000-zapakidlocaltest.apps.googleusercontent.com",
     "SESSION_TTL_SECONDS": "2592000",
@@ -48,7 +48,7 @@
         "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/api",
         // iOS bundle id, then the Services ID of the web flow on Android (return URL
         // https://api-staging.zapakid.ro/v1/auth/apple/callback registered with Apple).
-        "APPLE_AUDIENCES": "com.zapacit.cuzaai,ro.zapakid.signin",
+        "APPLE_AUDIENCES": "ro.zapakid.app,ro.zapakid.signin",
         "APPLE_WEB_REDIRECT_URL": "https://zapakid.ro/app/apple",
         "GOOGLE_CLIENT_IDS": "",
         "SESSION_TTL_SECONDS": "2592000",
@@ -78,7 +78,7 @@
         "VERSION": "dev",
         "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/api",
         // Add ",ro.zapakid.signin" at cutover, after api.zapakid.ro and its callback URL are registered with Apple.
-        "APPLE_AUDIENCES": "com.zapacit.cuzaai",
+        "APPLE_AUDIENCES": "ro.zapakid.app",
         "APPLE_WEB_REDIRECT_URL": "https://zapakid.ro/app/apple",
         "GOOGLE_CLIENT_IDS": "",
         "SESSION_TTL_SECONDS": "2592000",

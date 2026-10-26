@@ -4,7 +4,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 
-const OLD_ID = ["com.zapacit", "cuzaai"].join(".");
+const OLD_ID = ["com", "zapacit", ["cuz", "aai"].join("")].join(".");
 
 test("the old app id appears nowhere in tracked files", () => {
   let hits = "";

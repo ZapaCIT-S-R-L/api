@@ -73,7 +73,7 @@ async function freshNonce(): Promise<{ nonce: string; hash: string }> {
 // An Apple sign-in body for a fresh nonce.
 async function appleSignIn(claims: JWTPayload = {}, ageRange: object = adult, exp?: number) {
   const { nonce, hash } = await freshNonce();
-  const base = { iss: "https://appleid.apple.com", aud: "com.zapacit.cuzaai", sub: `e2e-${run}`, nonce: hash };
+  const base = { iss: "https://appleid.apple.com", aud: "ro.zapakid.app", sub: `e2e-${run}`, nonce: hash };
   return { identityToken: await apple.sign({ ...base, ...claims }, exp), ageRange, nonce };
 }
 
