@@ -145,7 +145,7 @@ paths:
         Send the `identityToken` from Sign in with Apple (`ASAuthorizationAppleIDCredential.identityToken`) and the
         age range from Apple's Declared Age Range. The server verifies the token against Apple's keys
         (`https://appleid.apple.com/auth/keys`): signature (RS256), issuer `https://appleid.apple.com`, audience
-        (the app's bundle id), expiry. The first sign-in creates the parent's account. Each sign-in starts a new
+        (the iOS bundle id, or the Apple Services ID for the web flow on Android), expiry. The first sign-in creates the parent's account. Each sign-in starts a new
         session.
       security: []
       requestBody:
@@ -162,6 +162,122 @@ paths:
         "429": { $ref: "#/components/responses/RateLimited" }
         "415": { $ref: "#/components/responses/UnsupportedMediaType" }
         "503": { $ref: "#/components/responses/ProviderUnavailable" }
+
+  /v1/auth/apple/web:
+    post:
+      tags: [Sign-in]
+      operationId: startAppleWebSignIn
+      summary: Start Sign in with Apple in the browser (Android).
+      description: |
+        Android has no native Sign in with Apple, so the app uses Apple's web flow:
+
+        1. `POST /v1/auth/nonce` → `nonce`. Create a PKCE `codeVerifier` (43-128 characters, RFC 7636) and
+           `codeChallenge` = base64url(SHA-256(codeVerifier)).
+        2. `POST /v1/auth/apple/web` with `codeChallenge` → `state`.
+        3. Open (Custom Tab) `https://appleid.apple.com/auth/authorize` with `client_id` = ZapaKid's Apple
+           Services ID, `redirect_uri` = `<API origin>/v1/auth/apple/callback`, `response_type=code id_token`,
+           `response_mode=form_post`, `scope=name email`, `state`, and `nonce` = lowercase hex SHA-256 of `nonce`.
+        4. Apple posts to `POST /v1/auth/apple/callback`; the API verifies Apple's token and redirects the browser
+           to `https://zapakid.ro/app/apple#code=...&state=...` (an Android App Link that opens the app), or
+           `#error=...&state=...`.
+        5. The app checks `state`, then `POST /v1/auth/apple/exchange` with `code`, `codeVerifier`, `nonce` and the
+           age range → session, as for the other sign-ins.
+
+        No Apple token ever reaches the app or the URL. The flow expires after 10 minutes; the code after 2.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [codeChallenge, codeChallengeMethod]
+              additionalProperties: false
+              properties:
+                codeChallenge: { type: string, pattern: "^[A-Za-z0-9_-]{43}$" }
+                codeChallengeMethod: { const: S256 }
+      responses:
+        "200":
+          description: The flow's `state`, to pass to Apple.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [state, expiresAt]
+                properties:
+                  state: { type: string, pattern: "^[A-Za-z0-9_-]{43}$" }
+                  expiresAt: { type: string, format: date-time }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/auth/apple/callback:
+    post:
+      tags: [Sign-in]
+      operationId: appleWebCallback
+      summary: Apple's form_post redirect target (called by the browser, not by the app).
+      description: |
+        Receives `state`, `id_token`, `code`, `user` (first sign-in only: the name) or `error` from Apple. The
+        server verifies the identity token like `POST /v1/auth/apple` (audience = the Services ID), keeps only
+        the verified identity for the flow, and answers `303` to the app link. The `code` in the fragment is the
+        API's own one-time code, not Apple's.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                state: { type: string }
+                id_token: { type: string }
+                code: { type: string }
+                user: { type: string, description: "JSON with the user's name, first sign-in only." }
+                error: { type: string }
+      responses:
+        "303":
+          description: |
+            `Location: https://zapakid.ro/app/apple#code=<code>&state=<state>`, or `#error=<error>&state=<state>`
+            with `error` one of `invalid_state` (unknown, expired or already used flow), `invalid_token`,
+            `provider_unavailable`, or Apple's own error (for example `user_cancelled_authorize`).
+          headers:
+            Location: { schema: { type: string } }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/auth/apple/exchange:
+    post:
+      tags: [Sign-in]
+      operationId: exchangeAppleWebCode
+      summary: Finish the web flow - the app trades the one-time code for a session.
+      description: |
+        Checks the code (once, within 2 minutes), PKCE (`base64url(SHA-256(codeVerifier))` = the flow's
+        `codeChallenge`), and the nonce rules of `POST /v1/auth/apple` (Apple's token carried SHA-256 of `nonce`;
+        the nonce is used up). Then the age range, exactly as for the other sign-ins.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code, codeVerifier, nonce, ageRange]
+              additionalProperties: false
+              properties:
+                code: { type: string, pattern: "^[A-Za-z0-9_-]{43}$" }
+                codeVerifier: { type: string, pattern: "^[A-Za-z0-9._~-]{43,128}$" }
+                nonce: { $ref: "#/components/schemas/Nonce" }
+                ageRange: { $ref: "#/components/schemas/AgeRange" }
+      responses:
+        "200": { $ref: "#/components/responses/SignedIn" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401":
+          description: |
+            `invalid_code`: unknown, expired or already used code, or the PKCE verifier doesn't match.
+            `invalid_nonce`: as for `POST /v1/auth/apple`. Start the flow again.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "403": { $ref: "#/components/responses/AgeNotAllowed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
 
   /v1/auth/google:
     post:

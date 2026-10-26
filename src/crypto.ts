@@ -12,3 +12,12 @@ export function randomBase64Url(bytes: number): string {
     .replace(/\//g, "_")
     .replace(/=+$/, "");
 }
+
+// base64url(SHA-256(text)), as PKCE S256 (RFC 7636) uses it.
+export async function sha256Base64Url(text: string): Promise<string> {
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text)));
+  return btoa(String.fromCharCode(...digest))
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}

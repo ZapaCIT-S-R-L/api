@@ -183,6 +183,32 @@ describe.skipIf(LIVE)("sign-in flow with test keys (local only)", () => {
     expect(res.status).toBe(403);
   });
 
+  it("Apple web flow (Android): start, callback, exchange", async () => {
+    const verifier = createHash("sha256").update(`verifier-${run}`).digest("hex");
+    const codeChallenge = createHash("sha256").update(verifier).digest("base64url");
+    const start = await post("/v1/auth/apple/web", { codeChallenge, codeChallengeMethod: "S256" });
+    expect(start.status).toBe(200);
+    const { state } = await bodyOf<{ state: string }>(start);
+    const { nonce, hash } = await freshNonce();
+    const idToken = await apple.sign({
+      iss: "https://appleid.apple.com",
+      aud: "ro.zapakid.signin.local",
+      sub: `web-${run}`,
+      nonce: hash,
+    });
+    const callback = await api("/v1/auth/apple/callback", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ state, id_token: idToken, code: "apple" }).toString(),
+    });
+    expect(callback.status).toBe(303);
+    const fragment = new URLSearchParams((callback.headers.get("location") ?? "").split("#")[1]);
+    expect(fragment.get("state")).toBe(state);
+    const code = fragment.get("code") ?? "";
+    const exchange = await post("/v1/auth/apple/exchange", { code, codeVerifier: verifier, nonce, ageRange: adult });
+    expect(exchange.status).toBe(200);
+  });
+
   it("a replayed token and nonce → 401", async () => {
     const body = await appleSignIn({ sub: `replay-${run}` });
     expect((await post("/v1/auth/apple", body)).status).toBe(200);

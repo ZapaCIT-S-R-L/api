@@ -9,7 +9,7 @@ await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
 
 beforeEach(async () => {
   await env.DB.batch(
-    ["sessions", "parent_identities", "parents", "sign_in_nonces"].map((table) =>
+    ["sessions", "parent_identities", "parents", "sign_in_nonces", "apple_web_flows"].map((table) =>
       env.DB.prepare(`DELETE FROM ${table}`),
     ),
   );

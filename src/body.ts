@@ -15,7 +15,7 @@ export class BadRequest extends Error {
   }
 }
 
-const invalid = (message: string) => new BadRequest(400, "invalid_request", message);
+export const invalid = (message: string) => new BadRequest(400, "invalid_request", message);
 
 export async function readJson(request: Request): Promise<Record<string, unknown>> {
   const type = request.headers.get("content-type") ?? "";
@@ -61,7 +61,14 @@ async function readCapped(request: Request): Promise<Uint8Array> {
   return bytes;
 }
 
-function onlyFields(body: Record<string, unknown>, allowed: string[], where: string): void {
+// An application/x-www-form-urlencoded body (Apple's form_post), same 16 KiB cap. Null if not a form.
+export async function readForm(request: Request): Promise<URLSearchParams | null> {
+  const type = request.headers.get("content-type") ?? "";
+  if (!/^application\/x-www-form-urlencoded\s*(;|$)/i.test(type)) return null;
+  return new URLSearchParams(new TextDecoder().decode(await readCapped(request)));
+}
+
+export function onlyFields(body: Record<string, unknown>, allowed: string[], where: string): void {
   const extra = Object.keys(body).filter((k) => !allowed.includes(k));
   if (extra.length > 0) throw invalid(`Unknown field in ${where}: ${extra.join(", ")}.`);
 }
@@ -84,7 +91,7 @@ function bound(value: unknown, field: string): number | null {
 const AVAILABILITY: AgeAvailability[] = ["shared", "declined", "unavailable"];
 const SOURCES: AgeSource[] = ["apple_declared_age_range", "google_play_age_signals"];
 
-function ageRange(value: unknown): AgeRange {
+export function parseAgeRange(value: unknown): AgeRange {
   if (typeof value !== "object" || value === null || Array.isArray(value)) throw invalid("ageRange is required.");
   const range = value as Record<string, unknown>;
   onlyFields(range, ["availability", "source", "lowerBound", "upperBound", "platformStatus"], "ageRange");
@@ -118,7 +125,7 @@ function ageRange(value: unknown): AgeRange {
   return { availability, source: range.source as AgeSource, lowerBound, upperBound, platformStatus };
 }
 
-function nonce(body: Record<string, unknown>): string {
+export function nonce(body: Record<string, unknown>): string {
   if (typeof body.nonce !== "string" || !NONCE_PATTERN.test(body.nonce)) {
     throw invalid("nonce is required: the value from POST /v1/auth/nonce.");
   }
@@ -141,10 +148,20 @@ export function appleSignIn(body: Record<string, unknown>): SignInRequest {
     }
     displayName = body.displayName.trim() || null;
   }
-  return { token: token(body, "identityToken"), nonce: nonce(body), ageRange: ageRange(body.ageRange), displayName };
+  return {
+    token: token(body, "identityToken"),
+    nonce: nonce(body),
+    ageRange: parseAgeRange(body.ageRange),
+    displayName,
+  };
 }
 
 export function googleSignIn(body: Record<string, unknown>): SignInRequest {
   onlyFields(body, ["idToken", "ageRange", "nonce"], "the body");
-  return { token: token(body, "idToken"), nonce: nonce(body), ageRange: ageRange(body.ageRange), displayName: null };
+  return {
+    token: token(body, "idToken"),
+    nonce: nonce(body),
+    ageRange: parseAgeRange(body.ageRange),
+    displayName: null,
+  };
 }
