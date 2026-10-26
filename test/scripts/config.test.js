@@ -34,8 +34,8 @@ function appleAudiences(env) {
   return ids;
 }
 
-test("staging accepts Apple tokens for the ZapaKid app and its Services ID only", () => {
-  assert.ok(appleAudiences(staging).length <= 2);
+test("staging accepts Apple tokens for the ZapaKid app and its Services ID (web flow) only", () => {
+  assert.deepEqual(appleAudiences(staging), ["com.zapacit.cuzaai", "ro.zapakid.signin"]);
 });
 
 test("the Apple web flow hands back to the app link on zapakid.ro", () => {
