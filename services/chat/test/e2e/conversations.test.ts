@@ -37,7 +37,7 @@ describe("chat tokens", () => {
   });
 
   it.skipIf(LIVE)("wrong audience and too long-lived tokens: 401", async () => {
-    const wrongAud = await account.sign({ sub: f.mum, aud: "calls.zapakid.test" });
+    const wrongAud = await account.sign({ sub: f.mum, aud: "calls.localhost" });
     expect((await chat("/v1/conversations", { headers: bearer(wrongAud) })).status).toBe(401);
     const tooLong = await account.sign({ sub: f.mum }, 3600);
     expect((await chat("/v1/conversations", { headers: bearer(tooLong) })).status).toBe(401);

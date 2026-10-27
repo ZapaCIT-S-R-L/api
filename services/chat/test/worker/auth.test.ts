@@ -32,7 +32,7 @@ describe("chat token", () => {
   });
 
   it("wrong audience (another service's token): 401", async () => {
-    expect(await status(await issuer.sign(claims(MUM, { aud: "calls.zapakid.test" })))).toBe(401);
+    expect(await status(await issuer.sign(claims(MUM, { aud: "calls.localhost" })))).toBe(401);
   });
 
   it("wrong issuer: 401", async () => {

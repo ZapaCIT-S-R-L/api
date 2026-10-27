@@ -10,13 +10,13 @@
   "preview_urls": false,
   "observability": { "enabled": true },
 
-  // Chat tokens (ES256) come from the account service. Locally the tests serve their own keys on loopback; the
+  // Chat tokens (ES256) come from the account service (its local issuer and audiences match these). Locally the tests serve their own keys on loopback; the
   // Worker accepts a plain-http key URL only on 127.0.0.1/localhost.
   "vars": {
     "VERSION": "dev",
     "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/zapakid-api",
-    "TOKEN_ISSUER": "api.zapakid.test",
-    "TOKEN_AUDIENCE": "chat.zapakid.test",
+    "TOKEN_ISSUER": "http://localhost:8787",
+    "TOKEN_AUDIENCE": "chat.localhost",
     "ACCOUNT_JWKS_URL": "http://127.0.0.1:8789/.well-known/jwks.json",
     // Local only: POST /__e2e/membership puts test events on the local queue (loopback requests only). Never set
     // in a deployed environment (test/scripts/config.test.js).
@@ -61,7 +61,7 @@
       "vars": {
         "VERSION": "dev",
         "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/zapakid-api",
-        "TOKEN_ISSUER": "api-staging.zapakid.ro",
+        "TOKEN_ISSUER": "https://api-staging.zapakid.ro",
         "TOKEN_AUDIENCE": "chat-staging.zapakid.ro",
         "ACCOUNT_JWKS_URL": "https://api-staging.zapakid.ro/.well-known/jwks.json",
       },
@@ -101,7 +101,7 @@
       "vars": {
         "VERSION": "dev",
         "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/zapakid-api",
-        "TOKEN_ISSUER": "api.zapakid.ro",
+        "TOKEN_ISSUER": "https://api.zapakid.ro",
         "TOKEN_AUDIENCE": "chat.zapakid.ro",
         "ACCOUNT_JWKS_URL": "https://api.zapakid.ro/.well-known/jwks.json",
       },

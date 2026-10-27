@@ -29,7 +29,7 @@ Node 24 (`../../.nvmrc`). In this folder: `npm ci --ignore-scripts`, then
 
 `ci-chat.yml` checks PRs that touch `services/chat/**`. A merge to `main` runs `deploy-chat.yml`: tests, release tag
 `chat-vX.Y.Z` with an SBOM, resources (created if missing), D1 migrations, deploy to staging, e2e against staging,
-rollback on failure. Production: Actions → `deploy-chat-production` → a `chat-v…` tag, approved by @stefan-zpc.
+rollback on failure; then the same for production once @stefan-zpc approves the `production` environment.
 
 ## Deploying: Cloudflare settings
 

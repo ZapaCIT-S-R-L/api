@@ -37,7 +37,13 @@ export async function fakeAccountService(): Promise<AccountService> {
   return {
     sign: (claims, lifetime = 600) => {
       const iat = Math.floor(Date.now() / 1000);
-      return new SignJWT({ iss: "api.zapakid.test", aud: "chat.zapakid.test", dev: 1, role: "parent", ...claims })
+      return new SignJWT({
+        iss: "http://localhost:8787",
+        aud: ["chat.localhost", "calls.localhost"],
+        dev: 1,
+        role: "parent",
+        ...claims,
+      })
         .setProtectedHeader({ alg: "ES256", kid })
         .setIssuedAt(iat)
         .setExpirationTime(iat + lifetime)

@@ -22,11 +22,15 @@ test("hosts: chat-staging.zapakid.ro and chat.zapakid.ro, no workers.dev or prev
 test("chat tokens: each environment trusts only its own account service, over https", () => {
   assert.deepEqual(
     [staging.vars.TOKEN_ISSUER, staging.vars.TOKEN_AUDIENCE, staging.vars.ACCOUNT_JWKS_URL],
-    ["api-staging.zapakid.ro", "chat-staging.zapakid.ro", "https://api-staging.zapakid.ro/.well-known/jwks.json"],
+    [
+      "https://api-staging.zapakid.ro",
+      "chat-staging.zapakid.ro",
+      "https://api-staging.zapakid.ro/.well-known/jwks.json",
+    ],
   );
   assert.deepEqual(
     [production.vars.TOKEN_ISSUER, production.vars.TOKEN_AUDIENCE, production.vars.ACCOUNT_JWKS_URL],
-    ["api.zapakid.ro", "chat.zapakid.ro", "https://api.zapakid.ro/.well-known/jwks.json"],
+    ["https://api.zapakid.ro", "chat.zapakid.ro", "https://api.zapakid.ro/.well-known/jwks.json"],
   );
 });
 

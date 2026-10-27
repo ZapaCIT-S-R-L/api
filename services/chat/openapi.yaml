@@ -12,7 +12,7 @@ info:
     **Auth.** No login of its own. Every request carries a short-lived (at most 15 minutes) ES256 *chat token* from
     the account service (`POST /v1/chat/token` on api.zapakid.ro) as `Authorization: Bearer <token>`. The chat
     service checks it against the account service's public keys (`/.well-known/jwks.json`, cached), so it keeps
-    working while the account service is down. Claims: `iss` the account host, `aud` containing this host, `sub`
+    working while the account service is down. Claims: `iss` the account service URL (`https://api.zapakid.ro`), `aud` containing this host, `sub`
     the account id, `dev` the libsignal device id (1–127), `role` `parent` or `kid`, `iat`, `exp`. A `conv` claim, if
     present, is ignored here: the chat service is the source of conversation membership.
 

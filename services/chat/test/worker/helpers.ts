@@ -8,8 +8,8 @@ import { vi } from "vitest";
 import worker from "../../src/index";
 
 export const JWKS_URL = "http://127.0.0.1:8789/.well-known/jwks.json";
-export const ISSUER = "api.zapakid.test";
-export const AUDIENCE = "chat.zapakid.test";
+export const ISSUER = "http://localhost:8787";
+export const AUDIENCE = "chat.localhost";
 
 export interface Issuer {
   kid: string;
@@ -56,7 +56,7 @@ export function stubJwks(...issuers: Issuer[]): JwksStub {
 }
 
 export function claims(accountId: string, overrides: Record<string, unknown> = {}): JWTPayload {
-  return { iss: ISSUER, aud: [AUDIENCE, "calls.zapakid.test"], sub: accountId, dev: 1, role: "parent", ...overrides };
+  return { iss: ISSUER, aud: [AUDIENCE, "calls.localhost"], sub: accountId, dev: 1, role: "parent", ...overrides };
 }
 
 export async function tokenFor(issuer: Issuer, accountId: string, overrides: Record<string, unknown> = {}) {

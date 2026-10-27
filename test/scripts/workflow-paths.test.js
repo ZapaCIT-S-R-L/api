@@ -38,3 +38,12 @@ test("each service's CI and staging deploy run only for that service", () => {
     assert.equal(deploy.defaults.run["working-directory"], `services/${service}`);
   }
 });
+
+test("each service deploys staging first, then production only through the protected environment", () => {
+  for (const service of readdirSync(new URL("../../services/", import.meta.url))) {
+    const { jobs } = load(`deploy-${service}.yml`);
+    assert.equal(jobs.staging.environment.name, "staging", service);
+    assert.equal(jobs.production.environment.name, "production", service);
+    assert.equal(jobs.production.needs, "staging", service);
+  }
+});
