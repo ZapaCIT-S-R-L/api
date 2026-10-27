@@ -21,7 +21,7 @@ function decodedLength(b64: string): number {
 }
 
 // The caller's device must be registered with the account service (it gets envelopes like any other device).
-async function requireRegisteredDevice(env: Env, caller: Caller): Promise<void> {
+export async function requireRegisteredDevice(env: Env, caller: Caller): Promise<void> {
   const row = await env.DB.prepare("SELECT 1 FROM devices WHERE account_id = ?1 AND device_id = ?2")
     .bind(caller.accountId, caller.deviceId)
     .first();
