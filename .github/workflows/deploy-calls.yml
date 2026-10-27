@@ -4,7 +4,7 @@
 # The version is `calls-` + the first 12 hex digits of the commit (the vX.Y.Z tags belong to the account API).
 # D1 migrations run before the deploy and are not rolled back: every migration must work with the previous Worker.
 # Credentials: the same GitHub environments as the API (`staging`, `production`): secret CLOUDFLARE_API_TOKEN,
-# variable CLOUDFLARE_ACCOUNT_ID. The Worker's own secrets are set by Stefan (services/calls/README.md).
+# variable CLOUDFLARE_ACCOUNT_ID. The Worker's own secrets come from bootstrap-secrets.yml.
 name: deploy-calls
 
 on:

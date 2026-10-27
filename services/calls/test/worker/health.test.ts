@@ -43,6 +43,15 @@ describe("GET /health with missing or unsafe config", () => {
     ["no JWKS URL", { ACCOUNT_JWKS_URL: "" }, "ACCOUNT_JWKS_URL"],
     ["no issuer", { TOKEN_ISSUER: "" }, "TOKEN_ISSUER"],
     ["no audience", { TOKEN_AUDIENCE: "" }, "TOKEN_AUDIENCE"],
+    ["no Durable Object binding", { CALL: undefined }, "CALL binding missing"],
+    ["no rate limiter", { JOIN_LIMITER: undefined }, "JOIN_LIMITER binding missing"],
+    ["no Realtime app id", { REALTIME_APP_ID: undefined }, "REALTIME_APP_ID missing"],
+    ["no Realtime app secret", { REALTIME_APP_SECRET: "" }, "REALTIME_APP_SECRET missing"],
+    ["no TURN key", { TURN_KEY_ID: undefined }, "TURN_KEY_ID missing"],
+    ["no TURN token", { TURN_KEY_API_TOKEN: undefined }, "TURN_KEY_API_TOKEN missing"],
+    ["a plain-http Realtime URL", { REALTIME_API_URL: "http://rtc.example/v1" }, "REALTIME_API_URL"],
+    ["more than 8 participants", { MAX_PARTICIPANTS: "50" }, "MAX_PARTICIPANTS"],
+    ["TURN credentials over an hour", { TURN_TTL_SECONDS: "86400" }, "TURN_TTL_SECONDS"],
   ];
   for (const [why, overrides, name] of cases) {
     it(`${why} → 503 misconfigured, naming ${name}`, async () => {

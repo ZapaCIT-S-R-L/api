@@ -26,6 +26,35 @@ The GitHub environments and Cloudflare API token are the API's (root README, "De
 cover this Worker (Workers Scripts, D1, Workers Routes and DNS on `zapakid.ro`). The custom domains create their own
 DNS records on the first deploy.
 
+## How a call works
+
+- `src/calls.ts`: the HTTP API (start, join, leave, decline, call log, events, Realtime proxy).
+- `src/call-room.ts`: one Durable Object per call. It holds the roster and the key epoch, which goes up on every
+  join and leave. It runs the hibernating events WebSocket and relays the libsignal-sealed key envelopes to the one
+  device each is for, queuing them for a device that isn't connected yet. It also runs the timers: 45 s ring
+  timeout, 2 h maximum, 30 s reconnect grace, and cleanup an hour after the end.
+- `src/realtime.ts`: Cloudflare Realtime SFU calls with the app secret, plus TURN credentials (TTL 1 h). If TURN is
+  down, it falls back to STUN only.
+- `src/push.ts`: the ringing interface (PushKit VoIP / FCM). It's a stub until the APNs and FCM credentials and the
+  device push tokens arrive.
+- Limits: 8 participants, and 10 calls started and 30 joins a minute per account (rate limiting binding).
+
+## Secrets
+
+The Worker needs four secrets per environment: `REALTIME_APP_ID`, `REALTIME_APP_SECRET`, `TURN_KEY_ID` and
+`TURN_KEY_API_TOKEN`. `/health` answers 503 and names any that are missing. The `bootstrap-secrets` workflow
+(Actions → Run workflow, `env` = `staging` or `production`) creates a Realtime SFU app and a TURN key named
+`zapakid-<env>` and stores them, masked, never by hand. The order for a new environment:
+
+1. Merge; the first deploy creates the Worker. Its e2e check fails until the secrets are set, and there is nothing
+   to roll back to yet.
+2. Run `bootstrap-secrets` for that environment. It skips a Worker that isn't deployed yet, so run it after step 1.
+3. Re-run the `deploy-calls` workflow; it goes green.
+
+The chat tokens need the account API's signing key; the same workflow makes it.
+
 ## Retention
 
-The call log keeps who started a call in which conversation, when, and how it ended. Never audio, never keys.
+The call log keeps who started a call in which conversation, when, how it ended and the peak number of
+participants. It never keeps audio or keys. Rows are purged daily after `CALL_LOG_RETENTION_DAYS` (365). Deleting a
+conversation's call log together with the chat comes with the chat service.
