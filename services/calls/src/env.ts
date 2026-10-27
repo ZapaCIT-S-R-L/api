@@ -1,11 +1,14 @@
 // Bindings and variables from wrangler.jsonc.
 import type { CallRoom } from "./call-room";
+import type { ChatMembershipRpc } from "./chat";
 
 export interface Env {
   // The call log (metadata only, never audio).
   DB: D1Database;
   // One Durable Object per call (src/call-room.ts): roster, key envelope relay, events WebSocket, timers.
   CALL: DurableObjectNamespace<CallRoom>;
+  // The chat service's ChatMembership entrypoint (service binding, Workers RPC): who is in a conversation (src/chat.ts).
+  CHAT: ChatMembershipRpc;
   // Calls started and joins, per account per minute (wrangler.jsonc ratelimits).
   CREATE_LIMITER: RateLimit;
   JOIN_LIMITER: RateLimit;

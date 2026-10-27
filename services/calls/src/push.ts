@@ -7,6 +7,8 @@ export interface RingingCall {
   conversationId: string;
   // The caller's account id.
   from: string;
+  // Every device of the other members when the call started (from the chat service); the caller's own are left out.
+  to: { accountId: string; deviceId: number }[];
 }
 
 export interface PushProvider {

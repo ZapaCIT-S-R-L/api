@@ -30,6 +30,9 @@
   // Secrets (the bootstrap-secrets workflow, never vars): REALTIME_APP_ID, REALTIME_APP_SECRET, TURN_KEY_ID,
   // TURN_KEY_API_TOKEN. Locally: --var on wrangler dev with fake values (scripts/check.sh), or .dev.vars.
   "durable_objects": { "bindings": [{ "name": "CALL", "class_name": "CallRoom" }] },
+  // Conversation membership: the chat Worker of the same environment, over Workers RPC (never public HTTP). Locally
+  // the tests play it (test/chat-stub). Bindings are not inherited: each environment names its own chat Worker.
+  "services": [{ "binding": "CHAT", "service": "zapakid-chat", "entrypoint": "ChatMembership" }],
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CallRoom"] }],
   // Calls started and joins per account per minute; each environment has its own namespace_id (separate counters).
   "ratelimits": [
@@ -69,6 +72,8 @@
         "CALL_LOG_RETENTION_DAYS": "365",
       },
       "durable_objects": { "bindings": [{ "name": "CALL", "class_name": "CallRoom" }] },
+      // zapakid-chat-staging must be deployed (with ChatMembership) before this binding can be.
+      "services": [{ "binding": "CHAT", "service": "zapakid-chat-staging", "entrypoint": "ChatMembership" }],
       "ratelimits": [
         { "name": "CREATE_LIMITER", "namespace_id": "2101", "simple": { "limit": 10, "period": 60 } },
         { "name": "JOIN_LIMITER", "namespace_id": "2102", "simple": { "limit": 30, "period": 60 } },
@@ -109,6 +114,8 @@
         "CALL_LOG_RETENTION_DAYS": "365",
       },
       "durable_objects": { "bindings": [{ "name": "CALL", "class_name": "CallRoom" }] },
+      // zapakid-chat-production must be deployed (with ChatMembership) before this binding can be.
+      "services": [{ "binding": "CHAT", "service": "zapakid-chat-production", "entrypoint": "ChatMembership" }],
       "ratelimits": [
         { "name": "CREATE_LIMITER", "namespace_id": "3101", "simple": { "limit": 10, "period": 60 } },
         { "name": "JOIN_LIMITER", "namespace_id": "3102", "simple": { "limit": 30, "period": 60 } },

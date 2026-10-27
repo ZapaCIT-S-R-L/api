@@ -29,12 +29,12 @@ const chats = new Map<string, Map<string, { role: string; devices: number[] }>>(
 // /chat/members (PUT adds a device of a member, DELETE removes the member) and /chat/conversations/{id}.
 function chat(method: string, url: string, body: Record<string, unknown>): [number, unknown] | null {
   if (url === "/chat/members") {
-    const conversationId = String(body.conversationId);
-    const accountId = String(body.accountId);
+    const conversationId = typeof body.conversationId === "string" ? body.conversationId : "";
+    const accountId = typeof body.accountId === "string" ? body.accountId : "";
     if (method === "PUT") {
       const members = chats.get(conversationId) ?? new Map<string, { role: string; devices: number[] }>();
       chats.set(conversationId, members);
-      const m = members.get(accountId) ?? { role: String(body.role ?? "parent"), devices: [] };
+      const m = members.get(accountId) ?? { role: body.role === "kid" ? "kid" : "parent", devices: [] };
       if (!m.devices.includes(Number(body.deviceId))) m.devices.push(Number(body.deviceId));
       members.set(accountId, m);
       return [204, null];

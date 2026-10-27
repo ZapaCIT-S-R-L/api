@@ -7,6 +7,7 @@
 // envelope for a device that is not connected yet waits here until it connects, for the current epoch only.
 import { DurableObject } from "cloudflare:workers";
 import type { Caller, Role } from "./auth";
+import { ChatUnavailable, membership } from "./chat";
 import type { Env } from "./env";
 import { limits } from "./limits";
 import { pushProvider } from "./push";
@@ -48,6 +49,9 @@ interface CallState {
   declined: string[];
   peak: number;
   pending: PendingKey[];
+  // The devices rung at the start (the other members' devices, from the chat service), to cancel the same ring.
+  // Missing in calls started before it was kept.
+  ring?: { accountId: string; deviceId: number }[];
 }
 
 export interface CallView {
@@ -107,7 +111,13 @@ export class CallRoom extends DurableObject<Env> {
 
   // ---- RPC from the Worker (src/calls.ts); every method gets the verified caller ----
 
-  async start(callId: string, conversationId: string, who: Caller): Promise<Result<CallView>> {
+  // The Worker has checked with the chat service that the caller is a member of the conversation.
+  async start(
+    callId: string,
+    conversationId: string,
+    who: Caller,
+    ring: { accountId: string; deviceId: number }[] = [],
+  ): Promise<Result<CallView>> {
     if (this.call) return fail(409, "call_exists", "This call id is taken.");
     const now = Date.now();
     this.call = {
@@ -124,6 +134,7 @@ export class CallRoom extends DurableObject<Env> {
       declined: [],
       peak: 1,
       pending: [],
+      ring,
     };
     await this.env.DB.prepare(
       "INSERT INTO calls (id, conversation_id, created_by_account, created_by_device, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -135,13 +146,14 @@ export class CallRoom extends DurableObject<Env> {
   }
 
   async snapshot(who: Caller): Promise<Result<CallView>> {
-    const call = this.visible(who);
-    return Promise.resolve(call ? ok(this.view()) : notFound());
+    const access = await this.access(who);
+    return access.ok ? ok(this.view()) : access;
   }
 
   async join(who: Caller): Promise<Result<CallView>> {
-    const call = this.visible(who);
-    if (!call) return notFound();
+    const access = await this.access(who);
+    if (!access.ok) return access;
+    const call = access.value;
     if (call.state === "ended") return fail(410, "call_ended", "The call has ended.");
     if (this.find(who)) return ok(this.view());
     if (call.participants.length >= limits(this.env).maxParticipants) {
@@ -170,16 +182,18 @@ export class CallRoom extends DurableObject<Env> {
   }
 
   async leave(who: Caller): Promise<Result<null>> {
-    const call = this.visible(who);
-    if (!call) return notFound();
+    const access = await this.access(who);
+    if (!access.ok) return access;
+    const call = access.value;
     const p = this.find(who);
     if (call.state !== "ended" && p) await this.remove(p, "left");
     return ok(null);
   }
 
   async decline(who: Caller): Promise<Result<null>> {
-    const call = this.visible(who);
-    if (!call) return notFound();
+    const access = await this.access(who);
+    if (!access.ok) return access;
+    const call = access.value;
     if (call.state === "ended") return fail(410, "call_ended", "The call has ended.");
     if (!call.declined.includes(who.accountId)) call.declined.push(who.accountId);
     await this.save();
@@ -190,10 +204,10 @@ export class CallRoom extends DurableObject<Env> {
 
   // The caller must be a participant (before the Worker creates an SFU session for them).
   async requireParticipant(who: Caller): Promise<Result<null>> {
-    const call = this.visible(who);
-    if (!call) return notFound();
-    if (call.state === "ended") return fail(410, "call_ended", "The call has ended.");
-    return Promise.resolve(this.find(who) ? ok(null) : fail(403, "not_participant", "Join the call first."));
+    const access = await this.access(who);
+    if (!access.ok) return access;
+    if (access.value.state === "ended") return fail(410, "call_ended", "The call has ended.");
+    return this.find(who) ? ok(null) : fail(403, "not_participant", "Join the call first.");
   }
 
   async attachSession(who: Caller, sessionId: string): Promise<Result<null>> {
@@ -243,8 +257,11 @@ export class CallRoom extends DurableObject<Env> {
   override async fetch(request: Request): Promise<Response> {
     const who = JSON.parse(request.headers.get("x-zapakid-caller") ?? "null") as Caller | null;
     if (!who) return new Response(null, { status: 400 });
-    const call = this.visible(who);
-    if (!call) return Response.json({ error: { code: "not_found", message: "No such call." } }, { status: 404 });
+    const access = await this.access(who);
+    if (!access.ok) {
+      return Response.json({ error: { code: access.code, message: access.message } }, { status: access.status });
+    }
+    const call = access.value;
     if (this.ctx.getWebSockets().length >= MAX_SOCKETS) {
       return Response.json(
         { error: { code: "too_many_connections", message: "Too many connections." } },
@@ -346,10 +363,21 @@ export class CallRoom extends DurableObject<Env> {
 
   // ---- Internals ----
 
-  private visible(who: Caller): CallState | null {
+  // The call, if the caller is a current member of its conversation. The chat service is asked every time, so a
+  // member removed from the conversation can't see, join or rejoin its calls (404, as for a call that doesn't exist).
+  private async access(who: Caller): Promise<Result<CallState>> {
+    const asked = this.call;
+    if (!asked) return notFound();
+    try {
+      if (!(await membership(this.env, asked.conversationId, who.accountId)).member) return notFound();
+    } catch (e) {
+      if (!(e instanceof ChatUnavailable)) throw e;
+      console.error(JSON.stringify({ msg: "chat unavailable", err: e.message }));
+      return fail(503, "chat_unavailable", "Calls are unavailable right now. Try again later.");
+    }
+    // Other requests may have run during the RPC: use the call as it is now.
     const call = this.call;
-    if (!call || !who.conversations.includes(call.conversationId)) return null;
-    return call;
+    return call?.callId === asked.callId ? ok(call) : notFound();
   }
 
   private find(who: { accountId: string; deviceId: number }): Participant | undefined {
@@ -357,7 +385,12 @@ export class CallRoom extends DurableObject<Env> {
   }
 
   private ringing(call: CallState) {
-    return { callId: call.callId, conversationId: call.conversationId, from: call.createdBy.accountId };
+    return {
+      callId: call.callId,
+      conversationId: call.conversationId,
+      from: call.createdBy.accountId,
+      to: call.ring ?? [],
+    };
   }
 
   private async save(): Promise<void> {

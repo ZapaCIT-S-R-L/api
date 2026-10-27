@@ -11,7 +11,8 @@ info:
 
     **Auth.** No login of its own: send the chat token from the account API (`POST /v1/chat/token` on
     api.zapakid.ro) as `Authorization: Bearer <chat token>`. It is verified against the account API's JWKS.
-    On `401`, fetch a new chat token and retry once.
+    On `401`, fetch a new chat token and retry once. Who may start, see or join a call is not in the token: the
+    chat service is asked on every request whether the caller is a current member of the call's conversation.
 
     **Transport.** HTTPS only, TLS 1.3 only, HSTS. No cookies and no CORS: the API is for the ZapaKid apps.
 
@@ -133,6 +134,7 @@ paths:
         "400": { $ref: "#/components/responses/InvalidRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "403": { $ref: "#/components/responses/ConversationNotAllowed" }
+        "503": { $ref: "#/components/responses/KeysUnavailable" }
 
   /v1/calls/{callId}:
     get:
@@ -409,12 +411,14 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     ConversationNotAllowed:
-      description: "`conversation_not_allowed`: not in the token's `conv`. Get a new chat token if you just joined."
+      description: |
+        `conversation_not_allowed`: the chat service doesn't list you as a current member of that conversation (it
+        must be open, and not deleted by you).
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     NotFound:
-      description: "`not_found`: no such call, or it belongs to a conversation not in the token."
+      description: "`not_found`: no such call, or you are not (or no longer) a member of its conversation."
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -438,7 +442,9 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     KeysUnavailable:
-      description: "`keys_unavailable`: the account API's keys could not be fetched. Retry later."
+      description: |
+        `keys_unavailable`: the account API's keys could not be fetched; `chat_unavailable`: the chat service could
+        not confirm the membership. Retry later.
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
