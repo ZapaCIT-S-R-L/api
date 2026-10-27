@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../../src/index";
 import { conversationScopes, familyScope, membersOf } from "../../src/family-membership";
 import { flushMembershipEvents, type MembershipEvent } from "../../src/membership-events";
-import { call, makeIssuer, resetJwksCache, signInParent, stubJwks, type TestIssuer } from "./helpers";
+import { call, makeIssuer, resetJwksCache, signInParent, stubJwks, workerRequest, type TestIssuer } from "./helpers";
 
 let apple: TestIssuer;
 
@@ -182,10 +182,10 @@ describe("membership events (outbox)", () => {
     const ana = await signInParent(apple, "ana");
     const queue = new FakeQueue();
     queue.fail = true;
-    const request = new Request("https://api.test/v1/families", {
+    const request = workerRequest("https://api.test/v1/families", {
       method: "POST",
       headers: { ...ana.auth, "cf-connecting-ip": "10.1.2.3" },
-    }) as Parameters<typeof worker.fetch>[0];
+    });
     expect((await worker.fetch(request, withQueue(queue))).status).toBe(201);
     expect((await outbox()).map((e) => e.sent)).toEqual([false]);
   });

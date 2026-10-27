@@ -29,6 +29,10 @@
   // Auth rate limit (nonce + sign-in) per client address per minute and Cloudflare location. High locally so the
   // e2e suite fits; each environment has its own namespace_id (separate counters).
   "ratelimits": [{ "name": "AUTH_LIMITER", "namespace_id": "1001", "simple": { "limit": 1000, "period": 60 } }],
+  // Membership events to the chat and calls services (src/membership-events.ts). Local queue only for now: staging
+  // and production get the binding once their queue exists (`wrangler queues create`); until then the events wait in
+  // the D1 outbox and nothing is lost.
+  "queues": { "producers": [{ "binding": "MEMBERSHIP_EVENTS", "queue": "zapakid-membership-local" }] },
   // Local only (wrangler dev, tests): Miniflare keeps it on disk under .wrangler/.
   "d1_databases": [
     {

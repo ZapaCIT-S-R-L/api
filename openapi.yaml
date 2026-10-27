@@ -79,6 +79,26 @@ tags:
     description: |
       A parent pairs a kid's phone by showing a QR code. Kids never sign in with Apple or Google. A kid session
       (`zkk_` token) comes only from a parent's pairing code.
+  - name: Membership events
+    description: |
+      Not an HTTP endpoint: the contract between this API and the chat and calls services. Every change to who is in
+      a scope is sent as a `MembershipEvent` (schema below) to the Cloudflare Queue bound as `MEMBERSHIP_EVENTS`
+      (JSON messages). The chat and calls Workers consume the queue and keep their own copy of who may be in a
+      conversation.
+
+      - **Scopes.** `family:<familyId>` is a family's parents and kids. `connection:<connectionId>` comes with
+        connections between families. A scope is the upper bound of who may be put in a conversation together; the
+        chat service decides who is in each conversation.
+      - **Types.** `member.added` and `member.removed` carry the account (`id`, `role` parent or kid).
+        `scope.deleted` removes everyone in the scope (for example, an empty family deleted when its only parent
+        joins another family).
+      - **Delivery.** At least once. Dedupe by `id`. `seq` increases with every event (across all scopes), so apply
+        events in `seq` order and ignore an older `seq` for a scope you already moved past. Events are written in
+        the same D1 transaction as the change (outbox), so an event exists exactly when the change happened. They
+        are sent right after the change, and again by the cron if the queue was unavailable.
+      - **Privacy.** Ids only: no names, nicknames, avatars or keys.
+      - **Bootstrap.** A consumer that starts late can't replay events older than 7 days. It asks this API for the
+        current members instead (an internal endpoint, to come with the chat service).
   - name: "Draft: Connections"
     description: Planned. Parents of different families connect, then each family shares chosen kids.
   - name: "Draft: Devices and keys"
@@ -965,6 +985,22 @@ paths:
       responses:
         "200": { description: "The ciphertext." }
 
+# Outbound messages. Not HTTP: OpenAPI 3.1 webhooks are used to describe the queue messages this API produces.
+webhooks:
+  membershipEvent:
+    post:
+      tags: [Membership events]
+      operationId: membershipEvent
+      summary: A message on the MEMBERSHIP_EVENTS Cloudflare Queue (not an HTTP call).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MembershipEvent" }
+      responses:
+        "200": { description: "Consumers ack the queue message; nothing is returned." }
+
 components:
   securitySchemes:
     session:
@@ -1240,6 +1276,34 @@ components:
           type: array
           description: In the order they were added.
           items: { $ref: "#/components/schemas/Kid" }
+
+    MembershipEvent:
+      type: object
+      description: A message on the `MEMBERSHIP_EVENTS` queue (see the `Membership events` tag).
+      required: [version, id, seq, type, scope, familyId, occurredAt]
+      additionalProperties: false
+      properties:
+        version: { type: integer, const: 1 }
+        id: { type: string, format: uuid, description: Unique per event; dedupe on it. }
+        seq: { type: integer, minimum: 1, description: Increases with every event; apply in this order. }
+        type: { type: string, enum: [member.added, member.removed, scope.deleted] }
+        scope:
+          type: string
+          pattern: "^(family|connection):[0-9a-f-]{36}$"
+          examples: ["family:7d9f2c1e-4b8a-4c3d-9e2f-1a2b3c4d5e6f"]
+        familyId:
+          type: string
+          format: uuid
+          description: The family whose change caused the event.
+        account:
+          type: object
+          description: For member.added and member.removed. Absent for scope.deleted.
+          required: [id, role]
+          additionalProperties: false
+          properties:
+            id: { type: string, format: uuid, description: A parent id or a kid id. }
+            role: { type: string, enum: [parent, kid] }
+        occurredAt: { type: string, format: date-time }
 
     Base64:
       type: string

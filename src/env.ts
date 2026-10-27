@@ -25,6 +25,9 @@ export interface Env {
   PLAY_INTEGRITY_CREDENTIALS?: string;
   // Secret (staging): "provider:subject" test accounts allowed to sign in without attestation, comma separated.
   ATTESTATION_ALLOWLIST?: string;
+  // Queue producer for membership events to the chat and calls services (src/membership-events.ts). Optional: until
+  // an environment has the queue, events wait in the D1 outbox.
+  MEMBERSHIP_EVENTS?: Queue;
   // Local development only: a JWKS URL on 127.0.0.1/localhost for test keys. Anything else is ignored.
   APPLE_JWKS_URL?: string;
   GOOGLE_JWKS_URL?: string;
