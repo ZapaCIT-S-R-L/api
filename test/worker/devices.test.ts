@@ -402,7 +402,10 @@ describe("DELETE /v1/devices/{id}", () => {
     const a = await signIn();
     await register(a.session.token, deviceKeys());
     await call("/v1/devices/1", { method: "DELETE", headers: bearer(a.session.token) });
-    expect((await call(`/v1/accounts/${a.parent.id}/identity`, { headers: bearer(a.session.token) })).status).toBe(200);
+    const again = await signIn(); // removing the own device signed this session out
+    expect((await call(`/v1/accounts/${a.parent.id}/identity`, { headers: bearer(again.session.token) })).status).toBe(
+      200,
+    );
   });
 
   it("only own devices: another account's device 1 → 404 and stays", async () => {

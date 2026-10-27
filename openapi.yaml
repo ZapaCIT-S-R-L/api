@@ -440,7 +440,8 @@ paths:
         signatures 64 bytes), unique key ids and the counts, and stores only public keys and signatures. Apps
         verify the signatures with libsignal when they use a bundle; libsignal refuses a bad one.
 
-        A device that makes no request for 90 days is removed (daily), with its keys.
+        A device that makes no request for 90 days is removed (daily), with its keys, and its sessions are signed
+        out.
       parameters: [{ $ref: "#/components/parameters/attestation" }]
       requestBody:
         required: true
@@ -481,7 +482,9 @@ paths:
       tags: [Devices and keys]
       operationId: removeDevice
       summary: Remove one of the account's devices (an old phone or install) with its keys.
-      description: Only the caller's own devices. Sessions bound to it are unbound.
+      description: |
+        Only the caller's own devices. Every session bound to that device is signed out (a lost phone loses access;
+        removing the caller's own device signs the caller out too). Its keys are deleted.
       parameters:
         - name: deviceId
           in: path
