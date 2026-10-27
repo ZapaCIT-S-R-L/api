@@ -161,10 +161,34 @@ async function listSecrets(worker) {
   throw new Error(`wrangler secret list --name ${worker} failed (exit ${code})`);
 }
 
+// Puts one secret through `run` (wrangler). Returns "deployed" when it went live at once, or "version" when the
+// Worker's latest version isn't the deployed one (a rolled-back deploy): then it goes on a new version,
+// which the next deploy inherits. The value goes on stdin only; errors carry wrangler's error codes, never its output.
+export async function putSecretWith(run, worker, name, value) {
+  const direct = await run(["secret", "put", name, "--name", worker], value);
+  if (direct.code === 0) return "deployed";
+  if (/latest version of your Worker isn't currently deployed/.test(direct.out + direct.err)) {
+    const msg = `bootstrap-secrets: ${name}`;
+    const viaVersion = await run(["versions", "secret", "put", name, "--name", worker, "--message", msg], value);
+    if (viaVersion.code === 0) return "version";
+    throw new Error(`wrangler versions secret put ${name} --name ${worker} failed (${detail(viaVersion)})`);
+  }
+  throw new Error(`wrangler secret put ${name} --name ${worker} failed (${detail(direct)})`);
+}
+
+function codes({ out, err }) {
+  return [...`${out}\n${err}`.matchAll(/\[code: (\d+)\]/g)].map((m) => m[1]);
+}
+
+function detail(result) {
+  const c = codes(result);
+  return `exit ${result.code}${c.length ? `; code ${c.join(", ")}` : ""}`;
+}
+
 async function putSecret(worker, name, value) {
-  // The value goes on stdin only; wrangler's output names the secret, never the value.
-  const { code } = await wrangler(["secret", "put", name, "--name", worker], value);
-  if (code !== 0) throw new Error(`wrangler secret put ${name} --name ${worker} failed (exit ${code})`);
+  if ((await putSecretWith(wrangler, worker, name, value)) === "version") {
+    console.log(`::notice::${worker}: ${name} is on a new version, not live yet; re-run the Worker's deploy.`);
+  }
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

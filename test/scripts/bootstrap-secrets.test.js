@@ -178,7 +178,7 @@ test("refuses an unknown environment or rotate value", async () => {
 });
 
 // Regression: staging run 40580172197. A failed deploy had rolled back, so the Worker's latest version wasn't the
-// deployed one and `wrangler secret put` refused (code 10215). The secret then goes on a new version instead
+// deployed one and `wrangler secret put` refused (wrangler: "latest version ... isn't currently deployed", API code 10214/10215). The secret then goes on a new version instead
 // (`wrangler versions secret put`), which the next deploy inherits.
 test("falls back to versions secret put when the latest version isn't deployed; value on stdin only", async () => {
   const calls = [];
@@ -186,7 +186,11 @@ test("falls back to versions secret put when the latest version isn't deployed; 
     calls.push({ args, input });
     return Promise.resolve(
       args[0] === "secret"
-        ? { code: 1, out: "", err: "✘ [ERROR] Secret edit failed. ... isn't currently deployed. [code: 10215]" }
+        ? {
+            code: 1,
+            out: "",
+            err: "✘ [ERROR] Secret edit failed. You attempted to modify a secret, but the latest version of your Worker isn't currently deployed.",
+          }
         : { code: 0, out: "", err: "" },
     );
   };
