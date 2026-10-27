@@ -1,0 +1,83 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "zapakid-calls",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-12",
+
+  // The top level is for local development and tests only. Deploys always name an environment
+  // (deploy-calls.yml: --env staging, then --env production).
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+
+  // Local development and tests: chat tokens from the account API on wrangler dev (port 8787). The e2e tests point
+  // ACCOUNT_JWKS_URL at their own fake on 127.0.0.1:8798 (scripts/check.sh). Plain http only works on loopback.
+  "vars": {
+    "VERSION": "dev",
+    "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/zapakid-api",
+    "ACCOUNT_JWKS_URL": "http://127.0.0.1:8787/.well-known/jwks.json",
+    "TOKEN_ISSUER": "http://localhost:8787",
+    "TOKEN_AUDIENCE": "calls.localhost",
+  },
+  // Local only (wrangler dev, tests): Miniflare keeps it on disk under .wrangler/.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "zapakid-calls-local",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations",
+    },
+  ],
+
+  "env": {
+    "staging": {
+      // The Worker owns this hostname and its DNS record. No workers.dev URL.
+      "routes": [{ "pattern": "calls-staging.zapakid.ro", "custom_domain": true }],
+      "workers_dev": false,
+      "preview_urls": false,
+      "observability": { "enabled": true },
+      // VERSION and VERSION_URL are overridden on every deploy (deploy-calls.yml: wrangler deploy --var).
+      "vars": {
+        "VERSION": "dev",
+        "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/zapakid-api",
+        "ACCOUNT_JWKS_URL": "https://api-staging.zapakid.ro/.well-known/jwks.json",
+        "TOKEN_ISSUER": "https://api-staging.zapakid.ro",
+        "TOKEN_AUDIENCE": "calls-staging.zapakid.ro",
+      },
+      // EU jurisdiction. scripts/d1-database.js creates it if needed and puts its id in place of this placeholder
+      // at deploy time (deploy-calls.yml); the real id is never committed.
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "zapakid-calls-staging",
+          "database_id": "00000000-0000-0000-0000-000000000001",
+          "migrations_dir": "migrations",
+        },
+      ],
+    },
+
+    // Production: deployed after staging, once @stefan-zpc approves the `production` environment.
+    // Chat tokens come from api.zapakid.ro, which serves them from the v1 cutover on.
+    "production": {
+      "routes": [{ "pattern": "calls.zapakid.ro", "custom_domain": true }],
+      "workers_dev": false,
+      "preview_urls": false,
+      "observability": { "enabled": true },
+      "vars": {
+        "VERSION": "dev",
+        "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/zapakid-api",
+        "ACCOUNT_JWKS_URL": "https://api.zapakid.ro/.well-known/jwks.json",
+        "TOKEN_ISSUER": "https://api.zapakid.ro",
+        "TOKEN_AUDIENCE": "calls.zapakid.ro",
+      },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "zapakid-calls-production",
+          "database_id": "00000000-0000-0000-0000-000000000002",
+          "migrations_dir": "migrations",
+        },
+      ],
+    },
+  },
+}

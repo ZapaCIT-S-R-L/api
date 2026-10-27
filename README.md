@@ -16,6 +16,13 @@ decrypt a chat. The server has no cryptography of its own beyond verifying sign-
   - `npm run lint` (Prettier, ESLint, TypeScript); `npm run format` fixes formatting.
 - Dependencies are pinned to exact versions (`.npmrc`), updated by Dependabot, and audited on every PR and daily.
 
+## Services
+
+The repo is becoming a monorepo: the root is the account API, and each folder in `services/` is its own Worker with
+its own package, CI and deploy. The root workflows don't lint, test or deploy `services/`.
+
+- [`services/calls`](services/calls/README.md): voice calls (`calls.zapakid.ro`).
+
 ## How changes ship
 
 1. Open a pull request. CI (`.github/workflows/ci.yml`) runs lint, the unit and Worker tests, builds the Worker (dry
@@ -85,6 +92,13 @@ Play Integrity (Android app attestation on sign-in, `ATTESTATION_POLICY` in `wra
 5. Staging only, optional: test accounts that may sign in without attestation (debug builds Play doesn't
    recognise) go in the secret `ATTESTATION_ALLOWLIST`, comma separated `google:<sub>` / `apple:<sub>`:
    `npx wrangler secret put ATTESTATION_ALLOWLIST --env staging`. Production has no allowlist (`required`).
+
+Chat tokens (`POST /v1/chat/token`, verified by the chat and calls services against `/.well-known/jwks.json`): the
+signing key is the Worker secret `CHAT_TOKEN_SIGNING_KEY`, a private P-256 JWK. Stefan creates it per environment,
+never an agent or CI: `scripts/set-chat-token-key.sh staging` (and `production`). The script pipes a new key from
+`scripts/chat-token-key.js` straight into `wrangler secret put`; it is never printed or written to disk. Running it
+again rotates the key (apps fetch a new token on the 401). Until it is set, both endpoints answer
+`503 not_configured` and the staging e2e check of the JWKS fails, so set it before merging the chat token PR.
 
 App Attest (iOS app attestation): nothing to set up on Cloudflare. The App ID `ro.zapakid.app` (team `9572LYGZ7S`)
 has App Attest enabled; the API pins Apple's App Attestation Root CA (`src/app-attest-root.ts`) and accepts
