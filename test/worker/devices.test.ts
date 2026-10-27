@@ -192,6 +192,20 @@ describe("POST /v1/devices", () => {
     expect((await register(a.session.token, body)).status).toBe(201);
   });
 
+  // Regression guard for the threat model (README, "Security notes"): the server does NOT verify prekey signatures.
+  // libsignal on the phones does, when it builds a session from a bundle, and refuses a bad one. If this test ever
+  // fails because the server started checking signatures, update the README and the contract with it.
+  it("accepts a 64-byte all-zero signature: signatures are verified by the phones, not the server", async () => {
+    const a = await signIn();
+    const zero = b64(new Uint8Array(64));
+    const body = deviceKeys(ec(), {
+      signedPreKey: { keyId: 1, publicKey: ec(), signature: zero },
+      pqLastResortPreKey: { keyId: 1, publicKey: kyber(), signature: zero },
+      pqPreKeys: [{ keyId: 2, publicKey: kyber(), signature: zero }],
+    });
+    expect((await register(a.session.token, body)).status).toBe(201);
+  });
+
   it("pushToken is optional and accepted", async () => {
     const a = await signIn();
     expect((await register(a.session.token, deviceKeys(ec(), { pushToken: "fcm-token" }))).status).toBe(201);
