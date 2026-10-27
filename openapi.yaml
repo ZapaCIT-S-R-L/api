@@ -27,7 +27,7 @@ info:
     identifier: AGPL-3.0-only
   contact:
     name: ZapaCIT SRL
-    url: https://github.com/ZapaCIT-S-R-L/api
+    url: https://github.com/ZapaCIT-S-R-L/zapakid-api
 servers:
   - url: https://api-staging.zapakid.ro
     description: Staging
