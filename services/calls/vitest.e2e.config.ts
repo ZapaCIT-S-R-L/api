@@ -4,5 +4,11 @@
 import { defineConfig } from "vitest/config";
 
 export default defineConfig({
-  test: { include: ["test/e2e/**/*.test.ts"], environment: "node", testTimeout: 20_000, fileParallelism: false },
+  test: {
+    include: ["test/e2e/**/*.test.ts"],
+    environment: "node",
+    testTimeout: 20_000,
+    fileParallelism: false,
+    globalSetup: ["./test/e2e/fakes.ts"],
+  },
 });
