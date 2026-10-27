@@ -24,8 +24,11 @@ describe.skipIf(LIVE)("attachments", () => {
         headers: bearer(mum, { "content-type": "application/json" }),
         body: JSON.stringify({ members: [f.ana] }),
       });
-      id = res.status < 300 ? ((await res.json()) as { id: string }).id : "";
-      return id !== "";
+      if (res.status >= 300) return false;
+      // Devices arrive through the membership queue like everything else; reserving needs a registered device.
+      const c = (await res.json()) as { id: string; members: { devices: unknown[] }[] };
+      id = c.id;
+      return c.members.every((m) => m.devices.length > 0);
     });
     const bytes = new Uint8Array(4096).map((_, i) => (i * 31) % 256);
     const reserved = await chat("/v1/attachments", {
