@@ -18,7 +18,24 @@
     "ACCOUNT_JWKS_URL": "http://127.0.0.1:8787/.well-known/jwks.json",
     "TOKEN_ISSUER": "http://localhost:8787",
     "TOKEN_AUDIENCE": "calls.localhost",
+    // Cloudflare Realtime (SFU and TURN). The e2e run points it at its fake on 127.0.0.1:8798.
+    "REALTIME_API_URL": "https://rtc.live.cloudflare.com/v1",
+    "MAX_PARTICIPANTS": "8",
+    "RING_TIMEOUT_SECONDS": "45",
+    "MAX_CALL_SECONDS": "7200",
+    "TURN_TTL_SECONDS": "3600",
+    "RECONNECT_GRACE_SECONDS": "30",
+    "CALL_LOG_RETENTION_DAYS": "365",
   },
+  // Secrets (the bootstrap-secrets workflow, never vars): REALTIME_APP_ID, REALTIME_APP_SECRET, TURN_KEY_ID,
+  // TURN_KEY_API_TOKEN. Locally: --var on wrangler dev with fake values (scripts/check.sh), or .dev.vars.
+  "durable_objects": { "bindings": [{ "name": "CALL", "class_name": "CallRoom" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CallRoom"] }],
+  // Calls started and joins per account per minute; each environment has its own namespace_id (separate counters).
+  "ratelimits": [
+    { "name": "CREATE_LIMITER", "namespace_id": "1101", "simple": { "limit": 100, "period": 60 } },
+    { "name": "JOIN_LIMITER", "namespace_id": "1102", "simple": { "limit": 300, "period": 60 } },
+  ],
   // Local only (wrangler dev, tests): Miniflare keeps it on disk under .wrangler/.
   "d1_databases": [
     {
@@ -43,7 +60,21 @@
         "ACCOUNT_JWKS_URL": "https://api-staging.zapakid.ro/.well-known/jwks.json",
         "TOKEN_ISSUER": "https://api-staging.zapakid.ro",
         "TOKEN_AUDIENCE": "calls-staging.zapakid.ro",
+        "REALTIME_API_URL": "https://rtc.live.cloudflare.com/v1",
+        "MAX_PARTICIPANTS": "8",
+        "RING_TIMEOUT_SECONDS": "45",
+        "MAX_CALL_SECONDS": "7200",
+        "TURN_TTL_SECONDS": "3600",
+        "RECONNECT_GRACE_SECONDS": "30",
+        "CALL_LOG_RETENTION_DAYS": "365",
       },
+      "durable_objects": { "bindings": [{ "name": "CALL", "class_name": "CallRoom" }] },
+      "ratelimits": [
+        { "name": "CREATE_LIMITER", "namespace_id": "2101", "simple": { "limit": 10, "period": 60 } },
+        { "name": "JOIN_LIMITER", "namespace_id": "2102", "simple": { "limit": 30, "period": 60 } },
+      ],
+      // Daily purge of call log rows older than CALL_LOG_RETENTION_DAYS (src/purge.ts), at 03:23 UTC.
+      "triggers": { "crons": ["23 3 * * *"] },
       // EU jurisdiction. scripts/d1-database.js creates it if needed and puts its id in place of this placeholder
       // at deploy time (deploy-calls.yml); the real id is never committed.
       "d1_databases": [
@@ -69,7 +100,21 @@
         "ACCOUNT_JWKS_URL": "https://api.zapakid.ro/.well-known/jwks.json",
         "TOKEN_ISSUER": "https://api.zapakid.ro",
         "TOKEN_AUDIENCE": "calls.zapakid.ro",
+        "REALTIME_API_URL": "https://rtc.live.cloudflare.com/v1",
+        "MAX_PARTICIPANTS": "8",
+        "RING_TIMEOUT_SECONDS": "45",
+        "MAX_CALL_SECONDS": "7200",
+        "TURN_TTL_SECONDS": "3600",
+        "RECONNECT_GRACE_SECONDS": "30",
+        "CALL_LOG_RETENTION_DAYS": "365",
       },
+      "durable_objects": { "bindings": [{ "name": "CALL", "class_name": "CallRoom" }] },
+      "ratelimits": [
+        { "name": "CREATE_LIMITER", "namespace_id": "3101", "simple": { "limit": 10, "period": 60 } },
+        { "name": "JOIN_LIMITER", "namespace_id": "3102", "simple": { "limit": 30, "period": 60 } },
+      ],
+      // Daily purge of call log rows older than CALL_LOG_RETENTION_DAYS (src/purge.ts), at 03:23 UTC.
+      "triggers": { "crons": ["23 3 * * *"] },
       "d1_databases": [
         {
           "binding": "DB",

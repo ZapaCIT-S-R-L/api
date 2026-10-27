@@ -78,3 +78,96 @@ export function bearer(token: string): Record<string, string> {
 export interface ErrorBody {
   error: { code: string; message: string };
 }
+
+// ---- Calls: a fake Cloudflare Realtime (SFU sessions/tracks) and TURN key API behind the fetch stub ----
+
+export const REALTIME = "https://rtc.live.cloudflare.com/v1";
+
+export interface FakeRealtime {
+  requests: { method: string; path: string; auth: string | null; body: unknown }[];
+  sessions: string[];
+  // Next answers: an HTTP status to fail with (Realtime outage or refusal), or null for the normal answer.
+  failNext: number | null;
+  turnDown: boolean;
+}
+
+// Serves the Realtime and TURN APIs the way developers.cloudflare.com/realtime documents them.
+export function fakeRealtime(stub: FetchStub): FakeRealtime {
+  const fake: FakeRealtime = { requests: [], sessions: [], failNext: null, turnDown: false };
+  let n = 0;
+  stub.other = (url, init) => {
+    if (!url.startsWith(`${REALTIME}/`)) return undefined;
+    const path = url.slice(REALTIME.length);
+    const method = init?.method ?? "GET";
+    const auth = new Headers(init?.headers).get("authorization");
+    const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : null;
+    fake.requests.push({ method, path, auth, body });
+    if (fake.failNext !== null) {
+      const status = fake.failNext;
+      fake.failNext = null;
+      return Promise.resolve(Response.json({ errorCode: "fake_error", errorDescription: "fake refusal" }, { status }));
+    }
+    if (path.startsWith("/turn/")) {
+      if (fake.turnDown) return Promise.resolve(new Response("down", { status: 503 }));
+      return Promise.resolve(
+        Response.json(
+          {
+            iceServers: [
+              { urls: ["stun:stun.cloudflare.com:3478"] },
+              {
+                urls: ["turn:turn.cloudflare.com:3478?transport=udp", "turns:turn.cloudflare.com:443?transport=tcp"],
+                username: `user-${++n}`,
+                credential: "fake-credential",
+              },
+            ],
+          },
+          { status: 201 },
+        ),
+      );
+    }
+    if (method === "POST" && /^\/apps\/[^/]+\/sessions\/new$/.test(path)) {
+      const sessionId = `${(++n).toString(16).padStart(8, "0")}${"0".repeat(24)}`;
+      fake.sessions.push(sessionId);
+      return Promise.resolve(Response.json({ sessionId }, { status: 201 }));
+    }
+    const tracks = /^\/apps\/[^/]+\/sessions\/[^/]+\/tracks\/(new|close)$/.exec(path);
+    if (tracks) {
+      const requested = (body as { tracks?: Record<string, unknown>[] }).tracks ?? [];
+      return Promise.resolve(
+        Response.json({
+          requiresImmediateRenegotiation: false,
+          sessionDescription: { type: "answer", sdp: "v=0 fake answer" },
+          tracks: requested.map((t, i) => ({ ...t, mid: t.mid ?? String(i) })),
+        }),
+      );
+    }
+    if (/^\/apps\/[^/]+\/sessions\/[^/]+\/renegotiate$/.test(path)) return Promise.resolve(Response.json({}));
+    return Promise.resolve(Response.json({ errorCode: "not_found" }, { status: 404 }));
+  };
+  return fake;
+}
+
+let accounts = 0;
+
+// A distinct account per call, so the per-account rate limits only matter in the rate limit test.
+export function uniqueAccount(): string {
+  return `account-${Date.now().toString(36)}-${++accounts}`;
+}
+
+export interface CallView {
+  callId: string;
+  conversationId: string;
+  state: "ringing" | "active" | "ended";
+  epoch: number;
+  keyLeader: { accountId: string; deviceId: number } | null;
+  participants: {
+    accountId: string;
+    deviceId: number;
+    role: string;
+    sessionId: string | null;
+    tracks: string[];
+    connected: boolean;
+  }[];
+  declined: string[];
+  endReason: string | null;
+}

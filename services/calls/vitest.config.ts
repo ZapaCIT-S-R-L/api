@@ -9,7 +9,21 @@ export default defineConfig({
   plugins: [
     cloudflareTest({
       wrangler: { configPath: "./wrangler.jsonc" },
-      miniflare: { bindings: { TEST_MIGRATIONS: migrations } },
+      miniflare: {
+        // Fake Realtime and TURN credentials: the tests serve those APIs themselves (test/worker/helpers.ts).
+        bindings: {
+          TEST_MIGRATIONS: migrations,
+          REALTIME_APP_ID: "test-app-id",
+          REALTIME_APP_SECRET: "test-app-secret",
+          TURN_KEY_ID: "test-turn-key",
+          TURN_KEY_API_TOKEN: "test-turn-token",
+        },
+        // A small create limit, so test/worker/calls.test.ts can reach it (counted per account).
+        ratelimits: {
+          CREATE_LIMITER: { namespace_id: "9101", simple: { limit: 5, period: 60 } },
+          JOIN_LIMITER: { namespace_id: "9102", simple: { limit: 100, period: 60 } },
+        },
+      },
     }),
   ],
   test: { include: ["test/worker/**/*.test.ts"], setupFiles: ["./test/worker/setup.ts"] },

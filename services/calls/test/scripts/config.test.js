@@ -58,3 +58,51 @@ test("staging and production define every binding and var the Worker reads", () 
     for (const key of required) assert.ok(defined.has(key), `${name} is missing ${key}`);
   }
 });
+
+test("Realtime and TURN: the real Cloudflare API in every deployed environment; the credentials are secrets", () => {
+  for (const env of [staging, production]) {
+    assert.equal(env.vars.REALTIME_API_URL, "https://rtc.live.cloudflare.com/v1");
+    for (const secret of ["REALTIME_APP_ID", "REALTIME_APP_SECRET", "TURN_KEY_ID", "TURN_KEY_API_TOKEN"]) {
+      assert.equal(env.vars[secret], undefined, `${secret} is a secret`);
+    }
+  }
+});
+
+test("call limits: at most 8 participants, 45 s ring, 2 h, TURN credentials at most 1 h", () => {
+  for (const env of [rawConfig, staging, production]) {
+    assert.equal(env.vars.MAX_PARTICIPANTS, "8");
+    assert.equal(env.vars.RING_TIMEOUT_SECONDS, "45");
+    assert.equal(env.vars.MAX_CALL_SECONDS, "7200");
+    assert.ok(Number(env.vars.TURN_TTL_SECONDS) <= 3600);
+    assert.equal(env.vars.RECONNECT_GRACE_SECONDS, "30");
+  }
+});
+
+test("one Durable Object per call (SQLite-backed), bound in every environment", () => {
+  assert.deepEqual(rawConfig.migrations, [{ tag: "v1", new_sqlite_classes: ["CallRoom"] }]);
+  for (const env of [rawConfig, staging, production]) {
+    assert.deepEqual(env.durable_objects.bindings, [{ name: "CALL", class_name: "CallRoom" }]);
+  }
+});
+
+test("rate limits per account: separate counters per environment", () => {
+  const ids = [];
+  for (const env of [rawConfig, staging, production]) {
+    const names = env.ratelimits.map((r) => r.name).sort();
+    assert.deepEqual(names, ["CREATE_LIMITER", "JOIN_LIMITER"]);
+    ids.push(...env.ratelimits.map((r) => r.namespace_id));
+  }
+  assert.equal(new Set(ids).size, ids.length);
+  for (const env of [staging, production]) {
+    assert.deepEqual(env.ratelimits.find((r) => r.name === "CREATE_LIMITER").simple, { limit: 10, period: 60 });
+    assert.deepEqual(env.ratelimits.find((r) => r.name === "JOIN_LIMITER").simple, { limit: 30, period: 60 });
+  }
+});
+
+test("the call log is purged daily; kept at most a year", () => {
+  for (const env of [staging, production]) {
+    assert.deepEqual(env.triggers, { crons: ["23 3 * * *"] });
+    const days = Number(env.vars.CALL_LOG_RETENTION_DAYS);
+    assert.ok(Number.isInteger(days) && days >= 1 && days <= 365, String(days));
+  }
+});
