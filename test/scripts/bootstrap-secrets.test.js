@@ -237,3 +237,17 @@ test("an answer without the expected fields names the call, the missing field an
   });
   assert.equal(w.puts.length, 0);
 });
+
+// Regression: the live TURN key answer names the token `secret`, not `key` as the API docs say (staging bootstrap,
+// "fields sent: created, modified, name, secret, uid"). Either is accepted, `key` first.
+test("takes the TURN token from `secret` when the answer has no `key`", async () => {
+  const w = world({
+    turnResult: { created: "t", modified: "t", name: "zapakid-staging", secret: "turn-secret", uid: "turn-uid" },
+  });
+  w.deps.configs.calls = ACCOUNT_CONFIG;
+  w.secrets["zapakid-api-staging"] = ["CHAT_TOKEN_SIGNING_KEY"];
+  await bootstrap("staging", "none", w.deps);
+  const put = Object.fromEntries(w.puts.map((p) => [p.name, p.value]));
+  assert.equal(put.TURN_KEY_ID, "turn-uid");
+  assert.equal(put.TURN_KEY_API_TOKEN, "turn-secret");
+});
