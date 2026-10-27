@@ -42,7 +42,10 @@ export default async function setup(project: TestProject): Promise<() => Promise
   }
   return () =>
     new Promise<void>((resolve) => {
-      if (server) server.close(() => resolve());
+      if (server)
+        server.close(() => {
+          resolve();
+        });
       else resolve();
     });
 }
