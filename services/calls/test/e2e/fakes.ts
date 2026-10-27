@@ -41,10 +41,16 @@ export default async function setup(project: TestProject): Promise<() => Promise
       const url = req.url ?? "";
       const body = chunks.length ? (JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>) : {};
       const auth = req.headers.authorization;
-      if (url === "/jwks") return send(200, jwks);
+      if (url === "/jwks") {
+        send(200, jwks);
+        return;
+      }
       if (url === `/realtime/turn/keys/${FAKE_TURN_KEY_ID}/credentials/generate-ice-servers` && req.method === "POST") {
-        if (auth !== `Bearer ${FAKE_TURN_TOKEN}`) return send(401, { error: "bad turn token" });
-        return send(201, {
+        if (auth !== `Bearer ${FAKE_TURN_TOKEN}`) {
+          send(401, { error: "bad turn token" });
+          return;
+        }
+        send(201, {
           iceServers: [
             { urls: ["stun:stun.cloudflare.com:3478"] },
             {
@@ -54,23 +60,35 @@ export default async function setup(project: TestProject): Promise<() => Promise
             },
           ],
         });
+        return;
       }
       const app = `/realtime/apps/${FAKE_APP_ID}/sessions`;
-      if (!url.startsWith(app)) return send(404, { errorCode: "not_found" });
-      if (auth !== `Bearer ${FAKE_APP_SECRET}`) return send(401, { errorCode: "unauthorized" });
+      if (!url.startsWith(app)) {
+        send(404, { errorCode: "not_found" });
+        return;
+      }
+      if (auth !== `Bearer ${FAKE_APP_SECRET}`) {
+        send(401, { errorCode: "unauthorized" });
+        return;
+      }
       if (url === `${app}/new` && req.method === "POST") {
-        return send(201, { sessionId: randomBytes(16).toString("hex") });
+        send(201, { sessionId: randomBytes(16).toString("hex") });
+        return;
       }
       if (/\/tracks\/(new|close)$/.test(url)) {
         const tracks = (body.tracks as Record<string, unknown>[] | undefined) ?? [];
-        return send(200, {
+        send(200, {
           requiresImmediateRenegotiation: false,
           sessionDescription: { type: "answer", sdp: "v=0 e2e answer" },
           tracks: tracks.map((t, i) => ({ ...t, mid: t.mid ?? String(i) })),
         });
+        return;
       }
-      if (url.endsWith("/renegotiate") && req.method === "PUT") return send(200, {});
-      return send(404, { errorCode: "not_found" });
+      if (url.endsWith("/renegotiate") && req.method === "PUT") {
+        send(200, {});
+        return;
+      }
+      send(404, { errorCode: "not_found" });
     });
   });
   await new Promise<void>((resolve) => server?.listen(port, "127.0.0.1", resolve));

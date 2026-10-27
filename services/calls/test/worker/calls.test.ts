@@ -1,7 +1,8 @@
 // The calls API: create, join, leave, decline, the roster, the ring timeout, the participant cap and the call log.
-import { runDurableObjectAlarm } from "cloudflare:test";
+import { createScheduledController, runDurableObjectAlarm } from "cloudflare:test";
 import { env, exports } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import worker from "../../src/index";
 import { resetJwksCache } from "../../src/jwks";
 import { usePushProvider, type PushProvider } from "../../src/push";
 import { errorCode, phone } from "./calls-helpers";
@@ -48,7 +49,7 @@ afterEach(() => {
 const stub = (callId: string) => env.CALL.get(env.CALL.idFromName(callId));
 
 async function row(callId: string) {
-  return env.DB.prepare("SELECT * FROM calls WHERE id = ?").bind(callId).first<Record<string, unknown>>();
+  return env.DB.prepare("SELECT * FROM calls WHERE id = ?").bind(callId).first();
 }
 
 // Moves the clock forward and runs the call's alarm, as if that much time passed.
@@ -329,7 +330,7 @@ describe("GET /v1/calls (call log)", () => {
       .run();
     const dad = await phone(issuer, uniqueAccount());
     const { call } = await dad.create();
-    await exports.default.scheduled({ scheduledTime: Date.now(), cron: "23 3 * * *", noRetry: () => undefined });
+    await worker.scheduled(createScheduledController({ scheduledTime: new Date(), cron: "23 3 * * *" }), env);
     expect(await row("old-call")).toBeNull();
     expect(await row(call.callId)).not.toBeNull();
   });

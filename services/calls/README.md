@@ -26,6 +26,33 @@ The GitHub environments and Cloudflare API token are the API's (root README, "De
 cover this Worker (Workers Scripts, D1, Workers Routes and DNS on `zapakid.ro`). The custom domains create their own
 DNS records on the first deploy.
 
+## How a call works
+
+- `src/calls.ts`: the HTTP API (start, join, leave, decline, call log, events, Realtime proxy).
+- `src/call-room.ts`: one Durable Object per call. It holds the roster and the key epoch, which goes up on every
+  join and leave. It runs the hibernating events WebSocket and relays the libsignal-sealed key envelopes to the one
+  device each is for, queuing them for a device that isn't connected yet. It also runs the timers: 45 s ring
+  timeout, 2 h maximum, 30 s reconnect grace, and cleanup an hour after the end.
+- `src/realtime.ts`: Cloudflare Realtime SFU calls with the app secret, plus TURN credentials (TTL 1 h). If TURN is
+  down, it falls back to STUN only.
+- `src/push.ts`: the ringing interface (PushKit VoIP / FCM). It's a stub until the APNs and FCM credentials and the
+  device push tokens arrive.
+- Limits: 8 participants, and 10 calls started and 30 joins a minute per account (rate limiting binding).
+
+## Secrets (Stefan)
+
+The Worker needs four secrets per environment. `/health` answers 503 and names any that are missing, so the deploy's
+e2e check fails and rolls back until they are set. Create a Realtime SFU app and a TURN key in the Cloudflare
+dashboard (Realtime), one of each per environment, then from this folder:
+
+    scripts/set-secrets.sh staging       # prompts for REALTIME_APP_ID, REALTIME_APP_SECRET, TURN_KEY_ID, TURN_KEY_API_TOKEN
+    scripts/set-secrets.sh production
+
+wrangler prompts for each value without echoing it. Nothing is printed or stored anywhere else. The chat tokens
+need the account API's signing key (root README, "Chat tokens").
+
 ## Retention
 
-The call log keeps who started a call in which conversation, when, and how it ended. Never audio, never keys.
+The call log keeps who started a call in which conversation, when, how it ended and the peak number of
+participants. It never keeps audio or keys. Rows are purged daily after `CALL_LOG_RETENTION_DAYS` (365). Deleting a
+conversation's call log together with the chat comes with the chat service.
