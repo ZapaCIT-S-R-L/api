@@ -1,0 +1,96 @@
+
+ ⛅️ wrangler 4.153.0 (update available 4.154.0)
+───────────────────────────────────────────────
+Your Worker has access to the following bindings:
+Binding                                                                       Resource                  Mode
+env.DB (zapakid-api-local)                                                    D1 Database               local
+env.AUTH_LIMITER (1000 requests/60s)                                          Rate Limit                local
+env.VERSION ("dev")                                                           Environment Variable      local
+env.VERSION_URL ("https://github.com/ZapaCIT-S-R-L/zapa...")                  Environment Variable      local
+env.APPLE_AUDIENCES ("ro.zapakid.app,ro.zapakid.signin.local")                Environment Variable      local
+env.APPLE_WEB_REDIRECT_URL ("https://zapakid.ro/app/apple")                   Environment Variable      local
+env.GOOGLE_CLIENT_IDS ("000000000000-zapakidlocaltest.apps.go...")            Environment Variable      local
+env.SESSION_TTL_SECONDS ("2592000")                                           Environment Variable      local
+env.ATTESTATION_POLICY ("optional")                                           Environment Variable      local
+env.PLAY_PACKAGE_NAME ("ro.zapakid.app")                                      Environment Variable      local
+env.PLAY_CERT_SHA256 ("")                                                     Environment Variable      local
+env.APP_ATTEST_APP_ID ("9572LYGZ7S.ro.zapakid.app")                           Environment Variable      local
+env.APP_ATTEST_ENVIRONMENTS ("development,production")                        Environment Variable      local
+env.APPLE_JWKS_URL ("(hidden)")                                               Environment Variable      local
+env.GOOGLE_JWKS_URL ("(hidden)")                                              Environment Variable      local
+
+Wrangler detected this dev session is running in an AI agent.
+The Local Explorer API is available at http://127.0.0.1:8797/cdn-cgi/local/explorer/api
+Useful routes:
+  GET http://127.0.0.1:8797/cdn-cgi/local/explorer/api/local/workers - local Workers and bindings
+  POST http://127.0.0.1:8797/cdn-cgi/local/explorer/api/local/scheduled?worker=<name> - invoke a Worker's scheduled handler; cron is required (see the OpenAPI schema for the full request)
+  GET http://127.0.0.1:8797/cdn-cgi/local/explorer/api/storage/kv/namespaces - KV namespaces
+  GET http://127.0.0.1:8797/cdn-cgi/local/explorer/api/d1/database - D1 databases
+  GET http://127.0.0.1:8797/cdn-cgi/local/explorer/api/r2/buckets - R2 buckets
+  GET http://127.0.0.1:8797/cdn-cgi/local/explorer/api/workers/durable_objects/namespaces - Durable Object namespaces
+  GET http://127.0.0.1:8797/cdn-cgi/local/explorer/api/workflows - Workflows
+  POST http://127.0.0.1:8797/cdn-cgi/local/explorer/api/local/observability/query - run a read-only SQL query (SELECT/WITH only) over captured request traces and console logs. Tables: spans, logs (read attributes via json(attributes)). Example:
+    curl -X POST http://127.0.0.1:8797/cdn-cgi/local/explorer/api/local/observability/query -H 'Content-Type: application/json' -d '{"sql":"SELECT service, name, outcome, duration_ms FROM spans WHERE parent_id IS NULL LIMIT 20"}'
+  POST http://127.0.0.1:8797/cdn-cgi/local/explorer/api/local/observability/clear - clear all captured traces and logs
+If the routes above don't cover what you need, fetch the full OpenAPI schema (large - use only as a last resort):
+  GET http://127.0.0.1:8797/cdn-cgi/local/explorer/api - OpenAPI schema
+⎔ Starting local server...
+[wrangler:info] Ready on http://127.0.0.1:8797
+[wrangler:info] GET /health 200 OK (28ms)
+[wrangler:info] GET /health 200 OK (9ms)
+[wrangler:info] GET /does-not-exist 404 Not Found (3ms)
+[wrangler:info] POST /v1/auth/nonce 200 OK (15ms)
+[wrangler:info] GET /v1/families 401 Unauthorized (15ms)
+[wrangler:info] POST /v1/auth/nonce 200 OK (5ms)
+[wrangler:info] POST /v1/families/join 401 Unauthorized (3ms)
+[wrangler:info] POST /v1/auth/nonce 200 OK (5ms)
+[wrangler:info] POST /v1/auth/apple 200 OK (19ms)
+[wrangler:info] POST /v1/auth/apple 200 OK (19ms)
+[wrangler:info] POST /v1/auth/nonce 200 OK (6ms)
+[wrangler:info] POST /v1/auth/nonce 200 OK (5ms)
+{"msg":"sign-in rejected","provider":"google","reason":"malformed token"}
+[wrangler:info] POST /v1/auth/google 401 Unauthorized (8ms)
+[wrangler:info] POST /v1/auth/apple 200 OK (9ms)
+[wrangler:info] POST /v1/auth/apple 400 Bad Request (7ms)
+[wrangler:info] POST /v1/families 201 Created (6ms)
+[wrangler:info] GET /v1/me 401 Unauthorized (7ms)
+[wrangler:info] POST /v1/families 200 OK (5ms)
+[wrangler:info] POST /v1/auth/logout 401 Unauthorized (4ms)
+[wrangler:info] POST /v1/families/253f9743-3dfd-4323-a573-be29b146396a/parents/invitations 201 Created (6ms)
+[wrangler:info] GET /v1/me 401 Unauthorized (6ms)
+[wrangler:info] POST /v1/families/join 200 OK (7ms)
+[wrangler:info] POST /v1/auth/nonce 200 OK (7ms)
+[wrangler:info] POST /v1/families/join 200 OK (6ms)
+[wrangler:info] POST /v1/auth/apple 200 OK (6ms)
+[wrangler:info] POST /v1/auth/nonce 200 OK (8ms)
+[wrangler:info] GET /v1/me 200 OK (5ms)
+[wrangler:info] POST /v1/auth/apple 200 OK (6ms)
+[wrangler:info] POST /v1/auth/logout 204 No Content (8ms)
+[wrangler:info] POST /v1/families/join 410 Gone (5ms)
+[wrangler:info] GET /v1/me 401 Unauthorized (4ms)
+[wrangler:info] POST /v1/families/253f9743-3dfd-4323-a573-be29b146396a/kids 201 Created (6ms)
+[wrangler:info] POST /v1/auth/nonce 200 OK (6ms)
+[wrangler:info] POST /v1/families/253f9743-3dfd-4323-a573-be29b146396a/kids 400 Bad Request (7ms)
+[wrangler:info] POST /v1/auth/google 200 OK (7ms)
+[wrangler:info] POST /v1/families/253f9743-3dfd-4323-a573-be29b146396a/kids 404 Not Found (8ms)
+[wrangler:info] POST /v1/auth/nonce 200 OK (5ms)
+[wrangler:info] GET /v1/families 200 OK (6ms)
+{"msg":"sign-in rejected","provider":"apple","reason":"ERR_JWT_CLAIM_VALIDATION_FAILED"}
+[wrangler:info] POST /v1/auth/apple 401 Unauthorized (4ms)
+[wrangler:info] POST /v1/auth/nonce 200 OK (4ms)
+{"msg":"sign-in rejected","provider":"apple","reason":"ERR_JWT_EXPIRED"}
+[wrangler:info] POST /v1/auth/apple 401 Unauthorized (5ms)
+[wrangler:info] POST /v1/auth/nonce 200 OK (3ms)
+{"msg":"sign-in rejected","provider":"apple","reason":"minor","source":"apple_declared_age_range"}
+[wrangler:info] POST /v1/auth/apple 403 Forbidden (5ms)
+[wrangler:info] POST /v1/auth/nonce 200 OK (3ms)
+{"msg":"sign-in rejected","provider":"apple","reason":"declined","source":"apple_declared_age_range"}
+[wrangler:info] POST /v1/auth/apple 403 Forbidden (5ms)
+[wrangler:info] POST /v1/auth/apple/web 200 OK (5ms)
+[wrangler:info] POST /v1/auth/nonce 200 OK (3ms)
+[wrangler:info] POST /v1/auth/apple/callback 303 See Other (6ms)
+[wrangler:info] POST /v1/auth/apple/exchange 200 OK (6ms)
+[wrangler:info] POST /v1/auth/nonce 200 OK (4ms)
+[wrangler:info] POST /v1/auth/apple 200 OK (6ms)
+{"msg":"sign-in rejected","provider":"apple","reason":"nonce unknown, expired or used"}
+[wrangler:info] POST /v1/auth/apple 401 Unauthorized (6ms)

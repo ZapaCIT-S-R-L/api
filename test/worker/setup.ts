@@ -10,6 +10,8 @@ await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
 beforeEach(async () => {
   await env.DB.batch(
     [
+      "kid_sessions",
+      "kid_pairings",
       "family_invitations",
       "kids",
       "family_parents",
