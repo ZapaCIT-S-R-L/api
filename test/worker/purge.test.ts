@@ -11,7 +11,7 @@ const future = () => new Date(Date.now() + 3_600_000).toISOString();
 const hex = (c: string) => c.repeat(64);
 
 async function runCron() {
-  await worker.scheduled(createScheduledController({ cron: "17 3 * * *" }), env);
+  await worker.scheduled(createScheduledController({ cron: "17 * * * *" }), env);
 }
 
 describe("daily purge", () => {

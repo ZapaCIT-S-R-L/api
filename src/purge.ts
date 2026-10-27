@@ -1,4 +1,4 @@
-// Daily cron (wrangler.jsonc triggers): deletes expired sessions, sign-in nonces, Apple web flows and App Attest
+// Hourly cron (wrangler.jsonc triggers): deletes expired sessions, sign-in nonces, Apple web flows and App Attest
 // challenges, App Attest keys unused for 180 days, and
 // devices inactive for 90 days. Data minimisation, and it keeps the one-time tables small
 // however many are requested.
@@ -8,6 +8,11 @@ import type { Env } from "./env";
 // An App Attest key not used for this long is deleted. The app then gets 403 attestation_failed once, forgets the
 // key and registers a new one (ios AppAttestor.reset), so this costs nothing and keeps no stale device keys.
 export const APP_ATTEST_KEY_RETENTION_DAYS = 180;
+
+// Unauthenticated endpoints add one-time rows (rate limited per network, purged hourly). More live rows than this
+// in one table means a flood: it is logged as an error for alerting.
+export const ONE_TIME_ROW_ALERT = 10_000;
+const ONE_TIME_TABLES = ["sign_in_nonces", "apple_web_flows", "app_attest_challenges"] as const;
 
 export async function purgeExpired(env: Env): Promise<void> {
   const now = new Date().toISOString();
@@ -29,6 +34,15 @@ export async function purgeExpired(env: Env): Promise<void> {
          (SELECT 1 FROM devices d WHERE d.account_id = sessions.parent_id AND d.device_id = sessions.device_id)`,
     ),
   ]);
+  const counts = await env.DB.batch<{ n: number }>(
+    ONE_TIME_TABLES.map((table) => env.DB.prepare(`SELECT count(*) AS n FROM ${table}`)),
+  );
+  ONE_TIME_TABLES.forEach((table, i) => {
+    const rows = counts[i]?.results[0]?.n ?? 0;
+    if (rows > ONE_TIME_ROW_ALERT) {
+      console.error(JSON.stringify({ msg: "one-time rows over the alert threshold", table, rows }));
+    }
+  });
   console.log(
     JSON.stringify({
       msg: "purged expired",

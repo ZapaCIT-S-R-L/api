@@ -504,7 +504,7 @@ describe("activity and expiry", () => {
     await register(b.session.token, deviceKeys(identityKey));
     await env.DB.prepare("UPDATE devices SET last_seen_at = ? WHERE device_id = 1").bind(daysAgo(91)).run();
     await env.DB.prepare("UPDATE devices SET last_seen_at = ? WHERE device_id = 2").bind(daysAgo(10)).run();
-    await worker.scheduled(createScheduledController({ cron: "17 3 * * *" }), env);
+    await worker.scheduled(createScheduledController({ cron: "17 * * * *" }), env);
     const ids = await env.DB.prepare("SELECT device_id FROM devices").all<{ device_id: number }>();
     expect(ids.results.map((r) => r.device_id)).toEqual([2]);
     expect(await count("one_time_prekeys")).toBe(3);
