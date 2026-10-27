@@ -24,7 +24,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm test
 
   build:
@@ -34,7 +34,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npx wrangler deploy --dry-run --env staging --outdir dist
 
   e2e:
@@ -45,7 +45,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npx wrangler d1 migrations apply DB --local
       # The test JWKS server (test/e2e/auth.test.ts) listens on 127.0.0.1:8788. Only loopback overrides are honoured.
       - name: Start the API locally
@@ -88,7 +88,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run lint
         env:
           REDOCLY_TELEMETRY: "off"

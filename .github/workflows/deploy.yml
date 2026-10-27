@@ -28,8 +28,9 @@ jobs:
     environment:
       name: staging
       url: https://api-staging.zapakid.ro/health
+    # The Cloudflare token goes only to the steps that run wrangler (step env), never to npm ci or the tests:
+    # a compromised dependency's install script or test code must not see it.
     env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -39,13 +40,15 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .nvmrc
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm test
       - run: npx wrangler deploy --dry-run --env staging --outdir dist
 
       - name: Check the Cloudflare credentials are set
+        env:
+          HAS_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }} # true/false only, not the token
         run: |
-          if [ -z "$CLOUDFLARE_API_TOKEN" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+          if [ "$HAS_TOKEN" != "true" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
             echo "::error::Set the CLOUDFLARE_API_TOKEN secret and CLOUDFLARE_ACCOUNT_ID variable in the staging environment."
             exit 1
           fi
@@ -87,12 +90,15 @@ jobs:
             "$RUNNER_TEMP/zapakid-api-$VERSION.cdx.json"
 
       - name: D1 database (EU) and migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
           node scripts/d1-database.js staging
           npx wrangler d1 migrations apply DB --env staging --remote
 
       - name: Deploy
         env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
           MESSAGE: ${{ steps.version.outputs.message }}
           VERSION_URL: ${{ steps.version.outputs.url }}
@@ -113,6 +119,7 @@ jobs:
       - name: Roll back to the previous version
         if: failure() && steps.e2e.conclusion == 'failure'
         env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           VERSION: ${{ steps.version.outputs.version }}
         # The e2e step has already failed the job; this step only reports what happened to the live version.
         # On a first deploy there is nothing to roll back to: the failing version stays live, said loudly.
