@@ -8,6 +8,7 @@ import {
   bootstrap,
   decide,
   newChatTokenKey,
+  putSecretWith,
   REALTIME_SECRETS,
   secretNames,
   workerName,
@@ -174,4 +175,51 @@ test("a Cloudflare API failure names the status and Cloudflare's message, and pu
 test("refuses an unknown environment or rotate value", async () => {
   await assert.rejects(bootstrap("dev", "none", world().deps), /env/);
   await assert.rejects(bootstrap("staging", "everything", world().deps), /rotate/);
+});
+
+// Regression: staging run 40580172197. A failed deploy had rolled back, so the Worker's latest version wasn't the
+// deployed one and `wrangler secret put` refused (wrangler: "latest version ... isn't currently deployed", API code 10214/10215). The secret then goes on a new version instead
+// (`wrangler versions secret put`), which the next deploy inherits.
+test("falls back to versions secret put when the latest version isn't deployed; value on stdin only", async () => {
+  const calls = [];
+  const run = (args, input) => {
+    calls.push({ args, input });
+    return Promise.resolve(
+      args[0] === "secret"
+        ? {
+            code: 1,
+            out: "",
+            err: "✘ [ERROR] Secret edit failed. You attempted to modify a secret, but the latest version of your Worker isn't currently deployed.",
+          }
+        : { code: 0, out: "", err: "" },
+    );
+  };
+  const how = await putSecretWith(run, "zapakid-api-staging", "CHAT_TOKEN_SIGNING_KEY", "s3cret");
+  assert.equal(how, "version");
+  assert.deepEqual(calls[0].args, ["secret", "put", "CHAT_TOKEN_SIGNING_KEY", "--name", "zapakid-api-staging"]);
+  assert.deepEqual(calls[1].args, [
+    "versions",
+    "secret",
+    "put",
+    "CHAT_TOKEN_SIGNING_KEY",
+    "--name",
+    "zapakid-api-staging",
+    "--message",
+    "bootstrap-secrets: CHAT_TOKEN_SIGNING_KEY",
+  ]);
+  assert.ok(calls.every((c) => c.input === "s3cret" && !c.args.includes("s3cret")));
+});
+
+test("a deployed Worker gets the secret directly", async () => {
+  const run = () => Promise.resolve({ code: 0, out: "", err: "" });
+  assert.equal(await putSecretWith(run, "w", "N", "v"), "deployed");
+});
+
+test("any other wrangler failure names wrangler's error codes, never its output", async () => {
+  const run = () => Promise.resolve({ code: 1, out: "leaky v", err: "✘ [ERROR] Authentication error [code: 10000]" });
+  await assert.rejects(putSecretWith(run, "w", "N", "v"), (e) => {
+    assert.match(e.message, /wrangler secret put N --name w failed \(exit 1; code 10000\)/);
+    assert.ok(!e.message.includes("leaky"));
+    return true;
+  });
 });
