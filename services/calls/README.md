@@ -39,17 +39,19 @@ DNS records on the first deploy.
   device push tokens arrive.
 - Limits: 8 participants, and 10 calls started and 30 joins a minute per account (rate limiting binding).
 
-## Secrets (Stefan)
+## Secrets
 
-The Worker needs four secrets per environment. `/health` answers 503 and names any that are missing, so the deploy's
-e2e check fails and rolls back until they are set. Create a Realtime SFU app and a TURN key in the Cloudflare
-dashboard (Realtime), one of each per environment, then from this folder:
+The Worker needs four secrets per environment: `REALTIME_APP_ID`, `REALTIME_APP_SECRET`, `TURN_KEY_ID` and
+`TURN_KEY_API_TOKEN`. `/health` answers 503 and names any that are missing. The `bootstrap-secrets` workflow
+(Actions → Run workflow, `env` = `staging` or `production`) creates a Realtime SFU app and a TURN key named
+`zapakid-<env>` and stores them, masked, never by hand. The order for a new environment:
 
-    scripts/set-secrets.sh staging       # prompts for REALTIME_APP_ID, REALTIME_APP_SECRET, TURN_KEY_ID, TURN_KEY_API_TOKEN
-    scripts/set-secrets.sh production
+1. Merge; the first deploy creates the Worker. Its e2e check fails until the secrets are set, and there is nothing
+   to roll back to yet.
+2. Run `bootstrap-secrets` for that environment. It skips a Worker that isn't deployed yet, so run it after step 1.
+3. Re-run the `deploy-calls` workflow; it goes green.
 
-wrangler prompts for each value without echoing it. Nothing is printed or stored anywhere else. The chat tokens
-need the account API's signing key (root README, "Chat tokens").
+The chat tokens need the account API's signing key; the same workflow makes it.
 
 ## Retention
 

@@ -27,7 +27,7 @@
     "RECONNECT_GRACE_SECONDS": "30",
     "CALL_LOG_RETENTION_DAYS": "365",
   },
-  // Secrets (scripts/set-secrets.sh, never vars): REALTIME_APP_ID, REALTIME_APP_SECRET, TURN_KEY_ID,
+  // Secrets (the bootstrap-secrets workflow, never vars): REALTIME_APP_ID, REALTIME_APP_SECRET, TURN_KEY_ID,
   // TURN_KEY_API_TOKEN. Locally: --var on wrangler dev with fake values (scripts/check.sh), or .dev.vars.
   "durable_objects": { "bindings": [{ "name": "CALL", "class_name": "CallRoom" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CallRoom"] }],

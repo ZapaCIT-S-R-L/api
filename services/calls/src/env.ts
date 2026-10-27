@@ -25,7 +25,7 @@ export interface Env {
   TURN_TTL_SECONDS: string;
   RECONNECT_GRACE_SECONDS: string;
   CALL_LOG_RETENTION_DAYS: string;
-  // Secrets Stefan sets (scripts/set-secrets.sh): the Realtime app and the TURN key. Never vars, never logged.
+  // Secrets from the bootstrap-secrets workflow: the Realtime app and the TURN key. Never vars, never logged.
   REALTIME_APP_ID?: string | undefined;
   REALTIME_APP_SECRET?: string | undefined;
   TURN_KEY_ID?: string | undefined;

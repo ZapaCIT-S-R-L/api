@@ -16,7 +16,7 @@ export function problems(env: Env): string[] {
   if (!present.CREATE_LIMITER) found.push("CREATE_LIMITER binding missing");
   if (!present.JOIN_LIMITER) found.push("JOIN_LIMITER binding missing");
   if (!safeUrl(present.REALTIME_API_URL)) found.push("REALTIME_API_URL not https (or http on loopback)");
-  // Secrets Stefan sets (scripts/set-secrets.sh): named, never shown.
+  // Secrets from the bootstrap-secrets workflow: named, never shown.
   for (const name of ["REALTIME_APP_ID", "REALTIME_APP_SECRET", "TURN_KEY_ID", "TURN_KEY_API_TOKEN"] as const) {
     if (!present[name]) found.push(`${name} missing`);
   }
