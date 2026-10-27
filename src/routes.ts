@@ -6,7 +6,13 @@ import { empty, error, json } from "./http";
 import { ProviderUnavailable } from "./jwks";
 import { checkNonceClaim, consumeNonce, InvalidNonce, issueNonce } from "./nonces";
 import { getParent, signIn } from "./parents";
-import { AttestationFailed, AttestationUnavailable, checkAttestation } from "./play-integrity";
+import {
+  AttestationFailed,
+  AttestationUnavailable,
+  checkAttestation,
+  isAllowlisted,
+  type AttestationResult,
+} from "./play-integrity";
 import { InvalidToken, verifyIdToken, type Identity, type Provider } from "./providers";
 import { authenticate } from "./sessions";
 
@@ -18,8 +24,8 @@ const unauthorized = () =>
 export async function handleSignIn(request: Request, env: Env, provider: Provider): Promise<Response> {
   const { body, bytes } = await readJsonBody(request);
   const input: SignInRequest = provider === "apple" ? appleSignIn(body) : googleSignIn(body);
-  const refused = await attest(request, bytes, env);
-  if (refused) return refused;
+  const attestation = await attest(request, bytes, env);
+  if (attestation instanceof Response) return attestation;
 
   let identity;
   try {
@@ -35,6 +41,9 @@ export async function handleSignIn(request: Request, env: Env, provider: Provide
     }
     throw e;
   }
+
+  const refused = allowlistRefusal(attestation, env, identity);
+  if (refused) return refused;
 
   return finishSignIn(env, identity, input.nonce, input.ageRange, input.displayName);
 }
@@ -71,10 +80,10 @@ export async function finishSignIn(
 }
 
 // App attestation before anything is verified or used up: a refused request leaves the nonce and codes intact.
-export async function attest(request: Request, bytes: Uint8Array, env: Env): Promise<Response | null> {
+// Returns a refusal, or the result to pass to allowlistRefusal() once the identity is verified.
+export async function attest(request: Request, bytes: Uint8Array, env: Env): Promise<Response | AttestationResult> {
   try {
-    await checkAttestation(request, bytes, env);
-    return null;
+    return await checkAttestation(request, bytes, env);
   } catch (e) {
     if (e instanceof AttestationFailed) {
       console.log(
@@ -92,6 +101,16 @@ export async function attest(request: Request, bytes: Uint8Array, env: Env): Pro
     }
     throw e;
   }
+}
+
+const attestationFailed = () =>
+  error(403, "attestation_failed", "Use the ZapaKid app from Google Play or the App Store on a genuine device.");
+
+// For the "allowlist" policy: a request without attestation goes on only for an allowlisted identity.
+export function allowlistRefusal(result: AttestationResult, env: Env, identity: Identity): Response | null {
+  if (result !== "allowlist" || isAllowlisted(env, identity.provider, identity.subject)) return null;
+  console.log(JSON.stringify({ msg: "attestation failed", reason: "no attestation, not allowlisted" }));
+  return attestationFailed();
 }
 
 export async function handleNonce(_request: Request, env: Env): Promise<Response> {

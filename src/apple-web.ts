@@ -7,7 +7,7 @@ import type { Env } from "./env";
 import { error, json } from "./http";
 import { ProviderUnavailable } from "./jwks";
 import { InvalidToken, verifyIdToken, type Identity } from "./providers";
-import { attest, finishSignIn } from "./routes";
+import { allowlistRefusal, attest, finishSignIn } from "./routes";
 
 const FLOW_TTL_SECONDS = 600;
 const CODE_TTL_SECONDS = 120;
@@ -134,8 +134,8 @@ export async function handleAppleWebExchange(request: Request, env: Env): Promis
   }
   const sentNonce = nonce(body);
   const ageRange = parseAgeRange(body.ageRange);
-  const refused = await attest(request, bytes, env);
-  if (refused) return refused;
+  const attestation = await attest(request, bytes, env);
+  if (attestation instanceof Response) return attestation;
 
   // Any attempt uses the code up, so a wrong verifier can't be retried.
   const row = await env.DB.prepare("DELETE FROM apple_web_flows WHERE code_hash = ? RETURNING *")
@@ -157,5 +157,7 @@ export async function handleAppleWebExchange(request: Request, env: Env): Promis
     name: null,
     nonce: row.nonce_claim,
   };
+  const refused = allowlistRefusal(attestation, env, identity);
+  if (refused) return refused;
   return finishSignIn(env, identity, sentNonce, ageRange, row.display_name);
 }

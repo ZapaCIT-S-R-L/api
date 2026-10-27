@@ -53,18 +53,24 @@ tags:
       `POST /v1/auth/apple/exchange`. The server decodes it with Google (`decodeIntegrityToken`) and requires:
       package `ro.zapakid.app` (request and app), the request hash, a timestamp under 10 minutes old,
       `appRecognitionVerdict = PLAY_RECOGNIZED`, ZapaKid's signing certificate, `MEETS_DEVICE_INTEGRITY` and
-      `appLicensingVerdict = LICENSED`. iOS: Apple App Attest (next; see `Draft: App attestation`).
-      Policy per environment: `required` (production, from launch) rejects a missing or failing attestation with
-      `403 attestation_failed`; `optional` (staging until Play Integrity is set up) lets a missing header through
-      but still rejects a failing one. The body hash includes the one-time nonce, so a token can't be replayed.
+      `appLicensingVerdict = LICENSED`.
+      iOS (bundle `ro.zapakid.app`, team `9572LYGZ7S`): `v1 keyId=<key id, base64> assertion=<base64>`, the
+      assertion from `generateAssertion(keyId, clientDataHash: SHA-256(exact body bytes))` with a key registered via
+      `POST /v1/attestation/apple`, on `POST /v1/auth/apple` and `POST /v1/auth/google`. The server checks the
+      signature against the registered key, the RP ID hash of `9572LYGZ7S.ro.zapakid.app`, and that the counter
+      went up (no replay). An unknown key or failed check → `403 attestation_failed`: register a new key.
+      Simulators can't attest: on staging they sign in only as allowlisted test accounts.
+      Policy per environment: `required` (production) rejects a missing or failing attestation with
+      `403 attestation_failed`; `allowlist` (staging) lets a missing header through only for allowlisted test
+      accounts, checked after their token verifies; `optional` is for local development only. A header, when
+      present, is always checked in full. The body hash includes the one-time nonce, so a token can't be replayed.
   - name: Account
     description: The signed-in parent's own account.
-  - name: "Draft: App attestation"
+  - name: App attestation
     description: |
-      Planned for iOS: Apple App Attest. A device first registers an attested key, then signs sign-in requests with
-      an assertion in the `ZapaKid-Attestation` header. Play Integrity (Android) is implemented: see `Sign-in`.
-      **Required on sign-in from launch** (decided 2026-10-26): the apps must integrate App Attest and Play
-      Integrity before launch. Requests from clients that fail the checks get `403 attestation_failed`.
+      iOS registers an Apple App Attest key once (`/v1/attestation/challenge`, `/v1/attestation/apple`), then signs
+      each sign-in with an assertion in the `ZapaKid-Attestation` header (see `Sign-in`). Android needs no
+      registration (Play Integrity). Required on sign-in from launch (decided 2026-10-26).
   - name: "Draft: Families"
     description: Planned. A family has one or more parents and the kids they add.
   - name: "Draft: Kids"
@@ -356,17 +362,12 @@ paths:
               schema: { $ref: "#/components/schemas/Parent" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
-  # ---------------------------------------------------------------------------------------------------------------
-  # Draft endpoints below: planned, not implemented, will change.
-  # ---------------------------------------------------------------------------------------------------------------
-
   /v1/attestation/challenge:
     post:
-      tags: ["Draft: App attestation"]
+      tags: [App attestation]
       operationId: createAttestationChallenge
-      x-status: draft
-      summary: A one-time challenge for App Attest or Play Integrity.
-      description: Random, single use, expires after 5 minutes. Works without a session (needed before sign-in).
+      summary: A one-time challenge for registering an App Attest key (iOS).
+      description: Random (32 bytes, base64url), single use, valid for 5 minutes. No session needed.
       security: []
       responses:
         "200":
@@ -377,22 +378,23 @@ paths:
                 type: object
                 required: [challenge, expiresAt]
                 properties:
-                  challenge: { $ref: "#/components/schemas/Base64Url" }
+                  challenge: { type: string, pattern: "^[A-Za-z0-9_-]{43}$" }
                   expiresAt: { type: string, format: date-time }
+        "429": { $ref: "#/components/responses/RateLimited" }
 
   /v1/attestation/apple:
     post:
-      tags: ["Draft: App attestation"]
+      tags: [App attestation]
       operationId: registerAppAttestKey
-      x-status: draft
-      summary: Register an Apple App Attest key for this device.
+      summary: Register this iPhone's App Attest key.
       description: |
-        The server verifies the attestation object as Apple documents it ("Validating apps that connect to your
-        server"): certificate chain to Apple's App Attest root, nonce = SHA-256(authData ‖ SHA-256(challenge)),
-        App ID `9572LYGZ7S.ro.zapakid.app`, key id, counter 0, and production `aaguid` in production. It stores
-        the public key and counter. Later requests carry an assertion over the request body hash in the
-        `ZapaKid-Attestation` header; the server checks the signature and that the counter increases. Verification
-        uses the platform libraries' formats and WebCrypto only, no custom primitives.
+        `attestKey(keyId, clientDataHash: SHA-256(UTF-8 of challenge))`, then send the result here. The server
+        verifies it as Apple documents ("Validating apps that connect to your server"): the certificate chain to
+        Apple's App Attestation Root CA, the nonce (SHA-256(authData ‖ clientDataHash)) in the leaf certificate,
+        `keyId` = SHA-256 of the leaf's public key, the RP ID hash of App ID `9572LYGZ7S.ro.zapakid.app`, counter 0,
+        the credential id, and the environment (`appattestdevelop` is accepted on staging only). The challenge is
+        used up either way. It stores the public key and counter, nothing about the user. A key unused for 180 days
+        is deleted; the next sign-in then gets `403 attestation_failed` and the app registers a new key.
       security: []
       requestBody:
         required: true
@@ -401,13 +403,25 @@ paths:
             schema:
               type: object
               required: [keyId, attestationObject, challenge]
+              additionalProperties: false
               properties:
-                keyId: { $ref: "#/components/schemas/Base64" }
-                attestationObject: { $ref: "#/components/schemas/Base64" }
-                challenge: { $ref: "#/components/schemas/Base64Url" }
+                keyId:
+                  type: string
+                  pattern: "^[A-Za-z0-9+/]{43}=$"
+                  description: The key id from `DCAppAttestService.generateKey()` (base64).
+                attestationObject:
+                  allOf: [{ $ref: "#/components/schemas/Base64" }]
+                  description: From `attestKey`, base64.
+                challenge: { type: string, pattern: "^[A-Za-z0-9_-]{43}$" }
       responses:
         "204": { description: "Registered." }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
         "403": { $ref: "#/components/responses/AttestationFailed" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  # ---------------------------------------------------------------------------------------------------------------
+  # Draft endpoints below: planned, not implemented, will change.
+  # ---------------------------------------------------------------------------------------------------------------
 
   /v1/families:
     post:
@@ -766,7 +780,8 @@ components:
       required: false
       description: |
         App attestation for this request (see `Sign-in`). Android: the standard Play Integrity token, with
-        `requestHash` = lowercase hex SHA-256 of the body. Required where the policy is `required`.
+        `requestHash` = lowercase hex SHA-256 of the body. iOS: `v1 keyId=<base64> assertion=<base64>` (App
+        Attest assertion over SHA-256 of the body). Required where the policy is `required`.
       schema: { type: string, maxLength: 16384 }
     familyId: { name: familyId, in: path, required: true, schema: { type: string } }
     kidId: { name: kidId, in: path, required: true, schema: { type: string } }
@@ -975,9 +990,6 @@ components:
     Base64:
       type: string
       contentEncoding: base64
-    Base64Url:
-      type: string
-      pattern: "^[A-Za-z0-9_-]+$"
     DeviceId:
       type: integer
       minimum: 1
