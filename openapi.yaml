@@ -54,9 +54,10 @@ tags:
       package `ro.zapakid.app` (request and app), the request hash, a timestamp under 10 minutes old,
       `appRecognitionVerdict = PLAY_RECOGNIZED`, ZapaKid's signing certificate, `MEETS_DEVICE_INTEGRITY` and
       `appLicensingVerdict = LICENSED`. iOS: Apple App Attest (next; see `Draft: App attestation`).
-      Policy per environment: `required` (production, from launch) rejects a missing or failing attestation with
-      `403 attestation_failed`; `optional` (staging until Play Integrity is set up) lets a missing header through
-      but still rejects a failing one. The body hash includes the one-time nonce, so a token can't be replayed.
+      Policy per environment: `required` (production) rejects a missing or failing attestation with
+      `403 attestation_failed`; `allowlist` (staging) lets a missing header through only for allowlisted test
+      accounts, checked after their token verifies; `optional` is for local development only. A header, when
+      present, is always checked in full. The body hash includes the one-time nonce, so a token can't be replayed.
   - name: Account
     description: The signed-in parent's own account.
   - name: "Draft: App attestation"

@@ -19,6 +19,7 @@
     "APPLE_WEB_REDIRECT_URL": "https://zapakid.ro/app/apple",
     "GOOGLE_CLIENT_IDS": "000000000000-zapakidlocaltest.apps.googleusercontent.com",
     "SESSION_TTL_SECONDS": "2592000",
+    // Local development only: a missing attestation is let through (never in staging or production).
     "ATTESTATION_POLICY": "optional",
     "PLAY_PACKAGE_NAME": "ro.zapakid.app",
     "PLAY_CERT_SHA256": "",
@@ -55,8 +56,8 @@
         "APPLE_WEB_REDIRECT_URL": "https://zapakid.ro/app/apple",
         "GOOGLE_CLIENT_IDS": "64042746735-r70nv5pmlro7hpksk1te3ur008ungss1.apps.googleusercontent.com,64042746735-lgdmtj9vvd3kiu7g9qc2elu22la6o1id.apps.googleusercontent.com",
         "SESSION_TTL_SECONDS": "2592000",
-        // Optional until the Play Integrity service account and signing certificate are set; then "required".
-        "ATTESTATION_POLICY": "optional",
+        // Without attestation only the test accounts in the ATTESTATION_ALLOWLIST secret may sign in.
+        "ATTESTATION_POLICY": "allowlist",
         "PLAY_PACKAGE_NAME": "ro.zapakid.app",
         "PLAY_CERT_SHA256": "",
       },

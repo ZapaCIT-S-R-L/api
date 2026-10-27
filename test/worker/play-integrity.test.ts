@@ -315,7 +315,7 @@ describe("policy required", () => {
   });
 });
 
-describe("policy optional (staging until Play Integrity is set up)", () => {
+describe("policy optional (local development only)", () => {
   const OPTIONAL = () => ({ ...REQUIRED(), ATTESTATION_POLICY: "optional" });
 
   it("no header → allowed", async () => {
@@ -344,6 +344,61 @@ describe("policy optional (staging until Play Integrity is set up)", () => {
   });
 });
 
+// Staging: a missing header is let through only for allowlisted test accounts (ATTESTATION_ALLOWLIST secret,
+// "provider:subject" entries), e.g. a debug build that Play doesn't recognise. Everyone else needs attestation.
+describe("policy allowlist (staging)", () => {
+  const SUBJECT = "109876543210987654321"; // googleClaims() default sub
+  const ALLOWLIST = (list: string) => ({ ...REQUIRED(), ATTESTATION_POLICY: "allowlist", ATTESTATION_ALLOWLIST: list });
+
+  it("no header, allowlisted account → 200", async () => {
+    const { body } = await googleSignIn();
+    const res = await send("/v1/auth/google", body, {}, ALLOWLIST(`apple:someone, google:${SUBJECT}`));
+    expect(res.status).toBe(200);
+  });
+
+  it("no header, account not on the list → 403, nonce still usable", async () => {
+    const { body } = await googleSignIn();
+    await expectError(
+      await send("/v1/auth/google", body, {}, ALLOWLIST("google:someone-else")),
+      403,
+      "attestation_failed",
+    );
+    expect(await count("sign_in_nonces")).toBe(1);
+    expect(await count("sessions")).toBe(0);
+  });
+
+  it("the same subject from the other provider is not on the list", async () => {
+    const { body } = await googleSignIn();
+    await expectError(
+      await send("/v1/auth/google", body, {}, ALLOWLIST(`apple:${SUBJECT}`)),
+      403,
+      "attestation_failed",
+    );
+  });
+
+  it("no header and no list → 403", async () => {
+    const { body } = await googleSignIn();
+    const res = await send("/v1/auth/google", body, {}, { ...ALLOWLIST(""), ATTESTATION_ALLOWLIST: undefined });
+    await expectError(res, 403, "attestation_failed");
+  });
+
+  it("a failing token is refused even for an allowlisted account", async () => {
+    const { body, token } = await googleSignIn({ accountDetails: { appLicensingVerdict: "UNLICENSED" } });
+    const res = await send("/v1/auth/google", body, { "zapakid-attestation": token }, ALLOWLIST(`google:${SUBJECT}`));
+    await expectError(res, 403, "attestation_failed");
+  });
+
+  it("a genuine token works for anyone", async () => {
+    const { body, token } = await googleSignIn();
+    expect((await send("/v1/auth/google", body, { "zapakid-attestation": token }, ALLOWLIST(""))).status).toBe(200);
+  });
+
+  it("a bad Google token without header is 401, not let through", async () => {
+    const body = JSON.stringify({ idToken: "a.b.c", ageRange: ADULT_GOOGLE, nonce: pendingNonce()?.nonce });
+    await expectError(await send("/v1/auth/google", body, {}, ALLOWLIST(`google:${SUBJECT}`)), 401, "invalid_token");
+  });
+});
+
 describe("health", () => {
   const health = (overrides: Record<string, unknown>) =>
     worker.fetch(workerRequest("https://api.test/health"), { ...env, ...overrides });
@@ -361,6 +416,10 @@ describe("health", () => {
       PLAY_CERT_SHA256: "",
     });
     expect(await res.text()).toContain("PLAY_CERT_SHA256");
+  });
+
+  it("allowlist without a list is healthy (nobody is exempt)", async () => {
+    expect((await health({ ...REQUIRED(), ATTESTATION_POLICY: "allowlist" })).status).toBe(200);
   });
 
   it("an unknown policy → 503 naming ATTESTATION_POLICY", async () => {
