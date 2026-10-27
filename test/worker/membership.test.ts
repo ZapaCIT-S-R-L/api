@@ -37,13 +37,16 @@ async function joinWithInvite(owner: Record<string, string>, familyId: string, j
   return send("/v1/families/join", joiner, { code });
 }
 
-async function outbox(): Promise<(MembershipEvent & { sent: boolean })[]> {
+// The family events, flattened for assertions.
+type FamilyEvent = Extract<MembershipEvent, { familyId: string }> & { role?: string };
+
+async function outbox(): Promise<(FamilyEvent & { seq: number; sent: boolean })[]> {
   const { results } = await env.DB.prepare("SELECT seq, body, sent_at FROM membership_outbox ORDER BY seq").all<{
     seq: number;
     body: string;
     sent_at: string | null;
   }>();
-  return results.map((r) => ({ ...(JSON.parse(r.body) as MembershipEvent), seq: r.seq, sent: r.sent_at !== null }));
+  return results.map((r) => ({ ...(JSON.parse(r.body) as FamilyEvent), seq: r.seq, sent: r.sent_at !== null }));
 }
 
 class FakeQueue {
@@ -103,26 +106,26 @@ describe("membership events (outbox)", () => {
     const events = await outbox();
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({
-      version: 1,
-      type: "member.added",
-      scope: `family:${familyId}`,
+      v: 1,
+      type: "family.member_added",
       familyId,
-      account: { id: ana.id, role: "parent" },
+      accountId: ana.id,
+      role: "parent",
     });
     expect(events[0]?.id).toMatch(/^[0-9a-f-]{36}$/);
     expect(Date.parse(events[0]?.occurredAt ?? "")).not.toBeNaN();
   });
 
-  it("joining adds the second parent; leaving an empty family deletes its scope first", async () => {
+  it("joining adds the second parent; leaving an empty family removes them from it first", async () => {
     const ana = await signInParent(apple, "ana");
     const dan = await signInParent(apple, "dan");
     const familyId = await familyOf(ana.auth);
     const dansOld = await familyOf(dan.auth);
     expect((await joinWithInvite(ana.auth, familyId, dan.auth)).status).toBe(200);
     const events = (await outbox()).slice(2);
-    expect(events.map((e) => [e.type, e.scope, e.account?.id])).toEqual([
-      ["scope.deleted", `family:${dansOld}`, undefined],
-      ["member.added", `family:${familyId}`, dan.id],
+    expect(events.map((e) => [e.type, e.familyId, e.accountId])).toEqual([
+      ["family.member_removed", dansOld, dan.id],
+      ["family.member_added", familyId, dan.id],
     ]);
   });
 
@@ -131,11 +134,7 @@ describe("membership events (outbox)", () => {
     const familyId = await familyOf(ana.auth);
     const kidId = await addKid(ana.auth, familyId);
     const last = (await outbox()).at(-1);
-    expect(last).toMatchObject({
-      type: "member.added",
-      scope: `family:${familyId}`,
-      account: { id: kidId, role: "kid" },
-    });
+    expect(last).toMatchObject({ type: "family.member_added", familyId, accountId: kidId, role: "kid" });
   });
 
   it("refused changes emit nothing", async () => {
@@ -149,7 +148,7 @@ describe("membership events (outbox)", () => {
     expect((await outbox()).length).toBe(before);
   });
 
-  it("flush sends unsent events in order, once, with seq; then marks them sent", async () => {
+  it("flush sends unsent events in order, once, then marks them sent", async () => {
     const ana = await signInParent(apple, "ana");
     const familyId = await familyOf(ana.auth);
     await addKid(ana.auth, familyId);
@@ -157,9 +156,18 @@ describe("membership events (outbox)", () => {
     const queue = new FakeQueue();
     expect(await flushMembershipEvents(withQueue(queue))).toBe(2);
     const sent = queue.sent as MembershipEvent[];
-    expect(sent.map((e) => e.type)).toEqual(["member.added", "member.added"]);
-    expect(sent.map((e) => e.account?.role)).toEqual(["parent", "kid"]);
-    expect((sent[0]?.seq ?? 0) < (sent[1]?.seq ?? 0)).toBe(true);
+    expect(sent.map((e) => e.type)).toEqual(["family.member_added", "family.member_added"]);
+    expect(sent.map((e) => (e.type === "family.member_added" ? e.role : null))).toEqual(["parent", "kid"]);
+    // Exactly the chat service's contract (services/chat/openapi.yaml MembershipEvent): no extra fields.
+    expect(Object.keys(sent[0] ?? {}).sort()).toEqual([
+      "accountId",
+      "familyId",
+      "id",
+      "occurredAt",
+      "role",
+      "type",
+      "v",
+    ]);
     expect((await outbox()).every((e) => e.sent)).toBe(true);
     expect(await flushMembershipEvents(withQueue(queue))).toBe(0);
     expect(queue.sent).toHaveLength(2);
