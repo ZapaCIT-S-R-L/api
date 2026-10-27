@@ -4,6 +4,7 @@ import { handleAppleWebCallback, handleAppleWebExchange, handleAppleWebStart } f
 import { BadRequest } from "./body";
 import { handleCountPreKeys, handleGetIdentity, handleRegisterDevice, handleRemoveDevice } from "./devices";
 import { handleHealth } from "./health";
+import { handleChangeIdentity } from "./identity";
 import type { Env } from "./env";
 import { error } from "./http";
 import { purgeExpired } from "./purge";
@@ -32,6 +33,7 @@ const ROUTES: Record<string, { method: string; handler: Handler; limited?: true 
   "/v1/me": { method: "GET", handler: handleMe },
   "/v1/devices": { method: "POST", handler: handleRegisterDevice, limited: true },
   "/v1/keys/prekeys": { method: "GET", handler: handleCountPreKeys },
+  "/v1/keys/identity": { method: "PUT", handler: handleChangeIdentity, limited: true },
 };
 
 // Paths with one parameter: the pattern's group is passed to the handler.

@@ -574,7 +574,9 @@ paths:
         must be under 10 minutes old (`403 reauthentication_required`: sign in again first), so a stolen old session
         can't replace the key.
 
-        Effect, all at once: the change is added to the key history (an `identity_changed` event for peers), every
+        Effect, all at once: the change is added to the key history (peers read it from
+        `GET /v1/accounts/{accountId}/identity` now, and get an `identity_changed` event on `/v1/stream` once
+        messaging exists), every
         device of the account and its prekeys is removed, every other session of the parent is signed out, and this
         session is bound to this phone as the account's only device.
       parameters: [{ $ref: "#/components/parameters/attestation" }]

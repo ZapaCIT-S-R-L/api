@@ -16,7 +16,7 @@ const EC = { type: 0x05, length: 33 };
 const KYBER = { type: 0x08, length: 1569 };
 const SIGNATURE_LENGTH = 64;
 
-class InvalidKeys extends Error {}
+export class InvalidKeys extends Error {}
 
 const unauthorized = () =>
   error(401, "unauthorized", "Sign in first: send Authorization: Bearer <session token>.", {
@@ -132,7 +132,7 @@ export function parseDeviceKeys(body: Record<string, unknown>): DeviceKeys {
 }
 
 // Staging policy "allowlist": a request without attestation needs one of the parent's sign-in identities listed.
-async function parentAllowlisted(env: Env, parentId: string): Promise<boolean> {
+export async function parentAllowlisted(env: Env, parentId: string): Promise<boolean> {
   const rows = await env.DB.prepare("SELECT provider, subject FROM parent_identities WHERE parent_id = ?")
     .bind(parentId)
     .all<{ provider: string; subject: string }>();
@@ -226,10 +226,23 @@ export async function storeDevice(
   keys: DeviceKeys,
   now: string,
 ): Promise<boolean> {
+  const [device] = await env.DB.batch(deviceStatements(env, session, deviceId, keys, now));
+  return device?.meta.changes === 1;
+}
+
+// The statements storing a device, its prekeys and the session binding; each requires the session to exist, be
+// unexpired and unbound. The first one inserts the device (its meta.changes says whether it was stored).
+export function deviceStatements(
+  env: Env,
+  session: Session,
+  deviceId: number,
+  keys: DeviceKeys,
+  now: string,
+): D1PreparedStatement[] {
   const account = session.parentId;
   const sessionFree = "EXISTS (SELECT 1 FROM sessions WHERE token_hash = ? AND device_id IS NULL AND expires_at > ?)";
   const free = [session.tokenHash, now] as const;
-  const [device] = await env.DB.batch([
+  return [
     env.DB.prepare(
       `INSERT INTO devices (account_id, device_id, registration_id, signed_prekey_id, signed_prekey,
          signed_prekey_signature, pq_last_resort_id, pq_last_resort_key, pq_last_resort_signature, push_token,
@@ -263,8 +276,7 @@ export async function storeDevice(
     env.DB.prepare(
       "UPDATE sessions SET device_id = ? WHERE token_hash = ? AND device_id IS NULL AND expires_at > ?",
     ).bind(deviceId, ...free),
-  ]);
-  return device?.meta.changes === 1;
+  ];
 }
 
 export async function handleRemoveDevice(request: Request, env: Env, rawId: string): Promise<Response> {
@@ -314,5 +326,11 @@ export async function handleGetIdentity(request: Request, env: Env, accountId: s
     .bind(accountId)
     .first<string>("identity_key");
   if (!identityKey) return notFound();
-  return json({ identityKey, changes: [] });
+  const changes = await env.DB.prepare(
+    `SELECT identity_key AS identityKey, previous_key AS previousIdentityKey, endorsement, changed_at AS changedAt
+       FROM identity_key_changes WHERE account_id = ? ORDER BY changed_at, rowid`,
+  )
+    .bind(accountId)
+    .all();
+  return json({ identityKey, changes: changes.results });
 }
