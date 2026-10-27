@@ -180,6 +180,7 @@ export async function count(
     | "app_attest_challenges"
     | "app_attest_keys"
     | "account_identities"
+    | "identity_key_changes"
     | "devices"
     | "one_time_prekeys"
     | "pq_one_time_prekeys",

@@ -13,6 +13,7 @@ beforeEach(async () => {
       "one_time_prekeys",
       "pq_one_time_prekeys",
       "devices",
+      "identity_key_changes",
       "account_identities",
       "sessions",
       "parent_identities",
