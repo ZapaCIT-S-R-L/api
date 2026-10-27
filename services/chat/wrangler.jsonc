@@ -1,0 +1,133 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "zapakid-chat",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-12",
+
+  // The top level is for local development and tests only. Deploys always name an environment
+  // (deploy-chat.yml: --env staging, deploy-chat-production.yml: --env production).
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+
+  // Chat tokens (ES256) come from the account service. Locally the tests serve their own keys on loopback; the
+  // Worker accepts a plain-http key URL only on 127.0.0.1/localhost.
+  "vars": {
+    "VERSION": "dev",
+    "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/zapakid-api",
+    "TOKEN_ISSUER": "api.zapakid.test",
+    "TOKEN_AUDIENCE": "chat.zapakid.test",
+    "ACCOUNT_JWKS_URL": "http://127.0.0.1:8789/.well-known/jwks.json",
+    // Local only: POST /__e2e/membership puts test events on the local queue (loopback requests only). Never set
+    // in a deployed environment (test/scripts/config.test.js).
+    "E2E_HOOKS": "on",
+  },
+
+  // Per account per minute. High locally so the e2e suite fits; tests set small limits.
+  // Each environment has its own namespace ids (separate counters); 41xx/42xx/43xx are the chat service's.
+  "ratelimits": [{ "name": "CREATE_LIMITER", "namespace_id": "4102", "simple": { "limit": 1000, "period": 60 } }],
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "zapakid-chat-local",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations",
+    },
+  ],
+  "queues": {
+    // Local only, for the E2E_HOOKS route. In deployed environments the account service is the producer.
+    "producers": [{ "binding": "MEMBERSHIP_E2E", "queue": "zapakid-membership-local" }],
+    "consumers": [
+      {
+        "queue": "zapakid-membership-local",
+        "max_batch_size": 10,
+        "max_batch_timeout": 1,
+        "max_concurrency": 1,
+        "max_retries": 5,
+        "dead_letter_queue": "zapakid-membership-local-dlq",
+      },
+    ],
+  },
+  "triggers": { "crons": ["23 * * * *"] },
+
+  "env": {
+    "staging": {
+      // The Worker owns this hostname and its DNS record. No workers.dev URL.
+      "routes": [{ "pattern": "chat-staging.zapakid.ro", "custom_domain": true }],
+      "workers_dev": false,
+      "preview_urls": false,
+      "observability": { "enabled": true },
+      // VERSION and VERSION_URL are overridden on every deploy (deploy-chat.yml: wrangler deploy --var).
+      "vars": {
+        "VERSION": "dev",
+        "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/zapakid-api",
+        "TOKEN_ISSUER": "api-staging.zapakid.ro",
+        "TOKEN_AUDIENCE": "chat-staging.zapakid.ro",
+        "ACCOUNT_JWKS_URL": "https://api-staging.zapakid.ro/.well-known/jwks.json",
+      },
+      "ratelimits": [{ "name": "CREATE_LIMITER", "namespace_id": "4202", "simple": { "limit": 20, "period": 60 } }],
+      // EU jurisdiction. scripts/resources.js creates the database, bucket and queues if needed and puts the
+      // database id in place of this placeholder at deploy time; the real id is never committed.
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "zapakid-chat-staging",
+          "database_id": "00000000-0000-0000-0000-000000000001",
+          "migrations_dir": "migrations",
+        },
+      ],
+      "queues": {
+        "consumers": [
+          {
+            "queue": "zapakid-membership-staging",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            // One batch at a time, so events of one family apply in the order they arrive.
+            "max_concurrency": 1,
+            "max_retries": 5,
+            "dead_letter_queue": "zapakid-membership-staging-dlq",
+          },
+        ],
+      },
+      "triggers": { "crons": ["23 * * * *"] },
+    },
+
+    // Deployed only by hand (deploy-chat-production.yml, needs approval).
+    "production": {
+      "routes": [{ "pattern": "chat.zapakid.ro", "custom_domain": true }],
+      "workers_dev": false,
+      "preview_urls": false,
+      "observability": { "enabled": true },
+      "vars": {
+        "VERSION": "dev",
+        "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/zapakid-api",
+        "TOKEN_ISSUER": "api.zapakid.ro",
+        "TOKEN_AUDIENCE": "chat.zapakid.ro",
+        "ACCOUNT_JWKS_URL": "https://api.zapakid.ro/.well-known/jwks.json",
+      },
+      "ratelimits": [{ "name": "CREATE_LIMITER", "namespace_id": "4302", "simple": { "limit": 20, "period": 60 } }],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "zapakid-chat-production",
+          "database_id": "00000000-0000-0000-0000-000000000002",
+          "migrations_dir": "migrations",
+        },
+      ],
+      "queues": {
+        "consumers": [
+          {
+            "queue": "zapakid-membership-production",
+            "max_batch_size": 10,
+            "max_batch_timeout": 5,
+            // One batch at a time, so events of one family apply in the order they arrive.
+            "max_concurrency": 1,
+            "max_retries": 5,
+            "dead_letter_queue": "zapakid-membership-production-dlq",
+          },
+        ],
+      },
+      "triggers": { "crons": ["23 * * * *"] },
+    },
+  },
+}

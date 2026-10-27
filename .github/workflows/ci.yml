@@ -1,4 +1,7 @@
 # Checks every pull request and every push to main. No secrets are used here, so PRs from forks are safe.
+# The account API's own checks (unit, build, e2e, lint) are skipped when a PR changes only services/** (each service
+# has its own ci-<service>.yml). They are skipped, not left out (paths-ignore), because the main ruleset requires
+# them: a skipped required check passes, a missing one blocks the merge.
 #   unit     node:test for scripts/, Vitest inside the Workers runtime for the Worker (npm test)
 #   build    wrangler bundles the Worker (dry run, nothing uploaded)
 #   e2e      the API over HTTP on a local wrangler dev server (npm run test:e2e)
@@ -17,7 +20,29 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      root: ${{ steps.diff.outputs.root }}
+    steps:
+      - id: diff
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if [ -z "$PR" ]; then echo "root=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          files=$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename')
+          if grep -qv '^services/' <<<"$files"; then root=true; else root=false; fi
+          echo "root=$root" >> "$GITHUB_OUTPUT"
+          echo "Account API checks: $root" >> "$GITHUB_STEP_SUMMARY"
+
   unit:
+    needs: changes
+    if: needs.changes.outputs.root == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -28,6 +53,8 @@ jobs:
       - run: npm test
 
   build:
+    needs: changes
+    if: needs.changes.outputs.root == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -38,6 +65,8 @@ jobs:
       - run: npx wrangler deploy --dry-run --env staging --outdir dist
 
   e2e:
+    needs: changes
+    if: needs.changes.outputs.root == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -86,6 +115,8 @@ jobs:
       - run: npm audit --omit=dev --audit-level=high
 
   lint:
+    needs: changes
+    if: needs.changes.outputs.root == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

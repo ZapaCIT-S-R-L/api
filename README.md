@@ -16,6 +16,16 @@ decrypt a chat. The server has no cryptography of its own beyond verifying sign-
   - `npm run lint` (Prettier, ESLint, TypeScript); `npm run format` fixes formatting.
 - Dependencies are pinned to exact versions (`.npmrc`), updated by Dependabot, and audited on every PR and daily.
 
+## Services
+
+The repo root is the account API (api.zapakid.ro). Other services live under `services/`, each its own Worker with
+its own `package.json`, wrangler config, OpenAPI spec, CI (`ci-<service>.yml`) and deploy (`deploy-<service>.yml`):
+
+- [`services/chat`](services/chat/README.md): conversations, encrypted envelopes, stream, attachments
+  (chat.zapakid.ro).
+
+A PR that changes only `services/**` skips the account API's checks and deploy.
+
 ## How changes ship
 
 1. Open a pull request. CI (`.github/workflows/ci.yml`) runs lint, the unit and Worker tests, builds the Worker (dry

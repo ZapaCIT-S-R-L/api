@@ -21,6 +21,8 @@ jobs:
         with:
           node-version-file: .nvmrc
       - run: npm audit --omit=dev --audit-level=high
+      - run: npm audit --omit=dev --audit-level=high
+        working-directory: services/chat
 
   osv-scanner:
     runs-on: ubuntu-latest
@@ -30,4 +32,4 @@ jobs:
       - run: >-
           docker run --rm -v "$PWD:/src:ro" -w /src
           ghcr.io/google/osv-scanner:v2.7.0@sha256:4f3b7e2c64b9d38a5febc5a7e4a3dfef1d1362f726dea7a2ef4762b46469fcd0
-          scan source --lockfile package-lock.json
+          scan source --lockfile package-lock.json --lockfile services/chat/package-lock.json
