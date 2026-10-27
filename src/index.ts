@@ -2,6 +2,7 @@
 import { handleAppleAttestation, handleChallenge } from "./app-attest";
 import { handleAppleWebCallback, handleAppleWebExchange, handleAppleWebStart } from "./apple-web";
 import { BadRequest } from "./body";
+import { handleCountPreKeys, handleGetIdentity, handleRegisterDevice, handleRemoveDevice } from "./devices";
 import { handleHealth } from "./health";
 import type { Env } from "./env";
 import { error } from "./http";
@@ -28,14 +29,36 @@ const ROUTES: Record<string, { method: string; handler: Handler; limited?: true 
   },
   "/v1/auth/logout": { method: "POST", handler: handleLogout },
   "/v1/me": { method: "GET", handler: handleMe },
+  "/v1/devices": { method: "POST", handler: handleRegisterDevice, limited: true },
+  "/v1/keys/prekeys": { method: "GET", handler: handleCountPreKeys },
 };
+
+// Paths with one parameter: the pattern's group is passed to the handler.
+const PATTERN_ROUTES: {
+  pattern: RegExp;
+  method: string;
+  handler: (r: Request, e: Env, p: string) => Promise<Response>;
+}[] = [
+  { pattern: /^\/v1\/devices\/([^/]+)$/, method: "DELETE", handler: handleRemoveDevice },
+  { pattern: /^\/v1\/accounts\/([^/]+)\/identity$/, method: "GET", handler: handleGetIdentity },
+];
 
 export default {
   async fetch(request, env): Promise<Response> {
     const url = new URL(request.url);
     try {
       const route = Object.hasOwn(ROUTES, url.pathname) ? ROUTES[url.pathname] : undefined;
-      if (!route) return error(404, "not_found", "No such endpoint.");
+      if (!route) {
+        for (const p of PATTERN_ROUTES) {
+          const match = p.pattern.exec(url.pathname);
+          if (!match) continue;
+          if (request.method !== p.method) {
+            return error(405, "method_not_allowed", `Use ${p.method}.`, { allow: p.method });
+          }
+          return await p.handler(request, env, decodeURIComponent(match[1] ?? ""));
+        }
+        return error(404, "not_found", "No such endpoint.");
+      }
       if (request.method !== route.method) {
         return error(405, "method_not_allowed", `Use ${route.method}.`, { allow: route.method });
       }

@@ -10,6 +10,10 @@ await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
 beforeEach(async () => {
   await env.DB.batch(
     [
+      "one_time_prekeys",
+      "pq_one_time_prekeys",
+      "devices",
+      "account_identities",
       "sessions",
       "parent_identities",
       "parents",
