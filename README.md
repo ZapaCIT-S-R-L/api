@@ -64,11 +64,10 @@ Play Integrity (Android app attestation on sign-in, `ATTESTATION_POLICY` in `wra
    `npx wrangler secret put ATTESTATION_ALLOWLIST --env staging`. Production has no allowlist (`required`).
 
 Chat tokens (`POST /v1/chat/token`, verified by the chat and calls services against `/.well-known/jwks.json`): the
-signing key is the Worker secret `CHAT_TOKEN_SIGNING_KEY`, a private P-256 JWK. Stefan creates it per environment,
-never an agent or CI: `scripts/set-chat-token-key.sh staging` (and `production`). The script pipes a new key from
-`scripts/chat-token-key.js` straight into `wrangler secret put`; it is never printed or written to disk. Running it
-again rotates the key (apps fetch a new token on the 401). Until it is set, both endpoints answer
-`503 not_configured` and the staging e2e check of the JWKS fails, so set it before merging the chat token PR.
+signing key is the Worker secret `CHAT_TOKEN_SIGNING_KEY`, a private P-256 JWK. It is made by the
+`bootstrap-secrets` workflow (Actions → Run workflow, `env` = `staging` or `production`; `rotate` = `chat-token-key`
+replaces it, and apps fetch a new token on the 401), never by hand. Until it is set, both endpoints answer
+`503 not_configured` and the staging e2e check of the JWKS fails, so run the workflow before merging this.
 
 App Attest (iOS app attestation): nothing to set up on Cloudflare. The App ID `ro.zapakid.app` (team `9572LYGZ7S`)
 has App Attest enabled; the API pins Apple's App Attestation Root CA (`src/app-attest-root.ts`) and accepts

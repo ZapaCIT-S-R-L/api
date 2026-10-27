@@ -1,8 +1,8 @@
 // Short-lived ES256 tokens for the chat and calls services (POST /v1/chat/token), and the public key they verify
 // them with (GET /.well-known/jwks.json). Those services never see a session token and have no login of their own.
 // The private key is the Worker secret CHAT_TOKEN_SIGNING_KEY (a private P-256 JWK with its thumbprint as kid),
-// made and stored by scripts/set-chat-token-key.sh. Rotating it: run the script again; tokens signed with the old
-// key stop verifying, and the apps fetch a new token on the 401 (they live at most 15 minutes anyway).
+// made and stored by the bootstrap-secrets workflow. Rotating it: run that with rotate = chat-token-key; tokens signed
+// with the old key stop verifying, and the apps fetch a new token on the 401 (they live at most 15 minutes anyway).
 import { importJWK, SignJWT, type JWK } from "jose";
 import { randomBase64Url } from "./crypto";
 import type { Env } from "./env";

@@ -1,9 +1,8 @@
-// scripts/chat-token-key.js makes the chat token signing key that Stefan stores as a Worker secret
-// (scripts/set-chat-token-key.sh). The key goes straight into `wrangler secret put`, never to a terminal or a file.
+// scripts/chat-token-key.js makes the throwaway chat token signing key of local e2e runs (wrangler dev --var). It
+// never prints a key to a terminal. Deployed keys come from the bootstrap-secrets workflow.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { execFileSync, spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
 import { calculateJwkThumbprint, importJWK, SignJWT, jwtVerify } from "jose";
 
 const script = new URL("../../scripts/chat-token-key.js", import.meta.url).pathname;
@@ -35,11 +34,4 @@ test("refuses to print the key to a terminal", () => {
   assert.notEqual(res.status, 0);
   assert.equal(res.stdout, "");
   assert.match(res.stderr, /pipe/);
-});
-
-test("set-chat-token-key.sh pipes the key into wrangler secret put and never echoes it", () => {
-  const sh = readFileSync(new URL("../../scripts/set-chat-token-key.sh", import.meta.url), "utf8");
-  assert.match(sh, /node scripts\/chat-token-key\.js \| npx wrangler secret put CHAT_TOKEN_SIGNING_KEY --env "\$env"/);
-  assert.doesNotMatch(sh, /set -x|tee |> *[^&/]|\$\(node scripts\/chat-token-key/);
-  assert.match(sh, /staging\|production/);
 });

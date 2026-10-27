@@ -1,12 +1,11 @@
 // Makes a new chat token signing key: a private P-256 JWK (ES256) with its RFC 7638 thumbprint as kid, on stdout.
-// Only for piping into `wrangler secret put` (scripts/set-chat-token-key.sh); it refuses to print to a terminal.
+// For the throwaway key of local e2e runs (ci.yml, check.sh: wrangler dev --var); it refuses to print to a terminal.
+// Deployed environments get theirs from the bootstrap-secrets workflow (scripts/bootstrap-secrets.js).
 // CHAT_TOKEN_KEY_TTY=1 makes it behave as if stdout were a terminal (tests).
 import { calculateJwkThumbprint, exportJWK, generateKeyPair } from "jose";
 
 if (process.stdout.isTTY || process.env.CHAT_TOKEN_KEY_TTY === "1") {
-  console.error(
-    "Refusing to print a private key to the terminal: pipe it into wrangler (scripts/set-chat-token-key.sh).",
-  );
+  console.error("Refusing to print a private key to the terminal: pipe it into wrangler.");
   process.exit(1);
 }
 

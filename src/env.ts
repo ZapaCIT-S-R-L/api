@@ -26,7 +26,7 @@ export interface Env {
   CHAT_TOKEN_ISSUER: string;
   CHAT_TOKEN_AUDIENCES: string;
   CHAT_TOKEN_TTL_SECONDS: string;
-  // Secret (scripts/set-chat-token-key.sh): the private P-256 JWK that signs chat tokens.
+  // Secret (bootstrap-secrets workflow): the private P-256 JWK that signs chat tokens.
   CHAT_TOKEN_SIGNING_KEY?: string | undefined;
   // Secret (wrangler secret put): the Google service account JSON allowed to decode integrity tokens.
   PLAY_INTEGRITY_CREDENTIALS?: string;
