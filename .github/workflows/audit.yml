@@ -26,4 +26,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - run: docker run --rm -v "$PWD:/src" -w /src ghcr.io/google/osv-scanner:v2.7.0 scan source --lockfile package-lock.json
+      # Pinned by digest (tag kept for reading; bump both together), checkout read-only.
+      - run: >-
+          docker run --rm -v "$PWD:/src:ro" -w /src
+          ghcr.io/google/osv-scanner:v2.7.0@sha256:4f3b7e2c64b9d38a5febc5a7e4a3dfef1d1362f726dea7a2ef4762b46469fcd0
+          scan source --lockfile package-lock.json
