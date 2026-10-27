@@ -82,7 +82,14 @@ export async function newRealtimeCredentials(deps, env) {
   const app = await cloudflare(deps, "/calls/apps", { name }, "Creating the Realtime app");
   const [appId, appSecret] = take(deps, app, ["uid", "secret"], "Creating the Realtime app");
   const turn = await cloudflare(deps, "/calls/turn_keys", { name }, "Creating the TURN key");
-  const [turnId, turnKey] = take(deps, turn, ["uid", "key"], "Creating the TURN key");
+  // The live API names the token `secret`; the docs say `key`. Either is accepted, `key` first.
+  const token = turn.key ?? turn.secret;
+  const [turnId, turnKey] = take(
+    deps,
+    { ...turn, ...(token && { key: token }) },
+    ["uid", "key"],
+    "Creating the TURN key",
+  );
   return { REALTIME_APP_ID: appId, REALTIME_APP_SECRET: appSecret, TURN_KEY_ID: turnId, TURN_KEY_API_TOKEN: turnKey };
 }
 
