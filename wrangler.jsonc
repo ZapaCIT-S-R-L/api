@@ -23,6 +23,8 @@
     "ATTESTATION_POLICY": "optional",
     "PLAY_PACKAGE_NAME": "ro.zapakid.app",
     "PLAY_CERT_SHA256": "",
+    "APP_ATTEST_APP_ID": "9572LYGZ7S.ro.zapakid.app",
+    "APP_ATTEST_ENVIRONMENTS": "development,production",
   },
   // Auth rate limit (nonce + sign-in) per client address per minute and Cloudflare location. High locally so the
   // e2e suite fits; each environment has its own namespace_id (separate counters).
@@ -60,6 +62,9 @@
         "ATTESTATION_POLICY": "allowlist",
         "PLAY_PACKAGE_NAME": "ro.zapakid.app",
         "PLAY_CERT_SHA256": "",
+        // App Attest: Xcode (development) and TestFlight/App Store (production) keys.
+        "APP_ATTEST_APP_ID": "9572LYGZ7S.ro.zapakid.app",
+        "APP_ATTEST_ENVIRONMENTS": "development,production",
       },
       // Daily purge of expired sessions and sign-in nonces (src/purge.ts), 03:17 UTC.
       "triggers": { "crons": ["17 3 * * *"] },
@@ -95,6 +100,9 @@
         "ATTESTATION_POLICY": "required",
         "PLAY_PACKAGE_NAME": "ro.zapakid.app",
         "PLAY_CERT_SHA256": "",
+        // App Attest: App Store builds only.
+        "APP_ATTEST_APP_ID": "9572LYGZ7S.ro.zapakid.app",
+        "APP_ATTEST_ENVIRONMENTS": "production",
       },
       "triggers": { "crons": ["17 3 * * *"] },
       "ratelimits": [{ "name": "AUTH_LIMITER", "namespace_id": "3001", "simple": { "limit": 20, "period": 60 } }],

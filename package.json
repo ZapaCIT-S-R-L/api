@@ -13,7 +13,10 @@
     "format": "prettier --write ."
   },
   "dependencies": {
-    "jose": "6.2.13"
+    "asn1js": "4.0.0",
+    "cborg": "6.1.5",
+    "jose": "6.2.13",
+    "pkijs": "4.0.0"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.4.8",

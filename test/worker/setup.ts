@@ -9,9 +9,15 @@ await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
 
 beforeEach(async () => {
   await env.DB.batch(
-    ["sessions", "parent_identities", "parents", "sign_in_nonces", "apple_web_flows"].map((table) =>
-      env.DB.prepare(`DELETE FROM ${table}`),
-    ),
+    [
+      "sessions",
+      "parent_identities",
+      "parents",
+      "sign_in_nonces",
+      "apple_web_flows",
+      "app_attest_challenges",
+      "app_attest_keys",
+    ].map((table) => env.DB.prepare(`DELETE FROM ${table}`)),
   );
   await primeNonce();
 });
