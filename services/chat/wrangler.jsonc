@@ -23,9 +23,17 @@
     "E2E_HOOKS": "on",
   },
 
-  // Per account per minute. High locally so the e2e suite fits; tests set small limits.
+  // One Durable Object per conversation (SQLite storage): delivery copies and the WebSocket stream.
+  "durable_objects": { "bindings": [{ "name": "ROOMS", "class_name": "ConversationRoom" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ConversationRoom"] }],
+
+  // Per account (conversations) or device (sends, stream connects) per minute. High locally so the e2e suite fits.
   // Each environment has its own namespace ids (separate counters); 41xx/42xx/43xx are the chat service's.
-  "ratelimits": [{ "name": "CREATE_LIMITER", "namespace_id": "4102", "simple": { "limit": 1000, "period": 60 } }],
+  "ratelimits": [
+    { "name": "SEND_LIMITER", "namespace_id": "4101", "simple": { "limit": 1000, "period": 60 } },
+    { "name": "CREATE_LIMITER", "namespace_id": "4102", "simple": { "limit": 1000, "period": 60 } },
+    { "name": "CONNECT_LIMITER", "namespace_id": "4104", "simple": { "limit": 1000, "period": 60 } },
+  ],
   "d1_databases": [
     {
       "binding": "DB",
@@ -64,8 +72,14 @@
         "TOKEN_ISSUER": "https://api-staging.zapakid.ro",
         "TOKEN_AUDIENCE": "chat-staging.zapakid.ro",
         "ACCOUNT_JWKS_URL": "https://api-staging.zapakid.ro/.well-known/jwks.json",
+        "ROOMS_JURISDICTION": "eu",
       },
-      "ratelimits": [{ "name": "CREATE_LIMITER", "namespace_id": "4202", "simple": { "limit": 20, "period": 60 } }],
+      "durable_objects": { "bindings": [{ "name": "ROOMS", "class_name": "ConversationRoom" }] },
+      "ratelimits": [
+        { "name": "SEND_LIMITER", "namespace_id": "4201", "simple": { "limit": 120, "period": 60 } },
+        { "name": "CREATE_LIMITER", "namespace_id": "4202", "simple": { "limit": 20, "period": 60 } },
+        { "name": "CONNECT_LIMITER", "namespace_id": "4204", "simple": { "limit": 60, "period": 60 } },
+      ],
       // EU jurisdiction. scripts/resources.js creates the database, bucket and queues if needed and puts the
       // database id in place of this placeholder at deploy time; the real id is never committed.
       "d1_databases": [
@@ -104,8 +118,14 @@
         "TOKEN_ISSUER": "https://api.zapakid.ro",
         "TOKEN_AUDIENCE": "chat.zapakid.ro",
         "ACCOUNT_JWKS_URL": "https://api.zapakid.ro/.well-known/jwks.json",
+        "ROOMS_JURISDICTION": "eu",
       },
-      "ratelimits": [{ "name": "CREATE_LIMITER", "namespace_id": "4302", "simple": { "limit": 20, "period": 60 } }],
+      "durable_objects": { "bindings": [{ "name": "ROOMS", "class_name": "ConversationRoom" }] },
+      "ratelimits": [
+        { "name": "SEND_LIMITER", "namespace_id": "4301", "simple": { "limit": 120, "period": 60 } },
+        { "name": "CREATE_LIMITER", "namespace_id": "4302", "simple": { "limit": 20, "period": 60 } },
+        { "name": "CONNECT_LIMITER", "namespace_id": "4304", "simple": { "limit": 60, "period": 60 } },
+      ],
       "d1_databases": [
         {
           "binding": "DB",
