@@ -7,7 +7,7 @@ import { safeUrl } from "./urls";
 
 const MAX_LIFETIME_SECONDS = 900;
 const CLOCK_TOLERANCE_SECONDS = 30;
-const MAX_CONVERSATIONS = 1000;
+const MAX_SCOPES = 1000;
 
 export type Role = "parent" | "kid";
 
@@ -16,8 +16,9 @@ export interface Caller {
   // libsignal device id (1-127): who key envelopes are for.
   deviceId: number;
   role: Role;
-  // The conversations the caller was a member of when the token was issued.
-  conversations: string[];
+  // The token's `conv` claim: membership scopes (family:<id>, connection:<id>), never conversation ids. Checked for
+  // shape only and not used to authorize: the chat service decides who is in a conversation (src/chat.ts).
+  scopes: string[];
 }
 
 export class InvalidToken extends Error {}
@@ -71,10 +72,10 @@ function claims(payload: JWTPayload): Caller {
   if (role !== "parent" && role !== "kid") throw new InvalidToken("bad claim: role");
   if (
     !Array.isArray(conv) ||
-    conv.length > MAX_CONVERSATIONS ||
+    conv.length > MAX_SCOPES ||
     !conv.every((c): c is string => typeof c === "string" && c.length > 0 && c.length <= 128)
   ) {
     throw new InvalidToken("bad claim: conv");
   }
-  return { accountId: sub, deviceId: dev, role, conversations: conv };
+  return { accountId: sub, deviceId: dev, role, scopes: conv };
 }

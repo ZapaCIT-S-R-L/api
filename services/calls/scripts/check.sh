@@ -31,7 +31,9 @@ run() {
 e2e() {
   rm -rf .wrangler/state
   npx wrangler d1 migrations apply DB --local || return 1
-  npx wrangler dev --port "$PORT" --ip 127.0.0.1 --show-interactive-dev-session=false \
+  # The chat stub (test/chat-stub) runs next to the calls Worker as zapakid-chat, for the CHAT service binding.
+  npx wrangler dev --port "$PORT" -c wrangler.jsonc -c test/chat-stub/wrangler.jsonc --ip 127.0.0.1 \
+    --show-interactive-dev-session=false \
     --var "ACCOUNT_JWKS_URL:http://127.0.0.1:$FAKE_PORT/jwks" --var "REALTIME_API_URL:http://127.0.0.1:$FAKE_PORT/realtime" \
     --var REALTIME_APP_ID:e2e-app --var REALTIME_APP_SECRET:e2e-app-secret \
     --var TURN_KEY_ID:e2e-turn --var TURN_KEY_API_TOKEN:e2e-turn-token --var RING_TIMEOUT_SECONDS:3 \

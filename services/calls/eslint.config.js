@@ -14,6 +14,7 @@ export default tseslint.config(
     },
     rules: { "@typescript-eslint/restrict-template-expressions": ["error", { allowNumber: true }] },
   },
+  { files: ["test/chat-stub/**/*.js"], languageOptions: { globals: globals.serviceworker } },
   {
     files: ["scripts/**/*.js", "test/scripts/**/*.js", "test/e2e/**/*.ts", "eslint.config.js"],
     languageOptions: { globals: globals.node },
