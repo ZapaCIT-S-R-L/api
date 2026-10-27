@@ -16,6 +16,13 @@ decrypt a chat. The server has no cryptography of its own beyond verifying sign-
   - `npm run lint` (Prettier, ESLint, TypeScript); `npm run format` fixes formatting.
 - Dependencies are pinned to exact versions (`.npmrc`), updated by Dependabot, and audited on every PR and daily.
 
+## Services
+
+The repo is becoming a monorepo: the root is the account API, and each folder in `services/` is its own Worker with
+its own package, CI and deploy. The root workflows don't lint, test or deploy `services/`.
+
+- [`services/calls`](services/calls/README.md): voice calls (`calls.zapakid.ro`).
+
 ## How changes ship
 
 1. Open a pull request. CI (`.github/workflows/ci.yml`) runs lint, the unit and Worker tests, builds the Worker (dry

@@ -1,0 +1,166 @@
+# Deploys the calls service (services/calls) when a merge to main touches it: staging (calls-staging.zapakid.ro)
+# first, end-to-end tests against it, then production (calls.zapakid.ro) once @stefan-zpc approves the `production`
+# environment. Each stage rolls back to the previous Worker version if its end-to-end tests fail.
+# The version is `calls-` + the first 12 hex digits of the commit (the vX.Y.Z tags belong to the account API).
+# D1 migrations run before the deploy and are not rolled back: every migration must work with the previous Worker.
+# Credentials: the same GitHub environments as the API (`staging`, `production`): secret CLOUDFLARE_API_TOKEN,
+# variable CLOUDFLARE_ACCOUNT_ID. The Worker's own secrets are set by Stefan (services/calls/README.md).
+name: deploy-calls
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - services/calls/**
+      - .github/workflows/deploy-calls.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-calls
+  cancel-in-progress: false
+
+defaults:
+  run:
+    working-directory: services/calls
+
+jobs:
+  staging:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: staging
+      url: https://calls-staging.zapakid.ro/health
+    # The Cloudflare token goes only to the steps that run wrangler (step env), never to npm ci or the tests.
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      VERSION: calls-${{ github.sha }}
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci --ignore-scripts
+      - run: npm test
+      - run: npx wrangler deploy --dry-run --env staging --outdir dist
+
+      - name: Check the Cloudflare credentials are set
+        env:
+          HAS_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }} # true/false only, not the token
+        run: |
+          if [ "$HAS_TOKEN" != "true" ] || [ -z "$CLOUDFLARE_ACCOUNT_ID" ]; then
+            echo "::error::Set the CLOUDFLARE_API_TOKEN secret and CLOUDFLARE_ACCOUNT_ID variable in the staging environment."
+            exit 1
+          fi
+
+      - name: Version
+        id: version
+        run: echo "version=${VERSION:0:18}" >> "$GITHUB_OUTPUT"
+
+      - name: D1 database (EU) and migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          node scripts/d1-database.js staging
+          npx wrangler d1 migrations apply DB --env staging --remote
+
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          RELEASE: ${{ steps.version.outputs.version }}
+          VERSION_URL: https://github.com/${{ github.repository }}/tree/${{ github.sha }}/services/calls
+        run: >-
+          npx wrangler deploy --env staging --tag "$RELEASE" --message "deploy $RELEASE"
+          --var "VERSION:$RELEASE" --var "VERSION_URL:$VERSION_URL"
+
+      - name: End-to-end tests against staging
+        id: e2e
+        env:
+          CALLS_URL: https://calls-staging.zapakid.ro
+          LIVE: "1"
+          RELEASE: ${{ steps.version.outputs.version }}
+        run: |
+          node ../../scripts/wait-for-version.js "$CALLS_URL" "$RELEASE"
+          npm run test:e2e || { sleep 30; npm run test:e2e; }
+
+      - name: Roll back to the previous version
+        if: failure() && steps.e2e.conclusion == 'failure'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          RELEASE: ${{ steps.version.outputs.version }}
+        run: |
+          if out=$(npx wrangler rollback --env staging --yes --message "e2e failed after deploy of $RELEASE" 2>&1); then
+            echo "$out"
+            echo "::error::e2e failed after deploying $RELEASE; rolled back to the previous version." | tee -a "$GITHUB_STEP_SUMMARY"
+          elif grep -q "Could not find stable Worker Version" <<<"$out"; then
+            echo "$out"
+            echo "::error::e2e failed after deploying $RELEASE, the first version of the staging calls Worker: nothing to roll back to. Fix forward." | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "$out"
+            echo "::error::e2e failed after deploying $RELEASE, and the rollback failed too: check the staging calls Worker now." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          exit 1
+
+  production:
+    needs: staging
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # Needs @stefan-zpc's approval (environment protection rule).
+    environment:
+      name: production
+      url: https://calls.zapakid.ro/health
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      RELEASE: ${{ needs.staging.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci --ignore-scripts
+      - run: npx wrangler deploy --dry-run --env production --outdir dist
+
+      - name: D1 database (EU) and migrations
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          node scripts/d1-database.js production
+          npx wrangler d1 migrations apply DB --env production --remote
+
+      - name: Deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          VERSION_URL: https://github.com/${{ github.repository }}/tree/${{ github.sha }}/services/calls
+        run: >-
+          npx wrangler deploy --env production --tag "$RELEASE" --message "deploy $RELEASE"
+          --var "VERSION:$RELEASE" --var "VERSION_URL:$VERSION_URL"
+
+      - name: End-to-end tests against production
+        id: e2e
+        env:
+          CALLS_URL: https://calls.zapakid.ro
+          LIVE: "1"
+        run: |
+          node ../../scripts/wait-for-version.js "$CALLS_URL" "$RELEASE"
+          npm run test:e2e || { sleep 30; npm run test:e2e; }
+
+      - name: Roll back to the previous version
+        if: failure() && steps.e2e.conclusion == 'failure'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: |
+          if out=$(npx wrangler rollback --env production --yes --message "e2e failed after deploy of $RELEASE" 2>&1); then
+            echo "$out"
+            echo "::error::e2e failed after deploying $RELEASE; rolled back to the previous version." | tee -a "$GITHUB_STEP_SUMMARY"
+          elif grep -q "Could not find stable Worker Version" <<<"$out"; then
+            echo "$out"
+            echo "::error::e2e failed after deploying $RELEASE, the first version of the production calls Worker: nothing to roll back to. Fix forward." | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "$out"
+            echo "::error::e2e failed after deploying $RELEASE, and the rollback failed too: check the production calls Worker now." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          exit 1

@@ -13,7 +13,7 @@ for (const command of [
   "npm run test:e2e",
   "wrangler d1 migrations apply DB --local",
   "npm audit --omit=dev --audit-level=high",
-  "osv-scanner scan source --lockfile package-lock.json",
+  "scan source --lockfile package-lock.json",
 ]) {
   test(`check.sh and ci-calls.yml both run: ${command}`, () => {
     assert.ok(script.includes(command), "check.sh");

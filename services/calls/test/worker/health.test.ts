@@ -32,7 +32,7 @@ describe("unknown paths", () => {
 
 describe("GET /health with missing or unsafe config", () => {
   const health = (overrides: Record<string, unknown>) =>
-    worker.fetch(new Request("https://calls.test/health") as Parameters<typeof worker.fetch>[0], {
+    worker.fetch(new Request("https://calls.test/health"), {
       ...env,
       ...overrides,
     });

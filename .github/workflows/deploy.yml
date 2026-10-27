@@ -11,6 +11,9 @@ name: deploy
 on:
   push:
     branches: [main]
+    # Each service in services/ deploys itself (deploy-calls.yml).
+    paths-ignore:
+      - services/**
   workflow_dispatch:
 
 permissions:
