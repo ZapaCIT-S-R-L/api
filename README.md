@@ -16,6 +16,20 @@ decrypt a chat. The server has no cryptography of its own beyond verifying sign-
   - `npm run lint` (Prettier, ESLint, TypeScript); `npm run format` fixes formatting.
 - Dependencies are pinned to exact versions (`.npmrc`), updated by Dependabot, and audited on every PR and daily.
 
+## Security notes (threat model)
+
+- **The server is untrusted by design.** It stores libsignal public keys, signatures and ciphertext; it can't
+  decrypt a chat, and the apps don't rely on it for any cryptographic check.
+- **Prekey signatures are verified on the phones, not here.** The server checks only key types and sizes, key id
+  uniqueness and counts, and stops abuse (rate limits, attestation, body caps). libsignal verifies the signed EC and
+  Kyber prekey signatures against the identity key when it builds a session from a bundle. A bad bundle only breaks
+  session setup with that sender; the phone refuses it. `test/worker/devices.test.ts` pins this: an all-zero
+  signature is accepted by the server, so nobody assumes the server checked it.
+- **Identity keys never change silently.** The apps compare safety numbers and keep the last identity key they
+  trusted (libsignal `IdentityKeyStore`); the server's key history is a convenience, not the guarantee.
+- **The only crypto in the server** is sign-in token verification (jose), SHA-256 and random tokens (WebCrypto),
+  and app attestation checks (pkijs, WebCrypto). No custom primitives.
+
 ## How changes ship
 
 1. Open a pull request. CI (`.github/workflows/ci.yml`) runs lint, the unit and Worker tests, builds the Worker (dry
