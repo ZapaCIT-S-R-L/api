@@ -4,11 +4,11 @@
 // made and stored by scripts/set-chat-token-key.sh. Rotating it: run the script again; tokens signed with the old
 // key stop verifying, and the apps fetch a new token on the 401 (they live at most 15 minutes anyway).
 import { importJWK, SignJWT, type JWK } from "jose";
+import { authenticateAccount } from "./accounts";
 import { randomBase64Url } from "./crypto";
 import type { Env } from "./env";
 import { error, json } from "./http";
 import { membership } from "./membership";
-import { authenticate } from "./sessions";
 
 export const MAX_TTL_SECONDS = 900;
 const MIN_TTL_SECONDS = 60;
@@ -93,7 +93,8 @@ export async function handleJwks(_request: Request, env: Env): Promise<Response>
 }
 
 export async function handleChatToken(request: Request, env: Env): Promise<Response> {
-  const session = await authenticate(request, env);
+  // Parents and paired kids alike.
+  const session = await authenticateAccount(request, env);
   if (!session) {
     return error(401, "unauthorized", "Sign in first: send Authorization: Bearer <session token>.", {
       "www-authenticate": "Bearer",
@@ -107,13 +108,13 @@ export async function handleChatToken(request: Request, env: Env): Promise<Respo
   if (device === null) {
     return error(409, "device_required", "Register this device first (POST /v1/devices), then ask again.");
   }
-  const conversations = await source.conversations(env, session.parentId);
+  const conversations = await source.conversations(env, session.id);
   const now = Math.floor(Date.now() / 1000);
-  const token = await new SignJWT({ dev: device, role: "parent", conv: conversations })
+  const token = await new SignJWT({ dev: device, role: session.role, conv: conversations })
     .setProtectedHeader({ alg: "ES256", kid: key.kid, typ: "JWT" })
     .setIssuer(env.CHAT_TOKEN_ISSUER)
     .setAudience(chatTokenAudiences(env.CHAT_TOKEN_AUDIENCES))
-    .setSubject(session.parentId)
+    .setSubject(session.id)
     .setJti(randomBase64Url(16))
     .setIssuedAt(now)
     .setExpirationTime(now + ttl)

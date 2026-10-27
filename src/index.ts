@@ -2,7 +2,13 @@
 import { handleAppleAttestation, handleChallenge } from "./app-attest";
 import { handleAppleWebCallback, handleAppleWebExchange, handleAppleWebStart } from "./apple-web";
 import { BadRequest } from "./body";
-import { handleCountPreKeys, handleGetIdentity, handleRegisterDevice, handleRemoveDevice } from "./devices";
+import {
+  handleCountPreKeys,
+  handleGetBundles,
+  handleGetIdentity,
+  handleRegisterDevice,
+  handleRemoveDevice,
+} from "./devices";
 import { handleChatToken, handleJwks } from "./chat-token";
 import { handleHealth } from "./health";
 import { handleChangeIdentity } from "./identity";
@@ -44,14 +50,19 @@ const ROUTES: Record<string, { method: string; handler: Handler; limited?: true 
   "/.well-known/jwks.json": { method: "GET", handler: handleJwks },
 };
 
-// Paths with one parameter: the pattern's group is passed to the handler.
+// Paths with parameters: the pattern's groups are passed to the handler, in order.
 const PATTERN_ROUTES: {
   pattern: RegExp;
   method: string;
-  handler: (r: Request, e: Env, p: string) => Promise<Response>;
+  handler: (r: Request, e: Env, ...p: string[]) => Promise<Response>;
 }[] = [
   { pattern: /^\/v1\/devices\/([^/]+)$/, method: "DELETE", handler: handleRemoveDevice },
   { pattern: /^\/v1\/accounts\/([^/]+)\/identity$/, method: "GET", handler: handleGetIdentity },
+  {
+    pattern: /^\/v1\/keys\/([^/]+)\/([^/]+)$/,
+    method: "GET",
+    handler: (r, e, accountId, deviceId) => handleGetBundles(r, e, accountId, deviceId),
+  },
 ];
 
 export default {
@@ -66,7 +77,7 @@ export default {
           if (request.method !== p.method) {
             return error(405, "method_not_allowed", `Use ${p.method}.`, { allow: p.method });
           }
-          return await p.handler(request, env, decodeURIComponent(match[1] ?? ""));
+          return await p.handler(request, env, ...match.slice(1).map((g) => decodeURIComponent(g)));
         }
         return (
           (await routeFamilies(request, env, url.pathname)) ??
@@ -93,5 +104,7 @@ export default {
   async scheduled(_controller, env): Promise<void> {
     await flushMembershipEvents(env);
     await purgeExpired(env);
+    // The purge's own events (device.removed for inactive devices).
+    await flushMembershipEvents(env);
   },
 } satisfies ExportedHandler<Env>;

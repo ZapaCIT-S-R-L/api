@@ -25,13 +25,13 @@ const AUDIENCES = ["chat.localhost", "calls.localhost"];
 
 let apple: TestIssuer;
 
-// Seeded membership data: the tables behind it (devices, families, conversations) arrive in later PRs.
+// Seeded membership data, so these tests do not depend on devices, families and connections.
 const seeded: { devices: Map<string, number>; conversations: Map<string, string[]> } = {
   devices: new Map(),
   conversations: new Map(),
 };
 const seededSource: MembershipSource = {
-  device: (_env, session) => Promise.resolve(seeded.devices.get(session.parentId) ?? null),
+  device: (_env, account) => Promise.resolve(seeded.devices.get(account.id) ?? null),
   conversations: (_env, accountId) => Promise.resolve(seeded.conversations.get(accountId) ?? []),
 };
 
