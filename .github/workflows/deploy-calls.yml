@@ -99,6 +99,9 @@ jobs:
           elif grep -q "Could not find stable Worker Version" <<<"$out"; then
             echo "$out"
             echo "::error::e2e failed after deploying $RELEASE, the first version of the staging calls Worker: nothing to roll back to. Fix forward." | tee -a "$GITHUB_STEP_SUMMARY"
+          elif grep -q "Durable Object migration" <<<"$out"; then
+            echo "$out"
+            echo "::error::e2e failed after deploying $RELEASE; the previous version is before a Durable Object migration, so Cloudflare won't roll back to it. Fix forward." | tee -a "$GITHUB_STEP_SUMMARY"
           else
             echo "$out"
             echo "::error::e2e failed after deploying $RELEASE, and the rollback failed too: check the staging calls Worker now." | tee -a "$GITHUB_STEP_SUMMARY"
@@ -159,6 +162,9 @@ jobs:
           elif grep -q "Could not find stable Worker Version" <<<"$out"; then
             echo "$out"
             echo "::error::e2e failed after deploying $RELEASE, the first version of the production calls Worker: nothing to roll back to. Fix forward." | tee -a "$GITHUB_STEP_SUMMARY"
+          elif grep -q "Durable Object migration" <<<"$out"; then
+            echo "$out"
+            echo "::error::e2e failed after deploying $RELEASE; the previous version is before a Durable Object migration, so Cloudflare won't roll back to it. Fix forward." | tee -a "$GITHUB_STEP_SUMMARY"
           else
             echo "$out"
             echo "::error::e2e failed after deploying $RELEASE, and the rollback failed too: check the production calls Worker now." | tee -a "$GITHUB_STEP_SUMMARY"
