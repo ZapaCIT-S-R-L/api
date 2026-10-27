@@ -8,7 +8,7 @@ import type { Env } from "./env";
 import { error } from "./http";
 import { purgeExpired } from "./purge";
 import { limitAuth } from "./rate-limit";
-import { handleLogout, handleMe, handleNonce, handleSignIn } from "./routes";
+import { handleLogout, handleLogoutAll, handleMe, handleNonce, handleSignIn } from "./routes";
 
 type Handler = (request: Request, env: Env) => Response | Promise<Response>;
 
@@ -28,6 +28,7 @@ const ROUTES: Record<string, { method: string; handler: Handler; limited?: true 
     limited: true,
   },
   "/v1/auth/logout": { method: "POST", handler: handleLogout },
+  "/v1/auth/logout-all": { method: "POST", handler: handleLogoutAll },
   "/v1/me": { method: "GET", handler: handleMe },
   "/v1/devices": { method: "POST", handler: handleRegisterDevice, limited: true },
   "/v1/keys/prekeys": { method: "GET", handler: handleCountPreKeys },
