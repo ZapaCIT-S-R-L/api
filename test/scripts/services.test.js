@@ -58,6 +58,17 @@ test("calls deploys staging from main, then production through the protected env
   }
 });
 
+// Regression: deploy-calls run 40578142642. Cloudflare refuses to roll back across a Durable Object migration, and the
+// step reported "the rollback failed too: check the Worker now". That case is expected: it must say "fix forward".
+test("a calls rollback blocked by a Durable Object migration says fix forward", () => {
+  const deploy = workflow("deploy-calls.yml");
+  for (const job of ["staging", "production"]) {
+    const step = deploy.jobs[job].steps.find((s) => /wrangler rollback/.test(String(s.run ?? "")));
+    assert.match(step.run, /grep -q "Durable Object migration"/);
+    assert.match(step.run, /a Durable Object migration[^"]*Fix forward/);
+  }
+});
+
 test("Dependabot and the daily audit cover services/calls", () => {
   const dependabot = parse(read(".github/dependabot.yml"));
   assert.ok(dependabot.updates.some((u) => u["package-ecosystem"] === "npm" && u.directory === "/services/calls"));
