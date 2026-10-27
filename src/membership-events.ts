@@ -1,24 +1,20 @@
 // Membership events for the chat and calls services, through a Cloudflare Queue (binding MEMBERSHIP_EVENTS, producer
-// only). Transactional outbox: the event row is written in the same D1 batch as the change, so an event exists if
-// and only if the change happened. flushMembershipEvents() sends unsent rows in seq order right after the change and
-// again from the cron. Delivery is at least once: consumers dedupe by `id` and order by `seq` per scope.
-// Schema: components/schemas/MembershipEvent in openapi.yaml.
+// only; queue zapakid-membership-<env>). The contract is the chat service's: MembershipEvent in openapi.yaml (same
+// as services/chat/openapi.yaml). Transactional outbox: the event row is written in the same D1 batch as the change,
+// so an event exists if and only if the change happened. flushMembershipEvents() sends unsent rows in outbox order
+// right after the change and again from the cron. Delivery is at least once: consumers dedupe by `id`.
 import type { Env } from "./env";
-import type { Role } from "./family-membership";
 
-export type MembershipEventType = "member.added" | "member.removed" | "scope.deleted";
+export type MembershipEvent = { v: 1; id: string; occurredAt: string } & (
+  | { type: "family.member_added"; familyId: string; accountId: string; role: "parent" | "kid" }
+  | { type: "family.member_removed"; familyId: string; accountId: string }
+);
 
-export interface MembershipEvent {
-  version: 1;
-  id: string;
-  seq: number;
-  type: MembershipEventType;
-  scope: string;
-  familyId: string;
-  // The account added or removed; absent for scope.deleted (everyone in it is removed).
-  account?: { id: string; role: Role };
-  occurredAt: string;
-}
+type EventData = MembershipEvent extends infer E
+  ? E extends unknown
+    ? Omit<E, "v" | "id" | "occurredAt">
+    : never
+  : never;
 
 const BATCH = 100;
 export const SENT_RETENTION_DAYS = 7;
@@ -27,11 +23,11 @@ export const SENT_RETENTION_DAYS = 7;
 // evaluated in the same transaction: the event is written only when the change it describes happened.
 export function membershipEvent(
   env: Env,
-  event: Omit<MembershipEvent, "version" | "id" | "seq" | "occurredAt">,
+  event: EventData,
   onlyIf?: { sql: string; binds: unknown[] },
 ): D1PreparedStatement {
   const now = new Date().toISOString();
-  const body = JSON.stringify({ version: 1, id: crypto.randomUUID(), ...event, occurredAt: now });
+  const body = JSON.stringify({ v: 1, id: crypto.randomUUID(), ...event, occurredAt: now });
   const where = onlyIf ? ` WHERE ${onlyIf.sql}` : "";
   return env.DB.prepare(`INSERT INTO membership_outbox (body, created_at) SELECT ?, ?${where}`).bind(
     body,
@@ -55,10 +51,7 @@ export async function flushMembershipEvents(env: Env): Promise<number> {
         .all<{ seq: number; body: string }>();
       if (results.length === 0) break;
       await queue.sendBatch(
-        results.map((r) => ({
-          body: { ...(JSON.parse(r.body) as Omit<MembershipEvent, "seq">), seq: r.seq },
-          contentType: "json" as const,
-        })),
+        results.map((r) => ({ body: JSON.parse(r.body) as MembershipEvent, contentType: "json" as const })),
       );
       const last = results[results.length - 1]?.seq ?? 0;
       await env.DB.prepare("UPDATE membership_outbox SET sent_at = ? WHERE sent_at IS NULL AND seq <= ?")

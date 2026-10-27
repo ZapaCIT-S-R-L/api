@@ -81,24 +81,19 @@ tags:
       (`zkk_` token) comes only from a parent's pairing code.
   - name: Membership events
     description: |
-      Not an HTTP endpoint: the contract between this API and the chat and calls services. Every change to who is in
-      a scope is sent as a `MembershipEvent` (schema below) to the Cloudflare Queue bound as `MEMBERSHIP_EVENTS`
-      (JSON messages). The chat and calls Workers consume the queue and keep their own copy of who may be in a
-      conversation.
+      Not an HTTP endpoint: the contract between this API (producer) and the chat and calls services (consumers).
+      Changes to families (and later connections, devices and account deletion) are sent as `MembershipEvent`
+      messages (schema below, identical to `services/chat/openapi.yaml`) to the Cloudflare Queue
+      `zapakid-membership-<environment>`, bound here as `MEMBERSHIP_EVENTS`.
 
-      - **Scopes.** `family:<familyId>` is a family's parents and kids. `connection:<connectionId>` comes with
-        connections between families. A scope is the upper bound of who may be put in a conversation together; the
-        chat service decides who is in each conversation.
-      - **Types.** `member.added` and `member.removed` carry the account (`id`, `role` parent or kid).
-        `scope.deleted` removes everyone in the scope (for example, an empty family deleted when its only parent
-        joins another family).
-      - **Delivery.** At least once. Dedupe by `id`. `seq` increases with every event (across all scopes), so apply
-        events in `seq` order and ignore an older `seq` for a scope you already moved past. Events are written in
-        the same D1 transaction as the change (outbox), so an event exists exactly when the change happened. They
-        are sent right after the change, and again by the cron if the queue was unavailable.
+      - **Sent today.** `family.member_added`: a family is created (its first parent), a parent joins with an
+        invitation, or a kid is added. `family.member_removed`: a parent leaves an empty family to join another one
+        (the empty family is deleted).
+      - **Delivery.** At least once; dedupe by `id`. Events are written in the same D1 transaction as the change (a
+        transactional outbox), so an event exists exactly when the change happened. They are sent right after the
+        change in outbox order, and again by the cron if the queue was unavailable. Without the queue binding they
+        wait in the outbox.
       - **Privacy.** Ids only: no names, nicknames, avatars or keys.
-      - **Bootstrap.** A consumer that starts late can't replay events older than 7 days. It asks this API for the
-        current members instead (an internal endpoint, to come with the chat service).
   - name: "Draft: Connections"
     description: Planned. Parents of different families connect, then each family shares chosen kids.
   - name: "Draft: Devices and keys"
@@ -1278,32 +1273,106 @@ components:
           items: { $ref: "#/components/schemas/Kid" }
 
     MembershipEvent:
+      description: |
+        Not an HTTP body: the messages on the Cloudflare Queue `zapakid-membership-<environment>` (staging,
+        production), produced by the account service (families, connections, devices) and consumed by the chat
+        service. JSON, at most 128 KiB. Delivery is at least once and not ordered across batches: `id` makes a
+        repeat a no-op, and each event carries the full state of what it describes (for example the device's
+        current registration id), so applying events again is safe. The account service must send an event after
+        its own write commits. Unknown `type`s are acknowledged and ignored (forward compatible); a malformed
+        event goes to the dead-letter queue `zapakid-membership-<environment>-dlq` after 5 retries.
       type: object
-      description: A message on the `MEMBERSHIP_EVENTS` queue (see the `Membership events` tag).
-      required: [version, id, seq, type, scope, familyId, occurredAt]
-      additionalProperties: false
+      required: [v, id, type, occurredAt]
       properties:
-        version: { type: integer, const: 1 }
-        id: { type: string, format: uuid, description: Unique per event; dedupe on it. }
-        seq: { type: integer, minimum: 1, description: Increases with every event; apply in this order. }
-        type: { type: string, enum: [member.added, member.removed, scope.deleted] }
-        scope:
-          type: string
-          pattern: "^(family|connection):[0-9a-f-]{36}$"
-          examples: ["family:7d9f2c1e-4b8a-4c3d-9e2f-1a2b3c4d5e6f"]
-        familyId:
-          type: string
-          format: uuid
-          description: The family whose change caused the event.
-        account:
-          type: object
-          description: For member.added and member.removed. Absent for scope.deleted.
-          required: [id, role]
-          additionalProperties: false
-          properties:
-            id: { type: string, format: uuid, description: A parent id or a kid id. }
-            role: { type: string, enum: [parent, kid] }
+        v: { type: integer, const: 1 }
+        id: { type: string, format: uuid }
         occurredAt: { type: string, format: date-time }
+        type:
+          type: string
+          enum:
+            - family.member_added
+            - family.member_removed
+            - connection.created
+            - connection.removed
+            - connection.kid_shared
+            - connection.kid_unshared
+            - device.upserted
+            - device.removed
+            - account.deleted
+      oneOf:
+        - title: family.member_added
+          description: A parent or kid joined a family (new family, parent invitation accepted, kid added).
+          required: [type, familyId, accountId, role]
+          properties:
+            type: { const: family.member_added }
+            familyId: { type: string, maxLength: 64 }
+            accountId: { $ref: "#/components/schemas/AccountId" }
+            role: { $ref: "#/components/schemas/Role" }
+        - title: family.member_removed
+          required: [type, familyId, accountId]
+          properties:
+            type: { const: family.member_removed }
+            familyId: { type: string, maxLength: 64 }
+            accountId: { $ref: "#/components/schemas/AccountId" }
+        - title: connection.created
+          required: [type, connectionId, familyIds]
+          properties:
+            type: { const: connection.created }
+            connectionId: { type: string, maxLength: 64 }
+            familyIds: { type: array, minItems: 2, maxItems: 2, items: { type: string, maxLength: 64 } }
+        - title: connection.removed
+          required: [type, connectionId]
+          properties:
+            type: { const: connection.removed }
+            connectionId: { type: string, maxLength: 64 }
+        - title: connection.kid_shared
+          description: The kid's family shares the kid with the other family of the connection.
+          required: [type, connectionId, kidAccountId]
+          properties:
+            type: { const: connection.kid_shared }
+            connectionId: { type: string, maxLength: 64 }
+            kidAccountId: { $ref: "#/components/schemas/AccountId" }
+        - title: connection.kid_unshared
+          required: [type, connectionId, kidAccountId]
+          properties:
+            type: { const: connection.kid_unshared }
+            connectionId: { type: string, maxLength: 64 }
+            kidAccountId: { $ref: "#/components/schemas/AccountId" }
+        - title: device.upserted
+          description: A device was registered, re-installed (new registration id) or got a new push token.
+          required: [type, accountId, deviceId, registrationId]
+          properties:
+            type: { const: device.upserted }
+            accountId: { $ref: "#/components/schemas/AccountId" }
+            deviceId: { $ref: "#/components/schemas/DeviceId" }
+            registrationId: { type: integer, minimum: 1, maximum: 16383 }
+            push:
+              type: [object, "null"]
+              description: Where to send content-free wake-ups; `null` = none.
+              required: [provider, token]
+              properties:
+                provider: { type: string, enum: [apns, fcm] }
+                token: { type: string, maxLength: 4096 }
+        - title: device.removed
+          required: [type, accountId, deviceId]
+          properties:
+            type: { const: device.removed }
+            accountId: { $ref: "#/components/schemas/AccountId" }
+            deviceId: { $ref: "#/components/schemas/DeviceId" }
+        - title: account.deleted
+          description: Immediate account deletion (also sent for each kid when the last parent of a family leaves).
+          required: [type, accountId]
+          properties:
+            type: { const: account.deleted }
+            accountId: { $ref: "#/components/schemas/AccountId" }
+
+    AccountId:
+      type: string
+      pattern: "^[A-Za-z0-9_-]{1,64}$"
+      description: The account id from the account service (the chat token's `sub`).
+    Role:
+      type: string
+      enum: [parent, kid]
 
     Base64:
       type: string
@@ -1312,6 +1381,7 @@ components:
       type: integer
       minimum: 1
       maximum: 127
+      description: The libsignal device id (the chat token's `dev`).
     PublicKey:
       description: A libsignal public key, serialized (type byte + key), base64.
       allOf: [{ $ref: "#/components/schemas/Base64" }]

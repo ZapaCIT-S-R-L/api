@@ -5,7 +5,6 @@ import { authenticateAccount } from "./accounts";
 import { invalid, onlyFields, readJson } from "./body";
 import { randomBase64Url, sha256Hex } from "./crypto";
 import type { Env } from "./env";
-import { familyScope } from "./family-membership";
 import { error, json } from "./http";
 import { flushMembershipEvents, membershipEvent } from "./membership-events";
 import { handleCreatePairing } from "./pairing";
@@ -174,12 +173,7 @@ async function handleCreateFamily(request: Request, env: Env): Promise<Response>
         session.parentId,
         now,
       ),
-      membershipEvent(env, {
-        type: "member.added",
-        scope: familyScope(id),
-        familyId: id,
-        account: { id: session.parentId, role: "parent" },
-      }),
+      membershipEvent(env, { type: "family.member_added", familyId: id, accountId: session.parentId, role: "parent" }),
     ]);
   } catch (e) {
     // Two creates at once: the other one won (unique parent_id). The batch rolled back; return that family.
@@ -279,19 +273,14 @@ async function handleJoinFamily(request: Request, env: Env): Promise<Response> {
       ? [
           membershipEvent(
             env,
-            { type: "scope.deleted", scope: familyScope(current), familyId: current },
+            { type: "family.member_removed", familyId: current, accountId: session.parentId },
             onlyIfUsedByMe,
           ),
         ]
       : []),
     membershipEvent(
       env,
-      {
-        type: "member.added",
-        scope: familyScope(invitation.family_id),
-        familyId: invitation.family_id,
-        account: { id: session.parentId, role: "parent" },
-      },
+      { type: "family.member_added", familyId: invitation.family_id, accountId: session.parentId, role: "parent" },
       onlyIfUsedByMe,
     ),
   ]);
@@ -328,7 +317,7 @@ async function handleAddKid(request: Request, env: Env, familyId: string): Promi
     ).bind(id, familyId, nickname, body.avatar, grade, now, now, familyId, MAX_KIDS),
     membershipEvent(
       env,
-      { type: "member.added", scope: familyScope(familyId), familyId, account: { id, role: "kid" } },
+      { type: "family.member_added", familyId, accountId: id, role: "kid" },
       { sql: "EXISTS (SELECT 1 FROM kids WHERE id = ?)", binds: [id] },
     ),
   ]);
