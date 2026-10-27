@@ -4,6 +4,7 @@ import { handleAppleWebCallback, handleAppleWebExchange, handleAppleWebStart } f
 import { BadRequest } from "./body";
 import { handleHealth } from "./health";
 import type { Env } from "./env";
+import { routeConnections } from "./connections";
 import { routeFamilies } from "./families";
 import { error } from "./http";
 import { flushMembershipEvents } from "./membership-events";
@@ -40,7 +41,11 @@ export default {
     try {
       const route = Object.hasOwn(ROUTES, url.pathname) ? ROUTES[url.pathname] : undefined;
       if (!route)
-        return (await routeFamilies(request, env, url.pathname)) ?? error(404, "not_found", "No such endpoint.");
+        return (
+          (await routeFamilies(request, env, url.pathname)) ??
+          (await routeConnections(request, env, url.pathname)) ??
+          error(404, "not_found", "No such endpoint.")
+        );
       if (request.method !== route.method) {
         return error(405, "method_not_allowed", `Use ${route.method}.`, { allow: route.method });
       }
