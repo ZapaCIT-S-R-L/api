@@ -111,6 +111,10 @@ describe("sign-in, everywhere (no valid token needed)", () => {
     expect(res.headers.get("www-authenticate")).toBe("Bearer");
   });
 
+  it("device registration without a session → 401", async () => {
+    expect((await post("/v1/devices", {})).status).toBe(401);
+  });
+
   it("logout without a session → 401", async () => {
     expect((await api("/v1/auth/logout", { method: "POST" })).status).toBe(401);
   });
@@ -207,6 +211,37 @@ describe.skipIf(LIVE)("sign-in flow with test keys (local only)", () => {
     const code = fragment.get("code") ?? "";
     const exchange = await post("/v1/auth/apple/exchange", { code, codeVerifier: verifier, nonce, ageRange: adult });
     expect(exchange.status).toBe(200);
+  });
+
+  it("register a device, count its prekeys, read the identity, remove it", async () => {
+    const res = await post("/v1/auth/apple", await appleSignIn({ sub: `device-${run}` }));
+    const { session, parent } = await bodyOf<SignIn>(res);
+    const auth = { authorization: `Bearer ${session.token}` };
+    const typed = (type: number, length: number) => {
+      const b = new Uint8Array(length).map(() => Math.floor(Math.random() * 256));
+      b[0] = type;
+      return Buffer.from(b).toString("base64");
+    };
+    const sig = () => Buffer.from(new Uint8Array(64).fill(1)).toString("base64");
+    const identityKey = typed(5, 33);
+    const keys = {
+      registrationId: 7,
+      identityKey,
+      signedPreKey: { keyId: 1, publicKey: typed(5, 33), signature: sig() },
+      pqLastResortPreKey: { keyId: 1, publicKey: typed(8, 1569), signature: sig() },
+      preKeys: [{ keyId: 1, publicKey: typed(5, 33) }],
+      pqPreKeys: [{ keyId: 2, publicKey: typed(8, 1569), signature: sig() }],
+    };
+    const registered = await post("/v1/devices", keys, auth);
+    expect(registered.status).toBe(201);
+    expect(await bodyOf<{ deviceId: number }>(registered)).toEqual({ deviceId: 1 });
+    expect(await bodyOf<unknown>(await api("/v1/keys/prekeys", { headers: auth }))).toEqual({
+      preKeys: 1,
+      pqPreKeys: 1,
+    });
+    const identity = await api(`/v1/accounts/${parent.id}/identity`, { headers: auth });
+    expect(await bodyOf<unknown>(identity)).toEqual({ identityKey, changes: [] });
+    expect((await api("/v1/devices/1", { method: "DELETE", headers: auth })).status).toBe(204);
   });
 
   it("a replayed token and nonce → 401", async () => {
