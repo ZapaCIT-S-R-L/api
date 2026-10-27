@@ -49,7 +49,7 @@ want=$(cat .nvmrc)
 have=$(node -p 'process.versions.node.split(".")[0]')
 [ "$have" = "$want" ] || echo "Note: Node $have here, CI uses $want (.nvmrc)." >&2
 
-run "npm ci" npm ci
+run "npm ci" npm ci --ignore-scripts
 run "lint (Prettier, ESLint, tsc, Redocly)" npm run lint
 run "actionlint" actionlint
 run "unit (node tests + Worker tests)" npm test

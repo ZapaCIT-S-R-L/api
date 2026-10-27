@@ -11,7 +11,9 @@ const workflows = readdirSync(dir)
   .map((f) => ({ file: f, doc: parse(readFileSync(new URL(f, dir), "utf8")) }));
 
 const SECRET = "CLOUDFLARE_API_TOKEN";
-const usesSecret = (env) => Object.values(env ?? {}).some((v) => String(v).includes(`secrets.${SECRET}`));
+// The secret's value itself, `${{ secrets.CLOUDFLARE_API_TOKEN }}` (a comparison like `!= ''` gives only true/false).
+const usesSecret = (env) =>
+  Object.values(env ?? {}).some((v) => new RegExp(`\\$\\{\\{\\s*secrets\\.${SECRET}\\s*\\}\\}`).test(String(v)));
 
 for (const { file, doc } of workflows) {
   test(`${file}: the Cloudflare token is not set for the whole workflow or job`, () => {
