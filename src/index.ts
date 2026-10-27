@@ -6,7 +6,11 @@ import { handleCountPreKeys, handleGetIdentity, handleRegisterDevice, handleRemo
 import { handleHealth } from "./health";
 import { handleChangeIdentity } from "./identity";
 import type { Env } from "./env";
+import { routeConnections } from "./connections";
+import { routeFamilies } from "./families";
 import { error } from "./http";
+import { flushMembershipEvents } from "./membership-events";
+import { handleRedeemPairing } from "./pairing";
 import { purgeExpired } from "./purge";
 import { limitAuth } from "./rate-limit";
 import { handleLogout, handleLogoutAll, handleMe, handleNonce, handleSignIn } from "./routes";
@@ -34,6 +38,7 @@ const ROUTES: Record<string, { method: string; handler: Handler; limited?: true 
   "/v1/devices": { method: "POST", handler: handleRegisterDevice, limited: true },
   "/v1/keys/prekeys": { method: "GET", handler: handleCountPreKeys },
   "/v1/keys/identity": { method: "PUT", handler: handleChangeIdentity, limited: true },
+  "/v1/pairing/redeem": { method: "POST", handler: handleRedeemPairing, limited: true },
 };
 
 // Paths with one parameter: the pattern's group is passed to the handler.
@@ -60,7 +65,11 @@ export default {
           }
           return await p.handler(request, env, decodeURIComponent(match[1] ?? ""));
         }
-        return error(404, "not_found", "No such endpoint.");
+        return (
+          (await routeFamilies(request, env, url.pathname)) ??
+          (await routeConnections(request, env, url.pathname)) ??
+          error(404, "not_found", "No such endpoint.")
+        );
       }
       if (request.method !== route.method) {
         return error(405, "method_not_allowed", `Use ${route.method}.`, { allow: route.method });
@@ -79,6 +88,7 @@ export default {
   },
 
   async scheduled(_controller, env): Promise<void> {
+    await flushMembershipEvents(env);
     await purgeExpired(env);
   },
 } satisfies ExportedHandler<Env>;

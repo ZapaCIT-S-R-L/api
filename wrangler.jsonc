@@ -13,7 +13,7 @@
   // Local development and tests. The Google client id is a fake one for test tokens.
   "vars": {
     "VERSION": "dev",
-    "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/api",
+    "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/zapakid-api",
     // Local test ids only: the bundle id and a fake Services ID for the web flow tests.
     "APPLE_BUNDLE_IDS": "ro.zapakid.app",
     "APPLE_SERVICES_IDS": "ro.zapakid.signin.local",
@@ -30,6 +30,10 @@
   // Auth rate limit (nonce + sign-in) per client address per minute and Cloudflare location. High locally so the
   // e2e suite fits; each environment has its own namespace_id (separate counters).
   "ratelimits": [{ "name": "AUTH_LIMITER", "namespace_id": "1001", "simple": { "limit": 1000, "period": 60 } }],
+  // Membership events to the chat and calls services (src/membership-events.ts). Local queue only for now: staging
+  // and production get the binding once their queue exists (`wrangler queues create`); until then the events wait in
+  // the D1 outbox and nothing is lost.
+  "queues": { "producers": [{ "binding": "MEMBERSHIP_EVENTS", "queue": "zapakid-membership-local" }] },
   // Local only (wrangler dev, tests): Miniflare keeps it on disk under .wrangler/.
   "d1_databases": [
     {
@@ -52,7 +56,7 @@
       // (server) client, which Android's Credential Manager uses (setServerClientId), and the iOS client.
       "vars": {
         "VERSION": "dev",
-        "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/api",
+        "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/zapakid-api",
         // Native sign-in: the iOS bundle id. Web flow (Android) callback: the Services ID (return URL
         // https://api-staging.zapakid.ro/v1/auth/apple/callback registered with Apple).
         "APPLE_BUNDLE_IDS": "ro.zapakid.app",
@@ -91,7 +95,7 @@
       "observability": { "enabled": true },
       "vars": {
         "VERSION": "dev",
-        "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/api",
+        "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/zapakid-api",
         // APPLE_SERVICES_IDS: set "ro.zapakid.signin" at cutover, after api.zapakid.ro and its callback URL are
         // registered with Apple. Empty = the Android web flow is off.
         "APPLE_BUNDLE_IDS": "ro.zapakid.app",

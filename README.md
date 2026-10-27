@@ -57,6 +57,9 @@ Each GitHub environment (`staging`, `production`) has its own secret `CLOUDFLARE
 | Zone `zapakid.ro` | DNS: Edit              | the custom domain's DNS record (`api-staging`)                          |
 | Zone `zapakid.ro` | Zone: Read             | Wrangler looks up the zone                                              |
 
+The workflows give the token only to the steps that run wrangler, never to `npm ci` (always `--ignore-scripts`) or
+the tests, so a compromised dependency can't read it (`test/scripts/workflow-secrets.test.js`).
+
 Account resources: only the ZapaCIT account; zone resources: only `zapakid.ro`. Add Account → Workers R2 Storage: Edit
 when R2 (attachments) arrives; Durable Objects need no extra permission (they deploy with the Worker script).
 
