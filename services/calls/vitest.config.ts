@@ -18,6 +18,17 @@ export default defineConfig({
           TURN_KEY_ID: "test-turn-key",
           TURN_KEY_API_TOKEN: "test-turn-token",
         },
+        // The chat service's ChatMembership entrypoint (the CHAT service binding in wrangler.jsonc) is played by
+        // test/chat-stub; the tests set its members through CHAT_STUB (test/worker/calls-helpers.ts).
+        workers: [
+          {
+            name: "zapakid-chat",
+            modules: true,
+            scriptPath: "./test/chat-stub/index.js",
+            compatibilityDate: "2026-10-12",
+          },
+        ],
+        serviceBindings: { CHAT_STUB: "zapakid-chat" },
         // A small create limit, so test/worker/calls.test.ts can reach it (counted per account).
         ratelimits: {
           CREATE_LIMITER: { namespace_id: "9101", simple: { limit: 5, period: 60 } },

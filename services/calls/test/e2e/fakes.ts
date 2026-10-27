@@ -1,5 +1,6 @@
-// Vitest globalSetup for the local e2e run: one loopback server (FAKE_PORT, 8798) that plays the account API's JWKS
-// and Cloudflare's Realtime SFU and TURN key APIs, the way developers.cloudflare.com/realtime documents them. The
+// Vitest globalSetup for the local e2e run: one loopback server (FAKE_PORT, 8798) that plays the account API's JWKS,
+// Cloudflare's Realtime SFU and TURN key APIs, the way developers.cloudflare.com/realtime documents them, and the
+// chat service's conversation members (under /chat: the tests set them, the chat stub Worker reads them). The
 // calls Worker runs on wrangler dev with these URLs and fake credentials (scripts/check.sh, ci-calls.yml). The
 // signing key is generated per run and handed to the tests (inject("issuerKey")). LIVE=1: nothing to fake.
 import { randomBytes } from "node:crypto";
@@ -22,6 +23,36 @@ declare module "vitest" {
 
 let server: Server | undefined;
 
+// conversationId → accountId → { role, devices }: what the chat service would answer (test/chat-stub/index.js).
+const chats = new Map<string, Map<string, { role: string; devices: number[] }>>();
+
+// /chat/members (PUT adds a device of a member, DELETE removes the member) and /chat/conversations/{id}.
+function chat(method: string, url: string, body: Record<string, unknown>): [number, unknown] | null {
+  if (url === "/chat/members") {
+    const conversationId = String(body.conversationId);
+    const accountId = String(body.accountId);
+    if (method === "PUT") {
+      const members = chats.get(conversationId) ?? new Map<string, { role: string; devices: number[] }>();
+      chats.set(conversationId, members);
+      const m = members.get(accountId) ?? { role: String(body.role ?? "parent"), devices: [] };
+      if (!m.devices.includes(Number(body.deviceId))) m.devices.push(Number(body.deviceId));
+      members.set(accountId, m);
+      return [204, null];
+    }
+    if (method === "DELETE") {
+      chats.get(conversationId)?.delete(accountId);
+      return [204, null];
+    }
+  }
+  const get = /^\/chat\/conversations\/([^/]+)$/.exec(url);
+  if (get && method === "GET") {
+    const members = chats.get(decodeURIComponent(get[1] ?? ""));
+    if (!members) return [404, { error: "no such conversation" }];
+    return [200, [...members.entries()].map(([accountId, m]) => ({ accountId, role: m.role, devices: m.devices }))];
+  }
+  return null;
+}
+
 export default async function setup(project: TestProject): Promise<() => Promise<void>> {
   const { publicKey, privateKey } = await generateKeyPair("ES256", { extractable: true });
   const kid = `e2e-${Date.now().toString(36)}`;
@@ -41,6 +72,16 @@ export default async function setup(project: TestProject): Promise<() => Promise
       const url = req.url ?? "";
       const body = chunks.length ? (JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>) : {};
       const auth = req.headers.authorization;
+      const answered = url.startsWith("/chat/") ? chat(req.method ?? "GET", url, body) : null;
+      if (answered) {
+        if (answered[0] === 204) {
+          res.writeHead(204);
+          res.end();
+        } else {
+          send(answered[0], answered[1]);
+        }
+        return;
+      }
       if (url === "/jwks") {
         send(200, jwks);
         return;

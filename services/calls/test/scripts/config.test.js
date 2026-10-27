@@ -54,6 +54,7 @@ test("staging and production define every binding and var the Worker reads", () 
       ...(env.d1_databases ?? []).map((d) => d.binding),
       ...(env.ratelimits ?? []).map((r) => r.name),
       ...(env.durable_objects?.bindings ?? []).map((b) => b.name),
+      ...(env.services ?? []).map((s) => s.binding),
     ]);
     for (const key of required) assert.ok(defined.has(key), `${name} is missing ${key}`);
   }
@@ -105,4 +106,24 @@ test("the call log is purged daily; kept at most a year", () => {
     const days = Number(env.vars.CALL_LOG_RETENTION_DAYS);
     assert.ok(Number.isInteger(days) && days >= 1 && days <= 365, String(days));
   }
+});
+
+// Membership comes from the chat service of the same environment, over Workers RPC (a service binding, never public
+// HTTP): its ChatMembership entrypoint (services/chat/src/rpc.ts).
+test("CHAT: a service binding to the chat Worker of the same environment, its ChatMembership entrypoint", () => {
+  const chat = (env) => (env.services ?? []).filter((s) => s.binding === "CHAT");
+  assert.deepEqual(chat(rawConfig), [{ binding: "CHAT", service: "zapakid-chat", entrypoint: "ChatMembership" }]);
+  assert.deepEqual(chat(staging), [{ binding: "CHAT", service: "zapakid-chat-staging", entrypoint: "ChatMembership" }]);
+  assert.deepEqual(chat(production), [
+    { binding: "CHAT", service: "zapakid-chat-production", entrypoint: "ChatMembership" },
+  ]);
+});
+
+// The local e2e run (scripts/check.sh, ci-calls.yml) runs the chat stub under the chat Worker's local name.
+test("the e2e chat stub stands in for zapakid-chat and is never deployed", () => {
+  const { rawConfig: stub } = experimental_readRawConfig({ config: "test/chat-stub/wrangler.jsonc" });
+  assert.equal(stub.name, "zapakid-chat");
+  assert.equal(stub.env, undefined);
+  assert.equal(stub.routes, undefined);
+  assert.equal(stub.workers_dev, false);
 });

@@ -32,7 +32,9 @@ export async function makeIssuer(kid = `calls-test-key-${++counter}`): Promise<T
   };
 }
 
-// The claims the account API puts in a chat token (api: src/chat-token.ts). Overrides may set one to undefined.
+// The claims the account API puts in a chat token (api: src/chat-token.ts). `conv` holds membership scopes
+// (family:<id>, connection:<id>), never conversation ids: the chat service decides membership (test/chat-stub).
+// Overrides may set one to undefined.
 export function chatClaims(overrides: Record<string, unknown> = {}): JWTPayload {
   return {
     iss: ISSUER,
@@ -40,7 +42,7 @@ export function chatClaims(overrides: Record<string, unknown> = {}): JWTPayload 
     sub: "account-1",
     dev: 1,
     role: "parent",
-    conv: ["conv-1"],
+    conv: ["family:fam-test", "connection:con-test"],
     jti: `jti-${++counter}`,
     ...overrides,
   };
