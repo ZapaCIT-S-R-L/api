@@ -136,3 +136,15 @@ test("the pinned App Attest root is Apple's App Attestation Root CA", async () =
   // openssl x509 -in Apple_App_Attestation_Root_CA.pem -noout -fingerprint -sha256 (apple.com/certificateauthority)
   assert.equal(fingerprint, "1cb9823ba28ba6ad2d33a006941de2ae4f513ef1d4e831b9f7e0fa7b6242c932");
 });
+
+test("chat tokens: issued by the API host, for the chat and calls hosts of the same environment, ≤ 15 minutes", () => {
+  assert.equal(staging.vars.CHAT_TOKEN_ISSUER, "https://api-staging.zapakid.ro");
+  assert.equal(staging.vars.CHAT_TOKEN_AUDIENCES, "chat-staging.zapakid.ro,calls-staging.zapakid.ro");
+  assert.equal(production.vars.CHAT_TOKEN_ISSUER, "https://api.zapakid.ro");
+  assert.equal(production.vars.CHAT_TOKEN_AUDIENCES, "chat.zapakid.ro,calls.zapakid.ro");
+  for (const env of [rawConfig, staging, production]) {
+    const ttl = Number(env.vars.CHAT_TOKEN_TTL_SECONDS);
+    assert.ok(Number.isInteger(ttl) && ttl >= 60 && ttl <= 900, String(ttl));
+    assert.equal(env.vars.CHAT_TOKEN_SIGNING_KEY, undefined, "a secret, never a var");
+  }
+});
