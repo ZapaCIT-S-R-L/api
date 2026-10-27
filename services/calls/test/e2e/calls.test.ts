@@ -1,5 +1,6 @@
 // The calls flow over HTTP and WebSocket against wrangler dev: two phones start, join and leave a call, exchange a
-// sealed key envelope, and set up SFU sessions through the proxy (fake Realtime/TURN, test/e2e/fakes.ts). Against
+// sealed key envelope, and set up SFU sessions through the proxy (fake Realtime/TURN, test/e2e/fakes.ts). The chat
+// service's members come from the chat stub Worker (test/chat-stub), which reads them from the fake server. Against
 // a deployed environment (LIVE=1) only the checks that need no valid chat token run.
 import { importJWK, SignJWT, type JWTPayload } from "jose";
 import { describe, expect, inject, it } from "vitest";
@@ -16,13 +17,35 @@ async function token(claims: JWTPayload, ttl = 600): Promise<string> {
     iss: ISSUER,
     aud: ["chat.localhost", AUDIENCE],
     role: "parent",
-    conv: [`conv-${run}`],
+    // Membership scopes, as the account API issues them; the chat service decides conversation membership.
+    conv: [`family:fam-${run}`],
     ...claims,
   })
     .setProtectedHeader({ alg: "ES256", kid: jwk.kid ?? "", typ: "JWT" })
     .setIssuedAt()
     .setExpirationTime(Math.floor(Date.now() / 1000) + ttl)
     .sign(key);
+}
+
+const FAKE = `http://127.0.0.1:${process.env.FAKE_PORT ?? "8798"}/chat/members`;
+
+// What the chat service knows about the conversation's members (test/e2e/fakes.ts).
+async function member(conversationId: string, accountId: string, deviceId = 1, role = "parent"): Promise<void> {
+  const res = await fetch(FAKE, {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ conversationId, accountId, deviceId, role }),
+  });
+  expect(res.status).toBe(204);
+}
+
+async function removeMember(conversationId: string, accountId: string): Promise<void> {
+  const res = await fetch(FAKE, {
+    method: "DELETE",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ conversationId, accountId }),
+  });
+  expect(res.status).toBe(204);
 }
 
 const auth = (t: string) => ({ authorization: `Bearer ${t}` });
@@ -92,6 +115,8 @@ describe.skipIf(LIVE)("a call between two phones (local, fake Realtime)", () => 
   const conv = `conv-${run}`;
 
   it("start, ring, join, key relay, SFU sessions, leave", async () => {
+    await member(conv, `dad-${run}`, 1);
+    await member(conv, `kid-${run}`, 2, "kid");
     const dad = await token({ sub: `dad-${run}`, dev: 1 });
     const kid = await token({ sub: `kid-${run}`, dev: 2, role: "kid" });
 
@@ -142,8 +167,9 @@ describe.skipIf(LIVE)("a call between two phones (local, fake Realtime)", () => 
     b.ws.close();
   });
 
-  it("refuses a conversation not in the token, an expired token and a token for another audience", async () => {
-    const other = await token({ sub: `x-${run}`, dev: 1 });
+  it("refuses a non-member (even with the conversation in the token), an expired token and another audience", async () => {
+    const other = await token({ sub: `x-${run}`, dev: 1, conv: [conv] });
+    expect((await post("/v1/calls", other, { conversationId: conv })).status).toBe(403);
     expect((await post("/v1/calls", other, { conversationId: "conv-not-mine" })).status).toBe(403);
     const expired = await token({ sub: `x-${run}`, dev: 1, iat: Math.floor(Date.now() / 1000) - 900 }, -120);
     expect((await post("/v1/calls", expired, { conversationId: conv })).status).toBe(401);
@@ -153,6 +179,7 @@ describe.skipIf(LIVE)("a call between two phones (local, fake Realtime)", () => 
 
   it("caps a call at 8 participants", async () => {
     const capConv = `cap-${run}`;
+    for (let i = 0; i <= 8; i++) await member(capConv, `cap${i}-${run}`);
     const caller = await token({ sub: `cap0-${run}`, dev: 1, conv: [capConv] });
     const res = await post("/v1/calls", caller, { conversationId: capConv });
     const { call } = (await res.json()) as { call: { callId: string } };
@@ -166,11 +193,34 @@ describe.skipIf(LIVE)("a call between two phones (local, fake Realtime)", () => 
 
   it("ends an unanswered call at the ring timeout (3 s on the e2e server)", async () => {
     const ringConv = `ring-${run}`;
+    await member(ringConv, `ring-${run}`);
     const caller = await token({ sub: `ring-${run}`, dev: 1, conv: [ringConv] });
     const res = await post("/v1/calls", caller, { conversationId: ringConv });
     const { call } = (await res.json()) as { call: { callId: string } };
     const a = await connect(call.callId, caller);
     expect(await a.next("ended")).toMatchObject({ reason: "no_answer" });
     a.ws.close();
+  });
+
+  it("a member removed from the conversation mid-call can't rejoin; the others carry on", async () => {
+    const removedConv = `removed-${run}`;
+    await member(removedConv, `rdad-${run}`);
+    await member(removedConv, `rmum-${run}`);
+    await member(removedConv, `rkid-${run}`, 2, "kid");
+    const dad = await token({ sub: `rdad-${run}`, dev: 1 });
+    const mum = await token({ sub: `rmum-${run}`, dev: 1 });
+    const kid = await token({ sub: `rkid-${run}`, dev: 2, role: "kid" });
+    const res = await post("/v1/calls", dad, { conversationId: removedConv });
+    expect(res.status).toBe(201);
+    const { call } = (await res.json()) as { call: { callId: string } };
+    expect((await post(`/v1/calls/${call.callId}/join`, mum)).status).toBe(200);
+    expect((await post(`/v1/calls/${call.callId}/join`, kid)).status).toBe(200);
+    expect((await post(`/v1/calls/${call.callId}/leave`, mum)).status).toBe(204);
+    await removeMember(removedConv, `rmum-${run}`);
+    expect((await post(`/v1/calls/${call.callId}/join`, mum)).status).toBe(404);
+    const view = await calls(`/v1/calls/${call.callId}`, { headers: auth(dad) });
+    expect(((await view.json()) as { participants: { accountId: string }[] }).participants.length).toBe(2);
+    await post(`/v1/calls/${call.callId}/leave`, kid);
+    await post(`/v1/calls/${call.callId}/leave`, dad);
   });
 });

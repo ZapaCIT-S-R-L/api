@@ -77,7 +77,14 @@ describe("POST /v1/calls", () => {
     expect(body.call.keyLeader).toEqual({ accountId: dad.accountId, deviceId: 1 });
     expect(body.iceServers[1]?.username).toMatch(/^user-/);
     expect(body.limits).toEqual({ maxParticipants: 8, ringTimeoutSeconds: 45, maxDurationSeconds: 7200 });
-    expect(rings).toEqual([{ callId: body.call.callId, conversationId: "conv-1", from: dad.accountId, event: "ring" }]);
+    expect(rings).toEqual([
+      expect.objectContaining({
+        callId: body.call.callId,
+        conversationId: "conv-1",
+        from: dad.accountId,
+        event: "ring",
+      }),
+    ]);
 
     const turn = realtime.requests.find((r) => r.path.startsWith("/turn/"));
     expect(turn?.path).toBe("/turn/keys/test-turn-key/credentials/generate-ice-servers");
@@ -93,7 +100,7 @@ describe("POST /v1/calls", () => {
     });
   });
 
-  it("a conversation that is not in the token → 403 conversation_not_allowed", async () => {
+  it("a conversation the caller is not a member of (chat service) → 403 conversation_not_allowed", async () => {
     const dad = await phone(issuer, uniqueAccount(), 1, ["conv-1"]);
     const res = await dad.request("POST", "/v1/calls", { conversationId: "conv-other" });
     expect(res.status).toBe(403);
@@ -315,7 +322,7 @@ describe("GET /v1/calls (call log)", () => {
     );
   });
 
-  it("only for a conversation in the token", async () => {
+  it("only for a conversation the caller is a member of", async () => {
     const dad = await phone(issuer, uniqueAccount(), 1, ["conv-1"]);
     expect((await dad.request("GET", "/v1/calls?conversationId=conv-2")).status).toBe(403);
     expect((await dad.request("GET", "/v1/calls")).status).toBe(400);

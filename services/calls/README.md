@@ -7,7 +7,11 @@ Audio is never stored; the call log in D1 (EU) is metadata only.
 
 - Contract: [`openapi.yaml`](openapi.yaml) (`npm run lint:api` validates it).
 - Auth: the chat token from the account API (root of this repo, `POST /v1/chat/token`), verified against its JWKS
-  (`ACCOUNT_JWKS_URL`). No login of its own.
+  (`ACCOUNT_JWKS_URL`). No login of its own. The token's `conv` claim holds membership scopes, not conversation
+  ids, so it is not used to authorize: on every start, join and view the Worker asks the chat service
+  (`ChatMembership.member`, `services/chat/src/rpc.ts`) over the `CHAT` service binding (Workers RPC, never public
+  HTTP) whether the caller is a current member, and which members' devices to ring (`src/chat.ts`). Tests and the
+  local e2e run play the chat service with `test/chat-stub`.
 - Node 24 (`../../.nvmrc`). In this folder: `npm ci --ignore-scripts`, then
   - `npm test`: `test/scripts` (node:test) and `test/worker` (Vitest in the Workers runtime);
   - `scripts/check.sh`: everything CI runs (`.github/workflows/ci-calls.yml`), including the e2e tests against
@@ -21,6 +25,9 @@ A merge to `main` that touches `services/calls/` runs `.github/workflows/deploy-
 created if missing) and migrations, `wrangler deploy --env staging`, e2e against calls-staging.zapakid.ro (rollback
 on failure), then the same for production once @stefan-zpc approves the `production` environment. The account API's
 own workflows ignore `services/`.
+
+The `CHAT` binding needs the chat Worker of the same environment (`zapakid-chat-staging`, `zapakid-chat-production`)
+deployed with its `ChatMembership` entrypoint first; otherwise the calls deploy fails.
 
 The GitHub environments and Cloudflare API token are the API's (root README, "Deploying"): the same token scopes
 cover this Worker (Workers Scripts, D1, Workers Routes and DNS on `zapakid.ro`). The custom domains create their own

@@ -60,10 +60,12 @@ jobs:
       - run: npx wrangler d1 migrations apply DB --local
       # The e2e tests serve the fake account JWKS and fake Realtime/TURN on 127.0.0.1:8798 (test/e2e/fakes.ts), which
       # accept only these fake credentials. Plain http only works on loopback (src/urls.ts). A 3 s ring timeout lets
-      # the e2e test see it.
+      # the e2e test see it. The chat stub (test/chat-stub) runs next to it as zapakid-chat, for the CHAT service
+      # binding; it reads the conversation members from the same fake server.
       - name: Start the calls service locally
         run: |
-          nohup npx wrangler dev --port 8797 --ip 127.0.0.1 --show-interactive-dev-session=false \
+          nohup npx wrangler dev --port 8797 -c wrangler.jsonc -c test/chat-stub/wrangler.jsonc --ip 127.0.0.1 \
+            --show-interactive-dev-session=false \
             --var ACCOUNT_JWKS_URL:http://127.0.0.1:8798/jwks --var REALTIME_API_URL:http://127.0.0.1:8798/realtime \
             --var REALTIME_APP_ID:e2e-app --var REALTIME_APP_SECRET:e2e-app-secret \
             --var TURN_KEY_ID:e2e-turn --var TURN_KEY_API_TOKEN:e2e-turn-token --var RING_TIMEOUT_SECONDS:3 \

@@ -4,6 +4,7 @@
 import { authenticate, InvalidToken, type Caller } from "./auth";
 import { BadRequest, id, invalid, onlyFields, readJson } from "./body";
 import type { CallView, Result } from "./call-room";
+import { ChatUnavailable, membership, ringTargets } from "./chat";
 import type { Env } from "./env";
 import { empty, error, json } from "./http";
 import { KeysUnavailable } from "./jwks";
@@ -84,6 +85,7 @@ export async function routeCalls(request: Request, env: Env): Promise<Response |
       return await handler({ request, env, who, callId, sessionId });
     } catch (e) {
       if (e instanceof BadRequest) return error(e.status, e.code, e.message);
+      if (e instanceof ChatUnavailable) return chatUnavailable(e);
       if (e instanceof RealtimeRejected) return error(400, "realtime_rejected", `Realtime refused: ${e.message}`);
       if (e instanceof RealtimeUnavailable) {
         console.error(JSON.stringify({ msg: "realtime unavailable", err: e.message }));
@@ -107,17 +109,19 @@ async function answer<T>(pending: Promise<Result<T>>, status = 200): Promise<Res
 
 const rateLimited = () => error(429, "rate_limited", "Too many calls. Try again in a minute.", { "retry-after": "60" });
 
-function conversationAllowed(who: Caller, conversationId: string): Response | null {
-  if (who.conversations.includes(conversationId)) return null;
-  return error(403, "conversation_not_allowed", "You are not a member of that conversation (get a new chat token).");
+export function chatUnavailable(e: Error): Response {
+  console.error(JSON.stringify({ msg: "chat unavailable", err: e.message }));
+  return error(503, "chat_unavailable", "Calls are unavailable right now. Try again later.");
 }
+
+const notAllowed = () => error(403, "conversation_not_allowed", "You are not a member of that conversation.");
 
 async function create(c: Context): Promise<Response> {
   const body = await readJson(c.request);
   onlyFields(body, ["conversationId"], "the body");
   const conversationId = id(body.conversationId, "conversationId");
-  const refused = conversationAllowed(c.who, conversationId);
-  if (refused) return refused;
+  const members = await membership(c.env, conversationId, c.who.accountId);
+  if (!members.member) return notAllowed();
   if (!(await c.env.CREATE_LIMITER.limit({ key: c.who.accountId })).success) return rateLimited();
   const l = limits(c.env);
 
@@ -141,11 +145,12 @@ async function create(c: Context): Promise<Response> {
   }
 
   const callId = crypto.randomUUID();
-  const started = await room({ env: c.env, callId }).start(callId, conversationId, c.who);
+  const to = ringTargets(members.members, c.who.accountId);
+  const started = await room({ env: c.env, callId }).start(callId, conversationId, c.who, to);
   if (!started.ok) return error(started.status, started.code, started.message);
   const [servers] = await Promise.all([
     iceServers(c.env, l.turnTtlSeconds),
-    pushProvider().ring({ callId, conversationId, from: c.who.accountId }),
+    pushProvider().ring({ callId, conversationId, from: c.who.accountId, to }),
   ]);
   return json(
     {
@@ -172,8 +177,7 @@ async function join(c: Context): Promise<Response> {
 async function list(c: Context): Promise<Response> {
   const conversationId = new URL(c.request.url).searchParams.get("conversationId");
   if (conversationId === null) throw invalid("conversationId is required.");
-  const refused = conversationAllowed(c.who, id(conversationId, "conversationId"));
-  if (refused) return refused;
+  if (!(await membership(c.env, id(conversationId, "conversationId"), c.who.accountId)).member) return notAllowed();
   const { results } = await c.env.DB.prepare(
     `SELECT id, created_at, created_by_account, created_by_device, answered_at, ended_at, end_reason, peak_participants
      FROM calls WHERE conversation_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`,
