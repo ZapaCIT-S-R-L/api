@@ -18,7 +18,7 @@ test("prints a private P-256 JWK with its thumbprint as kid, when piped", async 
   assert.ok(jwk.d, "private part");
   assert.equal(jwk.kid, await calculateJwkThumbprint({ kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y }));
   const jwt = await new SignJWT({}).setProtectedHeader({ alg: "ES256" }).sign(await importJWK(jwk, "ES256"));
-  const { d: _d, ...publicJwk } = jwk;
+  const publicJwk = { kty: jwk.kty, crv: jwk.crv, x: jwk.x, y: jwk.y };
   await jwtVerify(jwt, await importJWK(publicJwk, "ES256"));
 });
 
