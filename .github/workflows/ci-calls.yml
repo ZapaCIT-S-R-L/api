@@ -1,0 +1,107 @@
+# Checks services/calls (the calls Worker) on PRs and pushes to main that touch it. No secrets are used here.
+# The root ci.yml still runs on every PR (its jobs are the required checks); it does not lint or test services/.
+#   calls-unit   node:test for scripts/, Vitest inside the Workers runtime (npm test)
+#   calls-build  wrangler bundles the Worker (dry run, nothing uploaded)
+#   calls-e2e    the API over HTTP on wrangler dev, with a fake account JWKS and a fake Realtime/TURN on loopback
+#   calls-audit  npm audit of the runtime dependencies (high+), OSV-Scanner of the whole lockfile
+#   calls-lint   Prettier, ESLint, TypeScript, Redocly (actionlint and gitleaks run in ci.yml for the whole repo)
+name: ci-calls
+
+on:
+  pull_request:
+    paths:
+      - services/calls/**
+      - .github/workflows/ci-calls.yml
+      - .github/workflows/deploy-calls.yml
+  push:
+    branches: [main]
+    paths:
+      - services/calls/**
+      - .github/workflows/ci-calls.yml
+      - .github/workflows/deploy-calls.yml
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: services/calls
+
+jobs:
+  calls-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci --ignore-scripts
+      - run: npm test
+
+  calls-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci --ignore-scripts
+      - run: npx wrangler deploy --dry-run --env staging --outdir dist
+
+  calls-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci --ignore-scripts
+      - run: npx wrangler d1 migrations apply DB --local
+      # The e2e tests serve the fake account JWKS and fake Realtime/TURN on 127.0.0.1:8798 (test/e2e/fakes.ts), which
+      # accept only these fake credentials. Plain http only works on loopback (src/urls.ts). A 3 s ring timeout lets
+      # the e2e test see it.
+      - name: Start the calls service locally
+        run: |
+          nohup npx wrangler dev --port 8797 --ip 127.0.0.1 --show-interactive-dev-session=false \
+            --var ACCOUNT_JWKS_URL:http://127.0.0.1:8798/jwks --var REALTIME_API_URL:http://127.0.0.1:8798/realtime \
+            --var REALTIME_APP_ID:e2e-app --var REALTIME_APP_SECRET:e2e-app-secret \
+            --var TURN_KEY_ID:e2e-turn --var TURN_KEY_API_TOKEN:e2e-turn-token --var RING_TIMEOUT_SECONDS:3 \
+            < /dev/null > "$RUNNER_TEMP/wrangler.log" 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf --max-time 2 -o /dev/null http://127.0.0.1:8797/health && { echo "up after ${i}s"; exit 0; }
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/wrangler.log"; exit 1
+      - run: npm run test:e2e
+        env:
+          CALLS_URL: http://127.0.0.1:8797
+          FAKE_PORT: "8798"
+      - if: failure()
+        run: cat "$RUNNER_TEMP/wrangler.log"
+
+  calls-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - run: npm audit --omit=dev --audit-level=high
+      # Pinned by digest (tag kept for reading; bump both together), checkout read-only.
+      - run: >-
+          docker run --rm -v "$PWD:/src:ro" -w /src
+          ghcr.io/google/osv-scanner:v2.7.0@sha256:4f3b7e2c64b9d38a5febc5a7e4a3dfef1d1362f726dea7a2ef4762b46469fcd0
+          scan source --lockfile package-lock.json
+
+  calls-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci --ignore-scripts
+      - run: npm run lint
+        env:
+          REDOCLY_TELEMETRY: "off"

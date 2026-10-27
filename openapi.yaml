@@ -8,7 +8,7 @@ info:
     public keys, ciphertext and the metadata it needs to route messages. It can never decrypt a chat, and it has no
     cryptography of its own beyond verifying Apple and Google sign-in tokens and hashing session tokens.
 
-    **Stability.** Endpoints tagged `Health`, `Sign-in`, `Account`, `Families`, `Kid pairing` and `Connections` are stable: the apps build against them and
+    **Stability.** Endpoints tagged `Health`, `Sign-in`, `Account`, `Families`, `Kid pairing`, `Connections`, `Devices and keys` and `Chat tokens` are stable: the apps build against them and
     they only change in a backward-compatible way. Every endpoint tagged `Draft: ...` (and marked `x-status: draft`)
     is a plan, not implemented yet, and will change.
 
@@ -67,6 +67,17 @@ tags:
       present, is always checked in full. The body hash includes the one-time nonce, so a token can't be replayed.
   - name: Account
     description: The signed-in parent's own account.
+  - name: Chat tokens
+    description: |
+      The chat and calls services (`chat.zapakid.ro`, `calls.zapakid.ro`; `-staging` on staging) never see a
+      session token. The app trades its session for a short-lived chat token (`POST /v1/chat/token`, ES256 JWT, 10
+      minutes, never more than 15) and sends that to them as `Authorization: Bearer <chat token>`. They verify it
+      against this API's public keys (`GET /.well-known/jwks.json`, cached) and check `aud`, `iss`, `exp` and that
+      a conversation is in `conv`. Fetch a new token before `expiresAt`, and on any `401` from chat or calls.
+
+      Claims: `iss` this API's origin, `aud` [chat host, calls host], `sub` the account id, `dev` the device id
+      registered on the session, `role` (`parent`; kids come with families), `conv` the conversation ids the account
+      is a member of at issue time, `iat`, `exp`, `jti`.
   - name: App attestation
     description: |
       iOS registers an Apple App Attest key once (`/v1/attestation/challenge`, `/v1/attestation/apple`), then signs
@@ -403,6 +414,61 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Parent" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/chat/token:
+    post:
+      tags: [Chat tokens]
+      operationId: chatToken
+      summary: A short-lived token for the chat and calls services.
+      description: |
+        Needs a session with a registered device (`POST /v1/devices`). Membership (`conv`) is what the account
+        belongs to now; ask again after joining a conversation.
+      responses:
+        "200":
+          description: The token.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ChatToken" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: "`device_required`: this session has no registered device yet."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "503": { $ref: "#/components/responses/NotConfigured" }
+
+  /.well-known/jwks.json:
+    get:
+      tags: [Chat tokens]
+      operationId: jwks
+      summary: The public keys that verify chat tokens (JWKS, RFC 7517).
+      description: Cache for up to 5 minutes. A token with an unknown `kid` means the key rotated; fetch again.
+      security: []
+      responses:
+        "200":
+          description: The key set. Public keys only.
+          headers:
+            Cache-Control: { schema: { type: string, const: "public, max-age=300" } }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [keys]
+                properties:
+                  keys:
+                    type: array
+                    items:
+                      type: object
+                      required: [kty, crv, x, y, kid, alg, use]
+                      properties:
+                        kty: { const: EC }
+                        crv: { const: P-256 }
+                        x: { type: string }
+                        y: { type: string }
+                        kid: { type: string, description: The RFC 7638 thumbprint of the key. }
+                        alg: { const: ES256 }
+                        use: { const: sig }
+        "503": { $ref: "#/components/responses/NotConfigured" }
 
   /v1/attestation/challenge:
     post:
@@ -1336,6 +1402,11 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    NotConfigured:
+      description: "`not_configured`: the chat token signing key is not set on this environment yet. Retry later."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     AttestationFailed:
       description: "`attestation_failed`: not a genuine ZapaKid app on a genuine device."
       content:
@@ -1343,6 +1414,12 @@ components:
           schema: { $ref: "#/components/schemas/Error" }
 
   schemas:
+    ChatToken:
+      type: object
+      required: [token, expiresAt]
+      properties:
+        token: { type: string, description: "ES256 JWT for chat and calls: `Authorization: Bearer <token>`." }
+        expiresAt: { type: string, format: date-time }
     Error:
       type: object
       required: [error]
