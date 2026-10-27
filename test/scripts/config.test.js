@@ -90,8 +90,9 @@ test("auth rate limits: staging and production 20 per minute, separate counters 
   assert.equal(new Set(ids).size, 3);
 });
 
-test("staging and production purge expired sessions and nonces daily", () => {
-  for (const env of [staging, production]) assert.deepEqual(env.triggers, { crons: ["17 3 * * *"] });
+test("staging and production purge expired rows hourly", () => {
+  // Hourly (security review 2026-10-27, L7): unauthenticated endpoints add one-time rows, so they go every hour.
+  for (const env of [staging, production]) assert.deepEqual(env.triggers, { crons: ["17 * * * *"] });
 });
 
 // Regression guard: every binding and variable the Worker requires (non-optional fields of Env in src/env.ts)
