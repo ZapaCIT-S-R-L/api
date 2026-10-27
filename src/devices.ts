@@ -257,10 +257,8 @@ export async function handleRemoveDevice(request: Request, env: Env, rawId: stri
       session.parentId,
       deviceId,
     ),
-    env.DB.prepare("UPDATE sessions SET device_id = NULL WHERE parent_id = ? AND device_id = ?").bind(
-      session.parentId,
-      deviceId,
-    ),
+    // A removed device is signed out (a lost phone must not keep a working session).
+    env.DB.prepare("DELETE FROM sessions WHERE parent_id = ? AND device_id = ?").bind(session.parentId, deviceId),
   ]);
   if (!removed?.results.length) return notFound();
   return empty(204);

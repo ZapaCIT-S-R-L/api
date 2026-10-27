@@ -21,10 +21,10 @@ export async function purgeExpired(env: Env): Promise<void> {
     ).bind(now, now),
     env.DB.prepare("DELETE FROM app_attest_challenges WHERE expires_at <= ?").bind(now),
     env.DB.prepare("DELETE FROM app_attest_keys WHERE coalesce(last_used_at, created_at) <= ?").bind(keyCutoff),
-    // Devices without a request for 90 days go, with their prekeys (cascade); their sessions are unbound.
+    // Devices without a request for 90 days go, with their prekeys (cascade), and their sessions are signed out.
     env.DB.prepare("DELETE FROM devices WHERE last_seen_at <= ?").bind(deviceCutoff),
     env.DB.prepare(
-      `UPDATE sessions SET device_id = NULL WHERE device_id IS NOT NULL AND NOT EXISTS
+      `DELETE FROM sessions WHERE device_id IS NOT NULL AND NOT EXISTS
          (SELECT 1 FROM devices d WHERE d.account_id = sessions.parent_id AND d.device_id = sessions.device_id)`,
     ),
     env.DB.prepare("DELETE FROM family_invitations WHERE expires_at <= ?").bind(now),
