@@ -77,6 +77,10 @@ tags:
     description: Planned. A parent adds a kid and pairs the kid's phone by showing a QR code.
   - name: "Draft: Connections"
     description: Planned. Parents of different families connect, then each family shares chosen kids.
+  - name: Devices and keys
+    description: |
+      Registering a phone with the key directory (implemented). The account id is the parent's `id` from
+      `GET /v1/me`.
   - name: "Draft: Devices and keys"
     description: |
       Planned. The key directory for libsignal (X3DH/PQXDH). Each account has one identity key, shared by its
@@ -419,6 +423,114 @@ paths:
         "403": { $ref: "#/components/responses/AttestationFailed" }
         "429": { $ref: "#/components/responses/RateLimited" }
 
+  /v1/devices:
+    post:
+      tags: [Devices and keys]
+      operationId: registerDevice
+      summary: Register this phone and upload its libsignal public keys.
+      description: |
+        Needs a session and app attestation (`ZapaKid-Attestation`, same policies as sign-in; the hash covers this
+        body). The first device of an account sets the account's identity key; every later device must send the
+        same one (`409 identity_mismatch`; changing it is `PUT /v1/keys/identity`). Each registration gets a new
+        device id (1..127; a reinstall is a new device). The session is then bound to that device on the server:
+        no device header on later calls. A retry with the same signed prekey on the same session returns the same
+        device id (the first answer was lost); different keys → `409 device_already_registered`.
+
+        The server checks every key's type and size (EC: 33 bytes, type 0x05; Kyber-1024: 1569 bytes, type 0x08;
+        signatures 64 bytes), unique key ids and the counts, and stores only public keys and signatures. Apps
+        verify the signatures with libsignal when they use a bundle; libsignal refuses a bad one.
+
+        A device that makes no request for 90 days is removed (daily), with its keys.
+      parameters: [{ $ref: "#/components/parameters/attestation" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/DeviceKeys" }
+      responses:
+        "201":
+          description: The device id (libsignal `ProtocolAddress` device id).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deviceId]
+                properties:
+                  deviceId: { $ref: "#/components/schemas/DeviceId" }
+        "400":
+          description: "`invalid_keys`: a key or signature has the wrong type or size, or key ids repeat. `invalid_request`: the body's shape."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/AttestationFailed" }
+        "409":
+          description: |
+            `identity_mismatch`: `identityKey` isn't the account's identity key. `too_many_devices`: the account
+            already has 127 devices (remove one with `DELETE /v1/devices/{deviceId}`). `device_already_registered`:
+            this session already registered a device with other keys.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ProviderUnavailable" }
+
+  /v1/devices/{deviceId}:
+    delete:
+      tags: [Devices and keys]
+      operationId: removeDevice
+      summary: Remove one of the account's devices (an old phone or install) with its keys.
+      description: Only the caller's own devices. Sessions bound to it are unbound.
+      parameters:
+        - name: deviceId
+          in: path
+          required: true
+          schema: { $ref: "#/components/schemas/DeviceId" }
+      responses:
+        "204": { description: "Removed." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: "`not_found`: no such device on this account."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/accounts/{accountId}/identity:
+    get:
+      tags: [Devices and keys]
+      operationId: getIdentity
+      summary: An account's current identity key and its change history (for safety numbers and warnings).
+      description: |
+        For the caller's own account (an app checks whether the account already has an identity before it
+        registers), and later for accounts the caller may chat with. `404 not_found` when the account has no
+        identity yet, or isn't one the caller may see.
+      parameters: [{ $ref: "#/components/parameters/accountId" }]
+      responses:
+        "200":
+          description: Identity key and history (oldest change first).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [identityKey, changes]
+                properties:
+                  identityKey: { $ref: "#/components/schemas/PublicKey" }
+                  changes:
+                    type: array
+                    items:
+                      type: object
+                      required: [identityKey, changedAt]
+                      properties:
+                        identityKey: { $ref: "#/components/schemas/PublicKey" }
+                        changedAt: { type: string, format: date-time }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404":
+          description: "`not_found`: no identity yet, or not an account the caller may see."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   # ---------------------------------------------------------------------------------------------------------------
   # Draft endpoints below: planned, not implemented, will change.
   # ---------------------------------------------------------------------------------------------------------------
@@ -550,29 +662,28 @@ paths:
       responses:
         "204": { description: "Blocked." }
 
-  /v1/devices:
-    post:
-      tags: ["Draft: Devices and keys"]
-      operationId: registerDevice
-      x-status: draft
-      summary: Register this phone and upload its public keys.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: "#/components/schemas/DeviceKeys" }
+  /v1/keys/prekeys:
+    get:
+      tags: [Devices and keys]
+      operationId: countPreKeys
+      summary: How many one-time prekeys this session's device has left (top up below 20).
       responses:
-        "201":
-          description: The device id (libsignal `ProtocolAddress` device id).
+        "200":
+          description: The counts.
           content:
             application/json:
               schema:
                 type: object
-                required: [deviceId]
+                required: [preKeys, pqPreKeys]
                 properties:
-                  deviceId: { $ref: "#/components/schemas/DeviceId" }
-
-  /v1/keys/prekeys:
+                  preKeys: { type: integer, minimum: 0 }
+                  pqPreKeys: { type: integer, minimum: 0 }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: "`device_not_registered`: this session has no device yet (`POST /v1/devices`)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
     put:
       tags: ["Draft: Devices and keys"]
       operationId: uploadPreKeys
@@ -591,13 +702,6 @@ paths:
                 pqPreKeys: { type: array, maxItems: 100, items: { $ref: "#/components/schemas/SignedPreKey" } }
       responses:
         "204": { description: "Stored." }
-    get:
-      tags: ["Draft: Devices and keys"]
-      operationId: countPreKeys
-      x-status: draft
-      summary: How many one-time prekeys this device has left (top up below 20).
-      responses:
-        "200": { description: "`{ preKeys, pqPreKeys }` counts." }
 
   /v1/keys/identity:
     put:
@@ -622,33 +726,6 @@ paths:
                 pqLastResortPreKey: { $ref: "#/components/schemas/SignedPreKey" }
       responses:
         "204": { description: "Changed; peers are notified." }
-
-  /v1/accounts/{accountId}/identity:
-    get:
-      tags: ["Draft: Devices and keys"]
-      operationId: getIdentity
-      x-status: draft
-      summary: An account's current identity key and its change history (for safety numbers and warnings).
-      description: Only for accounts the caller may chat with (same family, or a connected family's parent or shared kid).
-      parameters: [{ $ref: "#/components/parameters/accountId" }]
-      responses:
-        "200":
-          description: Identity key and history.
-          content:
-            application/json:
-              schema:
-                type: object
-                required: [identityKey, changes]
-                properties:
-                  identityKey: { $ref: "#/components/schemas/PublicKey" }
-                  changes:
-                    type: array
-                    items:
-                      type: object
-                      required: [identityKey, changedAt]
-                      properties:
-                        identityKey: { $ref: "#/components/schemas/PublicKey" }
-                        changedAt: { type: string, format: date-time }
 
   /v1/keys/{accountId}/{deviceId}:
     get:
@@ -995,7 +1072,9 @@ components:
       minimum: 1
       maximum: 127
     PublicKey:
-      description: A libsignal public key, serialized (type byte + key), base64.
+      description: |
+        A libsignal public key, serialized (type byte + key), base64: EC (identity, signed and one-time prekeys)
+        33 bytes, type 0x05; Kyber-1024 (`pq` keys) 1569 bytes, type 0x08.
       allOf: [{ $ref: "#/components/schemas/Base64" }]
     PreKey:
       type: object
@@ -1014,6 +1093,7 @@ components:
     DeviceKeys:
       type: object
       required: [registrationId, identityKey, signedPreKey, pqLastResortPreKey, preKeys, pqPreKeys]
+      additionalProperties: false
       properties:
         registrationId: { type: integer, minimum: 1, maximum: 16383 }
         identityKey:
@@ -1023,7 +1103,10 @@ components:
         pqLastResortPreKey: { $ref: "#/components/schemas/SignedPreKey" }
         preKeys: { type: array, maxItems: 100, items: { $ref: "#/components/schemas/PreKey" } }
         pqPreKeys: { type: array, maxItems: 100, items: { $ref: "#/components/schemas/SignedPreKey" } }
-        pushToken: { type: string, maxLength: 4096, description: APNs or FCM token (no message content in pushes). }
+        pushToken:
+          type: string
+          maxLength: 4096
+          description: Optional. APNs or FCM token (no message content in pushes); stored, not used yet.
     PreKeyBundle:
       type: object
       required: [deviceId, registrationId, signedPreKey, pqPreKey]

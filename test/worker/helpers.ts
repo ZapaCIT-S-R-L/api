@@ -178,7 +178,11 @@ export async function count(
     | "sign_in_nonces"
     | "apple_web_flows"
     | "app_attest_challenges"
-    | "app_attest_keys",
+    | "app_attest_keys"
+    | "account_identities"
+    | "devices"
+    | "one_time_prekeys"
+    | "pq_one_time_prekeys",
 ): Promise<number> {
   const row = await env.DB.prepare(`SELECT count(*) AS n FROM ${table}`).first<{ n: number }>();
   return row?.n ?? 0;
