@@ -50,7 +50,7 @@ test("the chat token key is a private P-256 JWK with its thumbprint as kid, new 
 });
 
 // A fake world: Workers with their secret names, the Cloudflare API, and a log that records masks and output.
-function world({ secrets = {}, apiFails = false } = {}) {
+function world({ secrets = {}, apiFails = false, turnResult } = {}) {
   const w = { masked: [], output: [], puts: [], requests: [], secrets };
   w.deps = {
     configs: {
@@ -80,7 +80,7 @@ function world({ secrets = {}, apiFails = false } = {}) {
       }
       const result = url.endsWith("/calls/apps")
         ? { uid: "app-uid", secret: "app-secret", name: "x" }
-        : { uid: "turn-uid", key: "turn-key", name: "x" };
+        : (turnResult ?? { uid: "turn-uid", key: "turn-key", name: "x" });
       return Promise.resolve(Response.json({ success: true, errors: [], result }));
     },
   };
@@ -222,4 +222,18 @@ test("any other wrangler failure names wrangler's error codes, never its output"
     assert.ok(!e.message.includes("leaky"));
     return true;
   });
+});
+
+// Regression: staging bootstrap after #69 stopped at "The Cloudflare API answer is missing uid/secret/key" without
+// saying which call or field. The error now names both, plus the field names Cloudflare did send (never values).
+test("an answer without the expected fields names the call, the missing field and the fields sent; puts nothing", async () => {
+  const w = world({ turnResult: { created: "t", modified: "t", name: "zapakid-staging", uid: "turn-uid" } });
+  w.deps.configs.calls = ACCOUNT_CONFIG;
+  w.secrets["zapakid-api-staging"] = ["CHAT_TOKEN_SIGNING_KEY"];
+  await assert.rejects(bootstrap("staging", "none", w.deps), (e) => {
+    assert.equal(e.message, "Creating the TURN key: the answer has no key (fields sent: created, modified, name, uid)");
+    assert.ok(!e.message.includes("turn-uid"));
+    return true;
+  });
+  assert.equal(w.puts.length, 0);
 });

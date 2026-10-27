@@ -64,22 +64,26 @@ async function cloudflare(deps, path, body, what) {
   return json.result;
 }
 
+// Each field `fields` names must be a non-empty string; else the error names the call, the missing field and the
+// field names Cloudflare did send (never a value). Every value is masked before anything else sees it.
+function take(deps, result, fields, what) {
+  for (const f of fields) if (typeof result[f] === "string" && result[f].length > 0) deps.mask(result[f]);
+  for (const f of fields) {
+    if (!(typeof result[f] === "string" && result[f].length > 0)) {
+      throw new Error(`${what}: the answer has no ${f} (fields sent: ${Object.keys(result).sort().join(", ")})`);
+    }
+  }
+  return fields.map((f) => result[f]);
+}
+
 // A new Realtime SFU app and TURN key, every value masked before it is returned.
 export async function newRealtimeCredentials(deps, env) {
   const name = `zapakid-${env}`;
   const app = await cloudflare(deps, "/calls/apps", { name }, "Creating the Realtime app");
-  for (const value of [app.uid, app.secret]) deps.mask(value);
+  const [appId, appSecret] = take(deps, app, ["uid", "secret"], "Creating the Realtime app");
   const turn = await cloudflare(deps, "/calls/turn_keys", { name }, "Creating the TURN key");
-  for (const value of [turn.uid, turn.key]) deps.mask(value);
-  if (![app.uid, app.secret, turn.uid, turn.key].every((v) => typeof v === "string" && v.length > 0)) {
-    throw new Error("The Cloudflare API answer is missing uid/secret/key");
-  }
-  return {
-    REALTIME_APP_ID: app.uid,
-    REALTIME_APP_SECRET: app.secret,
-    TURN_KEY_ID: turn.uid,
-    TURN_KEY_API_TOKEN: turn.key,
-  };
+  const [turnId, turnKey] = take(deps, turn, ["uid", "key"], "Creating the TURN key");
+  return { REALTIME_APP_ID: appId, REALTIME_APP_SECRET: appSecret, TURN_KEY_ID: turnId, TURN_KEY_API_TOKEN: turnKey };
 }
 
 // Runs the bootstrap for one environment. `deps` holds everything with side effects, so tests can fake them:
