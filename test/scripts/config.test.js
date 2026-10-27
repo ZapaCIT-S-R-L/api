@@ -43,10 +43,15 @@ test("the Apple web flow hands back to the app link on zapakid.ro", () => {
     assert.equal(env.vars.APPLE_WEB_REDIRECT_URL, "https://zapakid.ro/app/apple");
 });
 
-test("staging Google client ids are real OAuth client ids or empty (Google sign-in off)", () => {
-  const ids = staging.vars.GOOGLE_CLIENT_IDS.split(",").filter(Boolean);
-  for (const id of ids) assert.match(id, /^\d+-[a-z0-9]+\.apps\.googleusercontent\.com$/);
-  assert.ok(!ids.some((id) => id.includes("local-test")));
+// Google ID tokens carry the client the app asked with as `aud`: Android (Credential Manager, setServerClientId)
+// uses the web (server) client, iOS (GoogleSignIn) the iOS client. The Android client id (…-mbidtcoq…) is never an
+// audience, so the exact list above leaves it out.
+const GOOGLE_WEB = "64042746735-r70nv5pmlro7hpksk1te3ur008ungss1.apps.googleusercontent.com";
+const GOOGLE_IOS = "64042746735-lgdmtj9vvd3kiu7g9qc2elu22la6o1id.apps.googleusercontent.com";
+
+test("staging accepts Google ID tokens for ZapaKid's web and iOS clients only", () => {
+  const ids = staging.vars.GOOGLE_CLIENT_IDS.split(",");
+  assert.deepEqual(ids, [GOOGLE_WEB, GOOGLE_IOS]);
 });
 
 test("staging session TTL is between 1 day and 90 days", () => {
@@ -106,11 +111,28 @@ test("staging and production define every binding and var the Worker reads", asy
   }
 });
 
-test("app attestation: production required, staging optional until Play Integrity is set up", () => {
+test("app attestation: production fails closed, staging exempts only allowlisted test accounts", () => {
   assert.equal(production.vars.ATTESTATION_POLICY, "required");
-  assert.equal(staging.vars.ATTESTATION_POLICY, "optional");
+  assert.equal(staging.vars.ATTESTATION_POLICY, "allowlist");
+  for (const env of [staging, production]) assert.equal(env.vars.ATTESTATION_ALLOWLIST, undefined, "a secret");
   for (const env of [staging, production]) {
     assert.equal(env.vars.PLAY_PACKAGE_NAME, "ro.zapakid.app");
     assert.equal(env.vars.PLAY_INTEGRITY_CREDENTIALS, undefined, "a secret, never a var");
   }
+});
+
+test("App Attest: app id 9572LYGZ7S.ro.zapakid.app; development keys on staging only", () => {
+  for (const env of [staging, production]) assert.equal(env.vars.APP_ATTEST_APP_ID, "9572LYGZ7S.ro.zapakid.app");
+  assert.equal(staging.vars.APP_ATTEST_ENVIRONMENTS, "development,production");
+  assert.equal(production.vars.APP_ATTEST_ENVIRONMENTS, "production");
+});
+
+test("the pinned App Attest root is Apple's App Attestation Root CA", async () => {
+  const { createHash } = await import("node:crypto");
+  const { readFileSync } = await import("node:fs");
+  const source = readFileSync(new URL("../../src/app-attest-root.ts", import.meta.url), "utf8");
+  const b64 = /"([A-Za-z0-9+/=\s]+)"/.exec(source.replace(/\n/g, ""))?.[1].replace(/\s/g, "") ?? "";
+  const fingerprint = createHash("sha256").update(Buffer.from(b64, "base64")).digest("hex");
+  // openssl x509 -in Apple_App_Attestation_Root_CA.pem -noout -fingerprint -sha256 (apple.com/certificateauthority)
+  assert.equal(fingerprint, "1cb9823ba28ba6ad2d33a006941de2ae4f513ef1d4e831b9f7e0fa7b6242c932");
 });

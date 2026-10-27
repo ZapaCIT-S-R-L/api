@@ -1,8 +1,10 @@
 // App attestation on sign-in. Android: a standard Play Integrity token in ZapaKid-Attestation, bound to the request
 // (requestHash = SHA-256 hex of the exact body bytes). The server decodes it with Google's decodeIntegrityToken API,
 // authenticated as a service account (OAuth 2.0 JWT bearer grant, signed with jose), and checks the verdicts.
-// iOS App Attest comes in a later change; until then an iOS request has no valid attestation.
+// iOS: an App Attest assertion (src/app-attest.ts), told apart by its "v1 " prefix.
 import { importPKCS8, SignJWT } from "jose";
+import { isAppAttestHeader, verifyAssertion } from "./app-attest";
+import { AttestationFailed, AttestationUnavailable } from "./attestation-errors";
 import { sha256Hex } from "./crypto";
 import type { Env } from "./env";
 
@@ -13,8 +15,7 @@ const MAX_AGE_MS = 10 * 60_000;
 const MAX_SKEW_MS = 60_000;
 const TIMEOUT_MS = 5000;
 
-export class AttestationFailed extends Error {}
-export class AttestationUnavailable extends Error {}
+export { AttestationFailed, AttestationUnavailable };
 
 interface Credentials {
   client_email: string;
@@ -126,15 +127,32 @@ function check(verdict: Verdict, requestHash: string, env: Env): void {
   if (verdict.accountDetails?.appLicensingVerdict !== "LICENSED") fail("licensing");
 }
 
-// Throws AttestationFailed (→ 403) or AttestationUnavailable (→ 503); returns when the request may go on.
-export async function checkAttestation(request: Request, bytes: Uint8Array, env: Env): Promise<void> {
+// Policies (ATTESTATION_POLICY): "required" (production: no header → refused), "allowlist" (staging: no header
+// only for accounts in the ATTESTATION_ALLOWLIST secret), "optional" (local development: no header → allowed).
+// A header, when present, is always checked in full.
+export type AttestationResult = "attested" | "allowlist" | "unchecked";
+
+// Throws AttestationFailed (→ 403) or AttestationUnavailable (→ 503). "allowlist": the caller must check the
+// verified identity with isAllowlisted() before it uses anything up.
+export async function checkAttestation(request: Request, bytes: Uint8Array, env: Env): Promise<AttestationResult> {
   const header = request.headers.get(ATTESTATION_HEADER);
   if (!header) {
-    if (env.ATTESTATION_POLICY === "optional") return;
+    if (env.ATTESTATION_POLICY === "optional") return "unchecked";
+    if (env.ATTESTATION_POLICY === "allowlist") return "allowlist";
     throw new AttestationFailed("no attestation");
   }
   if (header.length > 16384) throw new AttestationFailed("attestation too long");
+  if (isAppAttestHeader(header)) {
+    await verifyAssertion(header, bytes, env);
+    return "attested";
+  }
   const credentials = parseCredentials(env.PLAY_INTEGRITY_CREDENTIALS);
   if (!credentials) throw new AttestationUnavailable("PLAY_INTEGRITY_CREDENTIALS not set");
   check(await decode(header, env, credentials), await sha256Hex(bytes), env);
+  return "attested";
+}
+
+// Whether this verified identity may sign in without attestation (staging test accounts, "provider:subject").
+export function isAllowlisted(env: Env, provider: string, subject: string): boolean {
+  return list(env.ATTESTATION_ALLOWLIST ?? "").includes(`${provider}:${subject}`);
 }

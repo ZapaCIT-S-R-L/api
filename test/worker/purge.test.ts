@@ -62,6 +62,36 @@ describe("daily purge", () => {
     expect(rows.results.map((r) => r.state_hash)).toEqual([hex("0"), hex("f")]);
   });
 
+  it("deletes App Attest keys unused for 180 days, keeps recent ones", async () => {
+    const daysAgo = (d: number) => new Date(Date.now() - d * 86_400_000).toISOString();
+    const key = (id: string, created: string, used: string | null) =>
+      env.DB.prepare(
+        "INSERT INTO app_attest_keys (key_id, public_key, counter, environment, created_at, last_used_at) VALUES (?, 'pk', 1, 'production', ?, ?)",
+      ).bind(id, created, used);
+    await env.DB.batch([
+      key("used-long-ago", daysAgo(400), daysAgo(181)),
+      key("never-used-old", daysAgo(181), null),
+      key("used-recently", daysAgo(400), daysAgo(10)),
+      key("new-unused", daysAgo(10), null),
+    ]);
+    await runCron();
+    const rows = await env.DB.prepare("SELECT key_id FROM app_attest_keys ORDER BY key_id").all<{ key_id: string }>();
+    expect(rows.results.map((r) => r.key_id)).toEqual(["new-unused", "used-recently"]);
+  });
+
+  it("deletes expired App Attest challenges, keeps live ones", async () => {
+    const now = new Date().toISOString();
+    await env.DB.batch([
+      env.DB.prepare("INSERT INTO app_attest_challenges VALUES (?, ?, ?)").bind(hex("1"), now, past()),
+      env.DB.prepare("INSERT INTO app_attest_challenges VALUES (?, ?, ?)").bind(hex("2"), now, future()),
+    ]);
+    await runCron();
+    const rows = await env.DB.prepare("SELECT challenge_hash FROM app_attest_challenges").all<{
+      challenge_hash: string;
+    }>();
+    expect(rows.results.map((r) => r.challenge_hash)).toEqual([hex("2")]);
+  });
+
   it("does nothing on an empty database", async () => {
     await env.DB.prepare("DELETE FROM sign_in_nonces").run();
     await runCron();

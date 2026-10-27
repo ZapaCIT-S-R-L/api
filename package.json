@@ -13,7 +13,10 @@
     "format": "prettier --write ."
   },
   "dependencies": {
-    "jose": "6.2.13"
+    "asn1js": "4.0.0",
+    "cborg": "6.1.5",
+    "jose": "6.2.13",
+    "pkijs": "4.0.0"
   },
   "devDependencies": {
     "@cloudflare/vitest-plugin": "1.4.8",
@@ -27,7 +30,8 @@
     "typescript": "6.0.3",
     "typescript-eslint": "8.72.1",
     "vitest": "5.0.5",
-    "wrangler": "4.153.0"
+    "wrangler": "4.153.0",
+    "yaml": "2.9.1"
   },
   "license": "AGPL-3.0-only",
   "engines": {
