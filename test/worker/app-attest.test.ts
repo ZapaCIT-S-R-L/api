@@ -338,7 +338,7 @@ describe("purge", () => {
     await env.DB.prepare("UPDATE app_attest_challenges SET expires_at = ?")
       .bind(new Date(Date.now() - 1000).toISOString())
       .run();
-    await worker.scheduled({ cron: "17 3 * * *", scheduledTime: Date.now(), noRetry: () => undefined }, env);
+    await worker.scheduled({ cron: "17 * * * *", scheduledTime: Date.now(), noRetry: () => undefined }, env);
     expect(await count("app_attest_challenges")).toBe(0);
   });
 });

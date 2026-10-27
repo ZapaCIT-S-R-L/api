@@ -504,7 +504,7 @@ paths:
         signatures 64 bytes), unique key ids and the counts, and stores only public keys and signatures. Apps
         verify the signatures with libsignal when they use a bundle; libsignal refuses a bad one.
 
-        A device that makes no request for 90 days is removed (daily), with its keys, and its sessions are signed
+        A device that makes no request for 90 days is removed (hourly purge), with its keys, and its sessions are signed
         out.
       parameters: [{ $ref: "#/components/parameters/attestation" }]
       requestBody:
