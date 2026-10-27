@@ -79,7 +79,7 @@ function unique(ids: number[], what: string): void {
   if (new Set(ids).size !== ids.length) throw new InvalidKeys(`${what} ids repeat`);
 }
 
-interface DeviceKeys {
+export interface DeviceKeys {
   registrationId: number;
   identityKey: string;
   signedPreKey: SignedKey;
@@ -89,7 +89,7 @@ interface DeviceKeys {
   pushToken: string | null;
 }
 
-function parseDeviceKeys(body: Record<string, unknown>): DeviceKeys {
+export function parseDeviceKeys(body: Record<string, unknown>): DeviceKeys {
   onlyFields(
     body,
     ["registrationId", "identityKey", "signedPreKey", "pqLastResortPreKey", "preKeys", "pqPreKeys", "pushToken"],
@@ -160,16 +160,8 @@ export async function handleRegisterDevice(request: Request, env: Env): Promise<
     return attestationFailed();
   }
 
-  // The same session registered already: a retry with the same keys gets the same id.
-  if (session.deviceId !== null) {
-    const existing = await env.DB.prepare("SELECT signed_prekey FROM devices WHERE account_id = ? AND device_id = ?")
-      .bind(session.parentId, session.deviceId)
-      .first<{ signed_prekey: string }>();
-    if (existing?.signed_prekey === keys.signedPreKey.publicKey) return json({ deviceId: session.deviceId }, 201);
-    if (existing) {
-      return error(409, "device_already_registered", "This session already registered a device with other keys.");
-    }
-  }
+  const already = await answerIfBound(env, session, keys);
+  if (already) return already;
 
   const now = new Date().toISOString();
   await env.DB.prepare(
@@ -184,40 +176,64 @@ export async function handleRegisterDevice(request: Request, env: Env): Promise<
     return error(409, "identity_mismatch", "This isn't the account's identity key.");
   }
 
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const taken = await env.DB.prepare("SELECT device_id FROM devices WHERE account_id = ?")
-      .bind(session.parentId)
-      .all<{ device_id: number }>();
-    const used = new Set(taken.results.map((r) => r.device_id));
-    let deviceId = 0;
-    for (let id = 1; id <= MAX_DEVICES; id++) {
-      if (!used.has(id)) {
-        deviceId = id;
-        break;
-      }
-    }
-    if (deviceId === 0) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const deviceId = await freeDeviceId(env, session.parentId);
+    if (deviceId === null) {
       return error(409, "too_many_devices", `This account has ${MAX_DEVICES} devices. Remove one first.`);
     }
     try {
-      await env.DB.batch(insertDevice(env, session, deviceId, keys, now));
-      return json({ deviceId }, 201);
+      if (await storeDevice(env, session, deviceId, keys, now)) return json({ deviceId }, 201);
     } catch (e) {
-      // Another registration took this id at the same moment: pick again once.
-      if (attempt === 0 && /UNIQUE|PRIMARY KEY/i.test(String(e))) continue;
+      // Another session of this account took this id at the same moment: pick again.
+      if (/UNIQUE|PRIMARY KEY/i.test(String(e))) continue;
       throw e;
     }
+    // Not stored: the session was signed out, or a parallel request on it registered first.
+    const fresh = await authenticate(request, env);
+    if (!fresh) return unauthorized();
+    const answer = await answerIfBound(env, fresh, keys);
+    if (answer) return answer;
   }
-  throw new Error("device id allocation retry exhausted");
+  throw new Error("device registration retry exhausted");
 }
 
-function insertDevice(env: Env, session: Session, deviceId: number, keys: DeviceKeys, now: string) {
+// A session that already has a device: the same keys get the same id (the first answer was lost), others 409.
+async function answerIfBound(env: Env, session: Session, keys: DeviceKeys): Promise<Response | null> {
+  if (session.deviceId === null) return null;
+  const existing = await env.DB.prepare("SELECT signed_prekey FROM devices WHERE account_id = ? AND device_id = ?")
+    .bind(session.parentId, session.deviceId)
+    .first<string>("signed_prekey");
+  if (existing === keys.signedPreKey.publicKey) return json({ deviceId: session.deviceId }, 201);
+  return error(409, "device_already_registered", "This session already registered a device with other keys.");
+}
+
+async function freeDeviceId(env: Env, accountId: string): Promise<number | null> {
+  const taken = await env.DB.prepare("SELECT device_id FROM devices WHERE account_id = ?")
+    .bind(accountId)
+    .all<{ device_id: number }>();
+  const used = new Set(taken.results.map((r) => r.device_id));
+  for (let id = 1; id <= MAX_DEVICES; id++) if (!used.has(id)) return id;
+  return null;
+}
+
+// Stores the device, its prekeys and the session binding in one D1 batch (a transaction). Every statement requires
+// the session to still exist, be unexpired and be unbound, so a logout or a parallel registration on the same
+// session in the meantime stores nothing. Returns whether the device was stored; throws on a device id conflict.
+export async function storeDevice(
+  env: Env,
+  session: Session,
+  deviceId: number,
+  keys: DeviceKeys,
+  now: string,
+): Promise<boolean> {
   const account = session.parentId;
-  return [
+  const sessionFree = "EXISTS (SELECT 1 FROM sessions WHERE token_hash = ? AND device_id IS NULL AND expires_at > ?)";
+  const free = [session.tokenHash, now] as const;
+  const [device] = await env.DB.batch([
     env.DB.prepare(
       `INSERT INTO devices (account_id, device_id, registration_id, signed_prekey_id, signed_prekey,
          signed_prekey_signature, pq_last_resort_id, pq_last_resort_key, pq_last_resort_signature, push_token,
-         created_at, last_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         created_at, last_seen_at) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ? WHERE ${sessionFree}`,
     ).bind(
       account,
       deviceId,
@@ -231,19 +247,24 @@ function insertDevice(env: Env, session: Session, deviceId: number, keys: Device
       keys.pushToken,
       now,
       now,
+      ...free,
     ),
     ...keys.preKeys.map((k) =>
       env.DB.prepare(
-        "INSERT INTO one_time_prekeys (account_id, device_id, key_id, public_key) VALUES (?, ?, ?, ?)",
-      ).bind(account, deviceId, k.keyId, k.publicKey),
+        `INSERT INTO one_time_prekeys (account_id, device_id, key_id, public_key) SELECT ?, ?, ?, ? WHERE ${sessionFree}`,
+      ).bind(account, deviceId, k.keyId, k.publicKey, ...free),
     ),
     ...keys.pqPreKeys.map((k) =>
       env.DB.prepare(
-        "INSERT INTO pq_one_time_prekeys (account_id, device_id, key_id, public_key, signature) VALUES (?, ?, ?, ?, ?)",
-      ).bind(account, deviceId, k.keyId, k.publicKey, k.signature),
+        `INSERT INTO pq_one_time_prekeys (account_id, device_id, key_id, public_key, signature)
+           SELECT ?, ?, ?, ?, ? WHERE ${sessionFree}`,
+      ).bind(account, deviceId, k.keyId, k.publicKey, k.signature, ...free),
     ),
-    env.DB.prepare("UPDATE sessions SET device_id = ? WHERE token_hash = ?").bind(deviceId, session.tokenHash),
-  ];
+    env.DB.prepare(
+      "UPDATE sessions SET device_id = ? WHERE token_hash = ? AND device_id IS NULL AND expires_at > ?",
+    ).bind(deviceId, ...free),
+  ]);
+  return device?.meta.changes === 1;
 }
 
 export async function handleRemoveDevice(request: Request, env: Env, rawId: string): Promise<Response> {
