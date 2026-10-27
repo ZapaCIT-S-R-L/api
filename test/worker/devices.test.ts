@@ -364,7 +364,7 @@ describe("GET /v1/keys/prekeys", () => {
 });
 
 describe("DELETE /v1/devices/{id}", () => {
-  it("removes the device and its keys, and unbinds its sessions", async () => {
+  it("removes the device and its keys", async () => {
     const a = await signIn();
     await register(a.session.token, deviceKeys());
     const res = await call("/v1/devices/1", { method: "DELETE", headers: bearer(a.session.token) });
@@ -372,11 +372,30 @@ describe("DELETE /v1/devices/{id}", () => {
     expect(await count("devices")).toBe(0);
     expect(await count("one_time_prekeys")).toBe(0);
     expect(await count("pq_one_time_prekeys")).toBe(0);
-    await expectError(
-      await call("/v1/keys/prekeys", { headers: bearer(a.session.token) }),
-      409,
-      "device_not_registered",
-    );
+  });
+
+  // Regression (security review 2026-10-27, H2): removing a lost phone must sign it out, not just unbind it.
+  it("signs out the removed device's sessions; the other phone stays signed in", async () => {
+    const identityKey = ec();
+    const lost = await signIn();
+    await register(lost.session.token, deviceKeys(identityKey));
+    const other = await signIn();
+    await register(other.session.token, deviceKeys(identityKey));
+    expect((await call("/v1/devices/1", { method: "DELETE", headers: bearer(other.session.token) })).status).toBe(204);
+    for (const path of ["/v1/me", "/v1/keys/prekeys"]) {
+      expect((await call(path, { headers: bearer(lost.session.token) })).status).toBe(401);
+    }
+    const reRegister = await register(lost.session.token, deviceKeys(identityKey));
+    expect(reRegister.status).toBe(401);
+    expect((await call("/v1/me", { headers: bearer(other.session.token) })).status).toBe(200);
+    expect(await count("sessions")).toBe(1);
+  });
+
+  it("removing the caller's own device signs the caller out", async () => {
+    const a = await signIn();
+    await register(a.session.token, deviceKeys());
+    await call("/v1/devices/1", { method: "DELETE", headers: bearer(a.session.token) });
+    expect((await call("/v1/me", { headers: bearer(a.session.token) })).status).toBe(401);
   });
 
   it("the identity stays when the last device goes", async () => {
@@ -436,7 +455,8 @@ describe("activity and expiry", () => {
     const ids = await env.DB.prepare("SELECT device_id FROM devices").all<{ device_id: number }>();
     expect(ids.results.map((r) => r.device_id)).toEqual([2]);
     expect(await count("one_time_prekeys")).toBe(3);
-    const bound = await env.DB.prepare("SELECT count(*) AS n FROM sessions WHERE device_id = 1").first<number>("n");
-    expect(bound).toBe(0);
+    // H2: the expired device's session is signed out, not just unbound.
+    expect((await call("/v1/me", { headers: bearer(a.session.token) })).status).toBe(401);
+    expect((await call("/v1/me", { headers: bearer(b.session.token) })).status).toBe(200);
   });
 });
