@@ -2,6 +2,7 @@
 // that serves its public key at ACCOUNT_JWKS_URL (top-level vars of wrangler.jsonc). No real key is ever used.
 import { applyEvent, type MembershipEvent } from "../../src/membership";
 import { noRooms, type Rooms } from "../../src/rooms";
+import { createExecutionContext } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { exportJWK, generateKeyPair, SignJWT, type JWK, type JWTPayload } from "jose";
 import { vi } from "vitest";
@@ -65,7 +66,7 @@ export async function tokenFor(issuer: Issuer, accountId: string, overrides: Rec
 
 export function call(path: string, init: RequestInit = {}): Promise<Response> {
   const request = new Request(`https://chat.zapakid.test${path}`, init) as Parameters<typeof worker.fetch>[0];
-  return worker.fetch(request, env);
+  return worker.fetch(request, env, createExecutionContext());
 }
 
 export function as(token: string, path: string, init: RequestInit = {}): Promise<Response> {
