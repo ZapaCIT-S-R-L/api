@@ -92,6 +92,26 @@ describe("daily purge", () => {
     expect(rows.results.map((r) => r.challenge_hash)).toEqual([hex("2")]);
   });
 
+  it("deletes expired family invitations (used or not), keeps live ones", async () => {
+    const now = new Date().toISOString();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO parents (id, age_category, age_source, age_checked_at, created_at, updated_at)
+         VALUES ('p1', 'adult', 'apple_declared_age_range', ?, ?, ?)`,
+      ).bind(now, now, now),
+      env.DB.prepare("INSERT INTO families (id, name, created_at) VALUES ('f1', NULL, ?)").bind(now),
+      env.DB.prepare(
+        "INSERT INTO family_invitations (code_hash, family_id, created_by, created_at, expires_at) VALUES (?, 'f1', 'p1', ?, ?)",
+      ).bind(hex("3"), now, past()),
+      env.DB.prepare(
+        "INSERT INTO family_invitations (code_hash, family_id, created_by, created_at, expires_at) VALUES (?, 'f1', 'p1', ?, ?)",
+      ).bind(hex("4"), now, future()),
+    ]);
+    await runCron();
+    const rows = await env.DB.prepare("SELECT code_hash FROM family_invitations").all<{ code_hash: string }>();
+    expect(rows.results.map((r) => r.code_hash)).toEqual([hex("4")]);
+  });
+
   it("does nothing on an empty database", async () => {
     await env.DB.prepare("DELETE FROM sign_in_nonces").run();
     await runCron();

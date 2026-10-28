@@ -5,6 +5,7 @@ import { BadRequest } from "./body";
 import { handleChatToken, handleJwks } from "./chat-token";
 import { handleHealth } from "./health";
 import type { Env } from "./env";
+import { routeFamilies } from "./families";
 import { error } from "./http";
 import { purgeExpired } from "./purge";
 import { limitAuth } from "./rate-limit";
@@ -38,7 +39,8 @@ export default {
     const url = new URL(request.url);
     try {
       const route = Object.hasOwn(ROUTES, url.pathname) ? ROUTES[url.pathname] : undefined;
-      if (!route) return error(404, "not_found", "No such endpoint.");
+      if (!route)
+        return (await routeFamilies(request, env, url.pathname)) ?? error(404, "not_found", "No such endpoint.");
       if (request.method !== route.method) {
         return error(405, "method_not_allowed", `Use ${route.method}.`, { allow: route.method });
       }
