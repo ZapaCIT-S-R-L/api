@@ -38,7 +38,9 @@ export async function handleCreatePairing(
     .bind(kidId, familyId, session.parentId)
     .first<{ ok: number }>();
   if (!member) return error(404, "not_found", "No such kid.");
-  if (request.body) onlyFields(await readJson(request), [], "the body");
+  // No body is fine, and so is an empty one: the iOS app sends Content-Length: 0 without a Content-Type.
+  if (request.body && request.headers.get("content-length") !== "0")
+    onlyFields(await readJson(request), [], "the body");
 
   const now = new Date();
   const nowIso = now.toISOString();
