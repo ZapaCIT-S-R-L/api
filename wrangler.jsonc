@@ -13,7 +13,7 @@
   // Local development and tests. The Google client id is a fake one for test tokens.
   "vars": {
     "VERSION": "dev",
-    "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/api",
+    "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/zapakid-api",
     // Local test ids only: the bundle id and a fake Services ID for the web flow tests.
     "APPLE_BUNDLE_IDS": "ro.zapakid.app",
     "APPLE_SERVICES_IDS": "ro.zapakid.signin.local",
@@ -26,6 +26,10 @@
     "PLAY_CERT_SHA256": "",
     "APP_ATTEST_APP_ID": "9572LYGZ7S.ro.zapakid.app",
     "APP_ATTEST_ENVIRONMENTS": "development,production",
+    // Chat tokens for the chat and calls services (src/chat-token.ts). The signing key is a secret.
+    "CHAT_TOKEN_ISSUER": "http://localhost:8787",
+    "CHAT_TOKEN_AUDIENCES": "chat.localhost,calls.localhost",
+    "CHAT_TOKEN_TTL_SECONDS": "600",
   },
   // Auth rate limit (nonce + sign-in) per client address per minute and Cloudflare location. High locally so the
   // e2e suite fits; each environment has its own namespace_id (separate counters).
@@ -52,7 +56,7 @@
       // (server) client, which Android's Credential Manager uses (setServerClientId), and the iOS client.
       "vars": {
         "VERSION": "dev",
-        "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/api",
+        "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/zapakid-api",
         // Native sign-in: the iOS bundle id. Web flow (Android) callback: the Services ID (return URL
         // https://api-staging.zapakid.ro/v1/auth/apple/callback registered with Apple).
         "APPLE_BUNDLE_IDS": "ro.zapakid.app",
@@ -67,6 +71,10 @@
         // App Attest: Xcode (development) and TestFlight/App Store (production) keys.
         "APP_ATTEST_APP_ID": "9572LYGZ7S.ro.zapakid.app",
         "APP_ATTEST_ENVIRONMENTS": "development,production",
+        // Chat tokens: signed with the CHAT_TOKEN_SIGNING_KEY secret (scripts/set-chat-token-key.sh staging).
+        "CHAT_TOKEN_ISSUER": "https://api-staging.zapakid.ro",
+        "CHAT_TOKEN_AUDIENCES": "chat-staging.zapakid.ro,calls-staging.zapakid.ro",
+        "CHAT_TOKEN_TTL_SECONDS": "600",
       },
       // Hourly purge of expired rows (src/purge.ts), at :17.
       "triggers": { "crons": ["17 * * * *"] },
@@ -91,7 +99,7 @@
       "observability": { "enabled": true },
       "vars": {
         "VERSION": "dev",
-        "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/api",
+        "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/zapakid-api",
         // APPLE_SERVICES_IDS: set "ro.zapakid.signin" at cutover, after api.zapakid.ro and its callback URL are
         // registered with Apple. Empty = the Android web flow is off.
         "APPLE_BUNDLE_IDS": "ro.zapakid.app",
@@ -107,6 +115,10 @@
         // App Attest: App Store builds only.
         "APP_ATTEST_APP_ID": "9572LYGZ7S.ro.zapakid.app",
         "APP_ATTEST_ENVIRONMENTS": "production",
+        // Chat tokens: signed with the CHAT_TOKEN_SIGNING_KEY secret (scripts/set-chat-token-key.sh production).
+        "CHAT_TOKEN_ISSUER": "https://api.zapakid.ro",
+        "CHAT_TOKEN_AUDIENCES": "chat.zapakid.ro,calls.zapakid.ro",
+        "CHAT_TOKEN_TTL_SECONDS": "600",
       },
       "triggers": { "crons": ["17 * * * *"] },
       "ratelimits": [{ "name": "AUTH_LIMITER", "namespace_id": "3001", "simple": { "limit": 20, "period": 60 } }],

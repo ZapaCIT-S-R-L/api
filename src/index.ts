@@ -2,6 +2,7 @@
 import { handleAppleAttestation, handleChallenge } from "./app-attest";
 import { handleAppleWebCallback, handleAppleWebExchange, handleAppleWebStart } from "./apple-web";
 import { BadRequest } from "./body";
+import { handleChatToken, handleJwks } from "./chat-token";
 import { handleCountPreKeys, handleGetIdentity, handleRegisterDevice, handleRemoveDevice } from "./devices";
 import { handleHealth } from "./health";
 import { handleChangeIdentity } from "./identity";
@@ -34,6 +35,8 @@ const ROUTES: Record<string, { method: string; handler: Handler; limited?: true 
   "/v1/devices": { method: "POST", handler: handleRegisterDevice, limited: true },
   "/v1/keys/prekeys": { method: "GET", handler: handleCountPreKeys },
   "/v1/keys/identity": { method: "PUT", handler: handleChangeIdentity, limited: true },
+  "/v1/chat/token": { method: "POST", handler: handleChatToken },
+  "/.well-known/jwks.json": { method: "GET", handler: handleJwks },
 };
 
 // Paths with one parameter: the pattern's group is passed to the handler.
@@ -82,3 +85,5 @@ export default {
     await purgeExpired(env);
   },
 } satisfies ExportedHandler<Env>;
+
+export { BadRequest };
