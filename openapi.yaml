@@ -641,11 +641,19 @@ paths:
                   identityKey: { $ref: "#/components/schemas/PublicKey" }
                   changes:
                     type: array
+                    description: |
+                      Every identity change (`PUT /v1/keys/identity`), oldest first. Check `endorsement` with
+                      libsignal `previousIdentityKey.verifyAlternateIdentity(identityKey, endorsement)`; never
+                      trust a change silently.
                     items:
                       type: object
-                      required: [identityKey, changedAt]
+                      required: [identityKey, previousIdentityKey, endorsement, changedAt]
                       properties:
                         identityKey: { $ref: "#/components/schemas/PublicKey" }
+                        previousIdentityKey: { $ref: "#/components/schemas/PublicKey" }
+                        endorsement:
+                          description: The old key's signature over the new one, or null. Not checked by the server.
+                          oneOf: [{ $ref: "#/components/schemas/Base64" }, { type: "null" }]
                         changedAt: { type: string, format: date-time }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404":
@@ -653,6 +661,70 @@ paths:
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/keys/identity:
+    put:
+      tags: [Devices and keys]
+      operationId: changeIdentityKey
+      summary: Replace the account's identity key (lost keys, reset), and register this phone with it.
+      description: |
+        Never silent. The body is this phone's new `DeviceKeys` (new identity key, prekeys signed by it), plus an
+        optional `endorsement`: the old identity key's signature over the new one, made with libsignal
+        `IdentityKeyPair.signAlternateIdentity` (iOS/Android) when the phone still has the old key.
+
+        The server can't check signatures (XEdDSA; see README "Security notes"): it stores the endorsement in the
+        account's key history and hands it to peers, who check it with libsignal `IdentityKey.verifyAlternateIdentity`.
+        A valid endorsement → peers show a quiet "keys changed" notice; none or invalid → the full key-change
+        warning and a new safety number to compare. (Approval by another parent of the family comes with families.)
+
+        Server-side gate: a session, app attestation (same policies as sign-in), and a fresh sign-in: the session
+        must be under 10 minutes old (`403 reauthentication_required`: sign in again first), so a stolen old session
+        can't replace the key.
+
+        Effect, all at once: the change is added to the key history (peers read it from
+        `GET /v1/accounts/{accountId}/identity` now, and get an `identity_changed` event on `/v1/stream` once
+        messaging exists), every
+        device of the account and its prekeys is removed, every other session of the parent is signed out, and this
+        session is bound to this phone as the account's only device.
+      parameters: [{ $ref: "#/components/parameters/attestation" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/IdentityChange" }
+      responses:
+        "200":
+          description: Changed. The device id of this phone (the account's only device now).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deviceId]
+                properties:
+                  deviceId: { $ref: "#/components/schemas/DeviceId" }
+        "400":
+          description: "`invalid_keys` or `invalid_request`, as for `POST /v1/devices`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: |
+            `reauthentication_required`: the session is over 10 minutes old; sign in again, then retry.
+            `attestation_failed`: as for sign-in.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "409":
+          description: |
+            `no_identity`: the account has no identity yet (use `POST /v1/devices`). `identity_unchanged`: this is
+            already the account's identity key.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/ProviderUnavailable" }
 
   /v1/families:
     post:
@@ -1022,30 +1094,6 @@ paths:
                 pqPreKeys: { type: array, maxItems: 100, items: { $ref: "#/components/schemas/SignedPreKey" } }
       responses:
         "204": { description: "Stored." }
-
-  /v1/keys/identity:
-    put:
-      tags: ["Draft: Devices and keys"]
-      operationId: changeIdentityKey
-      x-status: draft
-      summary: Replace the account's identity key (new phone without keychain restore, or reset).
-      description: |
-        Never silent: the server stores the change in the account's key history, sends `identity_changed` to every
-        peer, and peers show a key-change warning and new safety number before the next message. All devices of the
-        account must then upload new signed prekeys.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [identityKey, signedPreKey, pqLastResortPreKey]
-              properties:
-                identityKey: { $ref: "#/components/schemas/PublicKey" }
-                signedPreKey: { $ref: "#/components/schemas/SignedPreKey" }
-                pqLastResortPreKey: { $ref: "#/components/schemas/SignedPreKey" }
-      responses:
-        "204": { description: "Changed; peers are notified." }
 
   /v1/keys/{accountId}/{deviceId}:
     get:
@@ -1525,6 +1573,22 @@ components:
           type: string
           maxLength: 4096
           description: Optional. APNs or FCM token (no message content in pushes); stored, not used yet.
+    IdentityChange:
+      type: object
+      description: "`DeviceKeys` for this phone with the new identity key, plus the optional endorsement."
+      required: [registrationId, identityKey, signedPreKey, pqLastResortPreKey, preKeys, pqPreKeys]
+      additionalProperties: false
+      properties:
+        registrationId: { type: integer, minimum: 1, maximum: 16383 }
+        identityKey: { $ref: "#/components/schemas/PublicKey" }
+        endorsement:
+          allOf: [{ $ref: "#/components/schemas/Base64" }]
+          description: Optional. 64 bytes, the old identity key's signature over the new identity key.
+        signedPreKey: { $ref: "#/components/schemas/SignedPreKey" }
+        pqLastResortPreKey: { $ref: "#/components/schemas/SignedPreKey" }
+        preKeys: { type: array, maxItems: 100, items: { $ref: "#/components/schemas/PreKey" } }
+        pqPreKeys: { type: array, maxItems: 100, items: { $ref: "#/components/schemas/SignedPreKey" } }
+        pushToken: { type: string, maxLength: 4096 }
     PreKeyBundle:
       type: object
       required: [deviceId, registrationId, signedPreKey, pqPreKey]
