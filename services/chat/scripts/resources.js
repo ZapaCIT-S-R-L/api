@@ -2,7 +2,9 @@
 // wrangler.jsonc in place of that environment's placeholder (the real id is never committed):
 //   D1 database zapakid-chat-<env> (EU jurisdiction)
 //   R2 bucket zapakid-chat-attachments-<env> (EU jurisdiction)
-//   Queues zapakid-membership-<env> and zapakid-membership-<env>-dlq (the account service produces into the first)
+//   Queues zapakid-membership-<env> and zapakid-membership-<env>-dlq (the account service produces into the first),
+//   zapakid-conversation-events-<env> and its -dlq (this service produces, the calls service consumes; the calls
+//   deploy creates them too, so either service can go first)
 // Runs in the deploy workflows only, before the D1 migrations and the deploy, with the environment's token.
 // CLI: node scripts/resources.js staging|production
 import { execFileSync } from "node:child_process";
@@ -19,7 +21,12 @@ export function names(env) {
   return {
     database: `zapakid-chat-${env}`,
     bucket: `zapakid-chat-attachments-${env}`,
-    queues: [`zapakid-membership-${env}`, `zapakid-membership-${env}-dlq`],
+    queues: [
+      `zapakid-membership-${env}`,
+      `zapakid-membership-${env}-dlq`,
+      `zapakid-conversation-events-${env}`,
+      `zapakid-conversation-events-${env}-dlq`,
+    ],
   };
 }
 

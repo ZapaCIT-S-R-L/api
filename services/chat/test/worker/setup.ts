@@ -17,6 +17,7 @@ const TABLES = [
   "devices",
   "session_epochs",
   "processed_events",
+  "conversation_outbox",
 ];
 
 beforeEach(async () => {

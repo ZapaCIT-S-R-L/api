@@ -7,16 +7,25 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { REVALIDATE_MS } from "../../src/call-room";
 import { resetJwksCache } from "../../src/jwks";
 import { chatDownForAccount, errorCode, phone, revokeSessions } from "./calls-helpers";
-import { fakeRealtime, makeIssuer, stubFetch, uniqueAccount, type CallView, type TestIssuer } from "./helpers";
+import {
+  fakeRealtime,
+  makeIssuer,
+  stubFetch,
+  uniqueAccount,
+  type CallView,
+  type FakeRealtime,
+  type TestIssuer,
+} from "./helpers";
 
 let issuer: TestIssuer;
+let realtime: FakeRealtime;
 let n = 0;
 const conversation = () => `conv-r-${Date.now().toString(36)}-${++n}`;
 
 beforeEach(async () => {
   resetJwksCache();
   issuer = await makeIssuer();
-  fakeRealtime(stubFetch([issuer]));
+  realtime = fakeRealtime(stubFetch([issuer]));
 });
 
 afterEach(() => {
@@ -136,6 +145,43 @@ describe("revoked chat tokens", () => {
     expect(view.participants.map((p) => p.accountId)).toEqual([mum.accountId]);
     expect(view.state).toBe("active");
     mumEvents.close();
+  });
+
+  it("a revoked phone's SFU session is closed (its tracks, by force), the others' are kept", async () => {
+    const conv = conversation();
+    const dad = await phone(issuer, uniqueAccount(), 1, [conv], "parent", { sep: 1 });
+    const mum = await phone(issuer, uniqueAccount(), 1, [conv], "parent", { sep: 1 });
+    const { call } = await dad.create(conv);
+    expect((await mum.join(call.callId)).status).toBe(200);
+    const sdp = { type: "offer", sdp: "v=0 fake offer" };
+    const sessions: string[] = [];
+    for (const [p, track] of [
+      [dad, "audio-dad"],
+      [mum, "audio-mum"],
+    ] as const) {
+      const res = await p.request("POST", `/v1/calls/${call.callId}/sessions`, { sessionDescription: sdp });
+      expect(res.status).toBe(201);
+      const { sessionId } = await res.json<{ sessionId: string }>();
+      sessions.push(sessionId);
+      const pub = await p.request("POST", `/v1/calls/${call.callId}/sessions/${sessionId}/tracks/new`, {
+        sessionDescription: sdp,
+        tracks: [{ location: "local", trackName: track }],
+      });
+      expect(pub.status).toBe(200);
+    }
+    const [dadSession, mumSession] = sessions as [string, string];
+
+    await revokeSessions(dad.accountId, 2);
+    await advance(call.callId, REVALIDATE_MS + 1);
+    const closeCalls = realtime.requests.filter((r) => r.method === "PUT" && r.path.endsWith("/tracks/close"));
+    expect(closeCalls).toEqual([
+      expect.objectContaining({
+        path: `/apps/test-app-id/sessions/${dadSession}/tracks/close`,
+        body: { tracks: [{ mid: "0" }], force: true },
+      }),
+    ]);
+    expect(realtime.tracks.get(dadSession)).toEqual([]);
+    expect(realtime.tracks.get(mumSession)).toHaveLength(1);
   });
 
   it("when every participant is revoked the call ends", async () => {

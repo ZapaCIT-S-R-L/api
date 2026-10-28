@@ -6,7 +6,8 @@ only routing metadata (who is in which conversation, which device sent to which 
 
 - Its own Cloudflare Worker: `chat-staging.zapakid.ro` (staging), `chat.zapakid.ro` (production). D1, R2 and
   Durable Objects in the EU jurisdiction.
-- The contract: [`openapi.yaml`](openapi.yaml), including the `MembershipEvent` queue messages.
+- The contract: [`openapi.yaml`](openapi.yaml), including the `MembershipEvent` and `ConversationEvent` queue
+  messages.
 - **Auth:** no login of its own. Requests carry a short-lived ES256 chat token from the account service (the repo
   root), checked against its JWKS (`ACCOUNT_JWKS_URL`, cached; served from cache through an outage of up to a day).
 - **Family graph:** membership events from the account service on the Cloudflare Queue
@@ -22,7 +23,10 @@ only routing metadata (who is in which conversation, which device sent to which 
 - **Calls:** the calls service asks `ChatMembership.member(conversationId, accountId)` (`src/rpc.ts`) whether the
   caller is a current member of an open conversation, and which members and devices to ring, and
   `ChatMembership.revoked(accountId, sep)` whether a chat token's session epoch was revoked by a logout-all.
-  Workers RPC through its `CHAT` service binding only; there is no HTTP route for it.
+  Workers RPC through its `CHAT` service binding only; there is no HTTP route for it. The other way round, when
+  chat removes members from a conversation or closes it, it tells the calls service with a `ConversationEvent` on
+  the Cloudflare Queue `zapakid-conversation-events-<env>` (`src/conversation-events.ts`, transactional outbox in
+  D1, flushed right after the change and hourly), so a live call drops those members' devices at once.
 
 - **Sign out everywhere:** `account.sessions_revoked` (from `POST /v1/auth/logout-all` on the account service)
   stores the account's new session epoch (`session_epochs`). Chat tokens with a lower `sep` claim are refused and
@@ -55,10 +59,10 @@ rollback on failure; then the same for production once @stefan-zpc approves the 
 The deploys use the `staging` and `production` GitHub environments' `CLOUDFLARE_API_TOKEN` and
 `CLOUDFLARE_ACCOUNT_ID`, shared with the account API. On top of the permissions in the root README, the token needs:
 
-| Scope   | Permission               | Why                                               |
-| ------- | ------------------------ | ------------------------------------------------- |
-| Account | Queues: Edit             | create the membership queues, attach the consumer |
-| Account | Workers R2 Storage: Edit | create the EU attachments bucket, bind it         |
+| Scope   | Permission               | Why                                                 |
+| ------- | ------------------------ | --------------------------------------------------- |
+| Account | Queues: Edit             | create the queues, attach the consumer and producer |
+| Account | Workers R2 Storage: Edit | create the EU attachments bucket, bind it           |
 
 Durable Objects need no extra permission. Zone `zapakid.ro`: the existing DNS / Workers Routes permissions cover
 the `chat-staging` and `chat` custom domains. No secrets: the service has none.
