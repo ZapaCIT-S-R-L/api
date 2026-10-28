@@ -76,8 +76,8 @@
         "CHAT_TOKEN_AUDIENCES": "chat-staging.zapakid.ro,calls-staging.zapakid.ro",
         "CHAT_TOKEN_TTL_SECONDS": "600",
       },
-      // Daily purge of expired sessions and sign-in nonces (src/purge.ts), 03:17 UTC.
-      "triggers": { "crons": ["17 3 * * *"] },
+      // Hourly purge of expired rows (src/purge.ts), at :17.
+      "triggers": { "crons": ["17 * * * *"] },
       "ratelimits": [{ "name": "AUTH_LIMITER", "namespace_id": "2001", "simple": { "limit": 20, "period": 60 } }],
       // EU jurisdiction. scripts/d1-database.js creates it if needed and puts its id in place of this placeholder
       // at deploy time (deploy.yml); the real id is never committed.
@@ -120,7 +120,7 @@
         "CHAT_TOKEN_AUDIENCES": "chat.zapakid.ro,calls.zapakid.ro",
         "CHAT_TOKEN_TTL_SECONDS": "600",
       },
-      "triggers": { "crons": ["17 3 * * *"] },
+      "triggers": { "crons": ["17 * * * *"] },
       "ratelimits": [{ "name": "AUTH_LIMITER", "namespace_id": "3001", "simple": { "limit": 20, "period": 60 } }],
       "d1_databases": [
         {
