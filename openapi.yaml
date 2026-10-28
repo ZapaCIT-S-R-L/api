@@ -436,6 +436,32 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Parent" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+    patch:
+      tags: [Account]
+      operationId: updateMe
+      summary: Change the signed-in parent's display name.
+      description: |
+        The name other family members see (member lists, chats). Trimmed; 1 to 40 characters, no control characters.
+        Kid sessions can't use this (401).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [displayName]
+              properties:
+                displayName: { type: string, minLength: 1, maxLength: 40 }
+      responses:
+        "200":
+          description: The updated profile.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Parent" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "415": { $ref: "#/components/responses/UnsupportedMediaType" }
 
   /v1/chat/token:
     post:
