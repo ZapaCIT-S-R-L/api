@@ -181,16 +181,13 @@ async function handleAccept(request: Request, env: Env): Promise<Response> {
     .bind(a, b)
     .first<{ id: string }>();
   if (existing) return error(409, "already_connected", "Your families are already connected.");
-  const count = await env.DB.prepare(
-    "SELECT count(*) AS n FROM family_connections WHERE family_a IN (?1, ?2) OR family_b IN (?1, ?2)",
-  )
-    .bind(a, b)
-    .first<{ n: number }>();
-  if ((count?.n ?? 0) >= MAX_CONNECTIONS) {
-    return error(409, "too_many_connections", `A family has at most ${MAX_CONNECTIONS} connections.`);
-  }
+  // The cap is per family: each of the two counts its own connections, not the pair's combined neighbourhoods.
+  const tooMany = () => error(409, "too_many_connections", `A family has at most ${MAX_CONNECTIONS} connections.`);
+  if (await atConnectionCap(env, a, b)) return tooMany();
 
-  // One transaction: use up the code (only if still open), then connect only for this request.
+  // One transaction: use up the code (only if still open and both families are still under the cap), then
+  // connect only for this request. The cap is re-checked inside the same statement, so concurrent accepts
+  // can't take a family past it.
   const id = crypto.randomUUID();
   const onlyIf = {
     sql: "EXISTS (SELECT 1 FROM connection_invitations WHERE code_hash = ? AND used_by = ? AND used_at = ?)",
@@ -201,8 +198,9 @@ async function handleAccept(request: Request, env: Env): Promise<Response> {
     [claim] = await env.DB.batch([
       env.DB.prepare(
         `UPDATE connection_invitations SET used_at = ?, used_by = ?
-         WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?`,
-      ).bind(nowIso, session.parentId, codeHash, nowIso),
+         WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?
+           AND ${CONNECTIONS_OF} < ${MAX_CONNECTIONS} AND ${CONNECTIONS_OF} < ${MAX_CONNECTIONS}`,
+      ).bind(nowIso, session.parentId, codeHash, nowIso, a, a, b, b),
       env.DB.prepare(
         `INSERT INTO family_connections (id, family_a, family_b, created_by, created_at)
          SELECT ?, ?, ?, ?, ? WHERE ${onlyIf.sql}`,
@@ -215,11 +213,24 @@ async function handleAccept(request: Request, env: Env): Promise<Response> {
     throw e;
   }
   if ((claim?.meta.changes ?? 0) !== 1) {
+    // Not claimed: either the code was used up meanwhile, or a family reached the cap meanwhile (code stays open).
+    if (await atConnectionCap(env, a, b)) return tooMany();
     return error(410, "invitation_invalid", "This connection code is unknown, expired or already used.");
   }
   await flushMembershipEvents(env);
   const connection = (await loadConnections(env, familyId)).find((c) => c.id === id);
   return json(connection, 201);
+}
+
+// How many connections one family has (bind the family id twice).
+const CONNECTIONS_OF = "(SELECT count(*) FROM family_connections WHERE family_a = ? OR family_b = ?)";
+
+// True when either family already has MAX_CONNECTIONS connections.
+async function atConnectionCap(env: Env, a: string, b: string): Promise<boolean> {
+  const row = await env.DB.prepare(`SELECT ${CONNECTIONS_OF} AS na, ${CONNECTIONS_OF} AS nb`)
+    .bind(a, a, b, b)
+    .first<{ na: number; nb: number }>();
+  return (row?.na ?? 0) >= MAX_CONNECTIONS || (row?.nb ?? 0) >= MAX_CONNECTIONS;
 }
 
 async function handleShare(
