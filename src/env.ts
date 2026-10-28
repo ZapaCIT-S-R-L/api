@@ -23,6 +23,13 @@ export interface Env {
   // App Attest: "<team id>.<bundle id>", and the key environments accepted ("development" = Xcode builds).
   APP_ATTEST_APP_ID: string;
   APP_ATTEST_ENVIRONMENTS: string;
+  // Chat tokens (src/chat-token.ts): the issuer (this API's origin), the accepted audiences (the chat and calls
+  // hosts, comma separated) and the lifetime in seconds (60 to 900).
+  CHAT_TOKEN_ISSUER: string;
+  CHAT_TOKEN_AUDIENCES: string;
+  CHAT_TOKEN_TTL_SECONDS: string;
+  // Secret (scripts/set-chat-token-key.sh): the private P-256 JWK that signs chat tokens.
+  CHAT_TOKEN_SIGNING_KEY?: string | undefined;
   // Secret (wrangler secret put): the Google service account JSON allowed to decode integrity tokens.
   PLAY_INTEGRITY_CREDENTIALS?: string;
   // Secret (staging): "provider:subject" test accounts allowed to sign in without attestation, comma separated.

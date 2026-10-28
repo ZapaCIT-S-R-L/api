@@ -1,0 +1,575 @@
+openapi: 3.1.0
+info:
+  title: ZapaKid Calls API
+  version: 0.1.0
+  summary: Voice calls for ZapaKid (1:1 and group), end-to-end encrypted on the phones.
+  description: |
+    The calls service sets up calls on Cloudflare Realtime (SFU + TURN) and relays sealed call keys between phones.
+    Every audio frame is encrypted on the phone (AES-GCM, SFrame-style) with a random per-call key that is rotated on
+    every join and leave and sealed per recipient device with libsignal. This service and Cloudflare only ever see
+    ciphertext; no call key reaches the server. Audio is never stored; the call log is metadata only.
+
+    **Auth.** No login of its own: send the chat token from the account API (`POST /v1/chat/token` on
+    api.zapakid.ro) as `Authorization: Bearer <chat token>`. It is verified against the account API's JWKS.
+    On `401`, fetch a new chat token and retry once. Who may start, see or join a call is not in the token: the
+    chat service is asked on every request whether the caller is a current member of the call's conversation.
+
+    **Transport.** HTTPS only, TLS 1.3 only, HSTS. No cookies and no CORS: the API is for the ZapaKid apps.
+
+    **Data location.** EU only (Cloudflare D1 with EU jurisdiction).
+
+    **Errors** are JSON `{"error": {"code": "...", "message": "..."}}`. Apps branch on `code`.
+  license:
+    name: AGPL-3.0-only
+    identifier: AGPL-3.0-only
+  contact:
+    name: ZapaCIT SRL
+    url: https://github.com/ZapaCIT-S-R-L/zapakid-api
+servers:
+  - url: https://calls-staging.zapakid.ro
+    description: Staging
+  - url: https://calls.zapakid.ro
+    description: Production
+
+tags:
+  - name: Health
+    description: Liveness, for monitoring and the post-deploy checks.
+  - name: Calls
+    description: |
+      **Flow.** The caller starts a call in a conversation (`POST /v1/calls`): they are its first participant and the
+      other members' phones ring (PushKit VoIP + CallKit on iOS, a high-priority FCM data message + a full-screen
+      incoming call on Android; the push carries only the call id). Each phone opens the events WebSocket
+      (`GET /v1/calls/{callId}/events`) right away. A member answers with `join` or `decline`. Nobody answering
+      within `ringTimeoutSeconds` (45 s) ends the call (`no_answer`). Calls last at most `maxDurationSeconds` (2 h)
+      and hold at most `maxParticipants` (8) devices. A participant whose WebSocket stays closed for 30 s is taken out
+      (`disconnected`). The last one to leave ends the call.
+
+      **Audio.** Each participant creates its own SFU session (`POST .../sessions`), publishes its microphone track
+      (`tracks/new` with `location: local`) and subscribes to the others' published tracks (`location: remote`,
+      their `sessionId` and `trackName` from the roster). The service proxies these to Cloudflare Realtime with the
+      app secret, which never reaches a phone, and only for the caller's own session.
+
+      **End-to-end encryption.** Every audio frame is encrypted on the phone (WebRTC FrameCryptor/FrameEncryptor,
+      AES-GCM, SFrame-style) with the current call key. Every join and leave bumps `epoch`; the `keyLeader` then makes
+      a new random key and sends it sealed with libsignal to every other participant device as a `keys` message on
+      the WebSocket. This service relays the sealed envelopes and never sees a key.
+  - name: Call log
+    description: Metadata only (who started it, when, how it ended). Never audio, never keys.
+  - name: Realtime proxy
+    description: |
+      Cloudflare Realtime's SFU API (https://developers.cloudflare.com/realtime/sfu/https-api/), limited to the
+      caller's own session in a call they joined. Bodies and answers are Realtime's, except: no `autoDiscover`, track
+      names are 1-64 of `A-Za-z0-9_-`, and remote tracks must be published by another participant of this call.
+
+security:
+  - chatToken: []
+
+paths:
+  /v1/calls:
+    post:
+      tags: [Calls]
+      operationId: startCall
+      summary: Start a call in a conversation and ring the other members.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [conversationId]
+              additionalProperties: false
+              properties:
+                conversationId: { $ref: "#/components/schemas/Id" }
+      responses:
+        "201":
+          description: Started. The caller is the first participant; open the events WebSocket now.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [call, iceServers, limits]
+                properties:
+                  call: { $ref: "#/components/schemas/Call" }
+                  iceServers: { $ref: "#/components/schemas/IceServers" }
+                  limits:
+                    type: object
+                    required: [maxParticipants, ringTimeoutSeconds, maxDurationSeconds]
+                    properties:
+                      maxParticipants: { type: integer, examples: [8] }
+                      ringTimeoutSeconds: { type: integer, examples: [45] }
+                      maxDurationSeconds: { type: integer, examples: [7200] }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ConversationNotAllowed" }
+        "409":
+          description: "`call_in_progress`: a call is already running in this conversation; join `callId` instead."
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error, callId]
+                properties:
+                  error: { $ref: "#/components/schemas/Error/properties/error" }
+                  callId: { $ref: "#/components/schemas/CallId" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "503": { $ref: "#/components/responses/KeysUnavailable" }
+    get:
+      tags: [Call log]
+      operationId: listCalls
+      summary: The conversation's last 50 calls, newest first.
+      parameters:
+        - { name: conversationId, in: query, required: true, schema: { $ref: "#/components/schemas/Id" } }
+      responses:
+        "200":
+          description: The call log.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [calls]
+                properties:
+                  calls:
+                    type: array
+                    items: { $ref: "#/components/schemas/CallLogEntry" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/ConversationNotAllowed" }
+        "503": { $ref: "#/components/responses/KeysUnavailable" }
+
+  /v1/calls/{callId}:
+    get:
+      tags: [Calls]
+      operationId: getCall
+      summary: The call's state and roster.
+      parameters: [{ $ref: "#/components/parameters/callId" }]
+      responses:
+        "200":
+          description: The call.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Call" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/calls/{callId}/join:
+    post:
+      tags: [Calls]
+      operationId: joinCall
+      summary: Answer or join the call from this device. Joining twice changes nothing.
+      parameters: [{ $ref: "#/components/parameters/callId" }]
+      responses:
+        "200":
+          description: Joined. The epoch went up; wait for the key leader's `key` message.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [call, iceServers]
+                properties:
+                  call: { $ref: "#/components/schemas/Call" }
+                  iceServers: { $ref: "#/components/schemas/IceServers" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`call_full`: the call has the maximum number of participants (8)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "410": { $ref: "#/components/responses/CallEnded" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/calls/{callId}/leave:
+    post:
+      tags: [Calls]
+      operationId: leaveCall
+      summary: Hang up on this device. The last one out ends the call.
+      parameters: [{ $ref: "#/components/parameters/callId" }]
+      responses:
+        "204": { description: Left (or was not in the call). }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/calls/{callId}/decline:
+    post:
+      tags: [Calls]
+      operationId: declineCall
+      summary: Decline the call; the others get a `declined` event.
+      parameters: [{ $ref: "#/components/parameters/callId" }]
+      responses:
+        "204": { description: Declined. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "410": { $ref: "#/components/responses/CallEnded" }
+
+  /v1/calls/{callId}/events:
+    get:
+      tags: [Calls]
+      operationId: callEvents
+      summary: The call's WebSocket (any member of the conversation).
+      description: |
+        Open with `Upgrade: websocket` and the chat token in `Authorization`. JSON text messages.
+
+        **Server → phone:**
+        - `{"type":"roster","call":Call}` on connect and after every change;
+        - `{"type":"joined","accountId","deviceId","epoch"}`, `{"type":"left","accountId","deviceId","epoch","reason"}`
+          (`left` or `disconnected`), `{"type":"declined","accountId"}`;
+        - `{"type":"key","epoch","fromAccount","fromDevice","blob"}`: a sealed call key for this device (queued
+          envelopes for the current epoch arrive right after connecting);
+        - `{"type":"keys_ack","epoch","delivered","queued"}`;
+        - `{"type":"ended","reason"}`, then the server closes the socket;
+        - `{"type":"error","code","message"}`: `invalid_message`, `not_participant`, `stale_epoch` (with `epoch`);
+        - `{"type":"pong"}`.
+
+        **Phone → server:**
+        - `{"type":"keys","epoch":N,"envelopes":[{"toAccount","toDevice","blob"}]}`: 1-8 envelopes, each the libsignal
+          ciphertext (base64, at most 4096 characters) of the new call key for one other participant device. Only
+          participants may send; `epoch` must be the current one.
+        - `{"type":"ping"}` → `{"type":"pong"}`. Ping every 30 s; reconnect within 30 s if the socket drops.
+      parameters: [{ $ref: "#/components/parameters/callId" }]
+      responses:
+        "101": { description: Switching protocols. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "426": { description: "`upgrade_required`: open it as a WebSocket." }
+
+  /v1/calls/{callId}/sessions:
+    post:
+      tags: [Realtime proxy]
+      operationId: newSession
+      summary: Create this participant's SFU session (Realtime `sessions/new`).
+      parameters: [{ $ref: "#/components/parameters/callId" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                sessionDescription: { $ref: "#/components/schemas/SessionDescription" }
+      responses:
+        "201":
+          description: The session; it shows in the roster.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sessionId]
+                properties:
+                  sessionId: { type: string }
+                  sessionDescription: { $ref: "#/components/schemas/SessionDescription" }
+        "400": { $ref: "#/components/responses/RealtimeRejected" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502": { $ref: "#/components/responses/RealtimeUnavailable" }
+
+  /v1/calls/{callId}/sessions/{sessionId}/tracks/new:
+    post:
+      tags: [Realtime proxy]
+      operationId: newTracks
+      summary: Publish local tracks or subscribe to remote ones (Realtime `tracks/new`).
+      parameters: [{ $ref: "#/components/parameters/callId" }, { $ref: "#/components/parameters/sessionId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tracks]
+              additionalProperties: false
+              properties:
+                sessionDescription: { $ref: "#/components/schemas/SessionDescription" }
+                tracks:
+                  type: array
+                  minItems: 1
+                  maxItems: 16
+                  description: All local or all remote.
+                  items: { $ref: "#/components/schemas/Track" }
+      responses:
+        "200": { $ref: "#/components/responses/RealtimeAnswer" }
+        "400": { $ref: "#/components/responses/RealtimeRejected" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502": { $ref: "#/components/responses/RealtimeUnavailable" }
+
+  /v1/calls/{callId}/sessions/{sessionId}/renegotiate:
+    put:
+      tags: [Realtime proxy]
+      operationId: renegotiate
+      summary: Answer an SFU renegotiation (Realtime `renegotiate`).
+      parameters: [{ $ref: "#/components/parameters/callId" }, { $ref: "#/components/parameters/sessionId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionDescription]
+              additionalProperties: false
+              properties:
+                sessionDescription: { $ref: "#/components/schemas/SessionDescription" }
+      responses:
+        "200": { $ref: "#/components/responses/RealtimeAnswer" }
+        "400": { $ref: "#/components/responses/RealtimeRejected" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502": { $ref: "#/components/responses/RealtimeUnavailable" }
+
+  /v1/calls/{callId}/sessions/{sessionId}/tracks/close:
+    put:
+      tags: [Realtime proxy]
+      operationId: closeTracks
+      summary: Close tracks by mid (Realtime `tracks/close`).
+      parameters: [{ $ref: "#/components/parameters/callId" }, { $ref: "#/components/parameters/sessionId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [tracks, force]
+              additionalProperties: false
+              properties:
+                tracks:
+                  type: array
+                  minItems: 1
+                  maxItems: 16
+                  items:
+                    type: object
+                    required: [mid]
+                    additionalProperties: false
+                    properties:
+                      mid: { type: string }
+                sessionDescription: { $ref: "#/components/schemas/SessionDescription" }
+                force: { type: boolean }
+      responses:
+        "200": { $ref: "#/components/responses/RealtimeAnswer" }
+        "400": { $ref: "#/components/responses/RealtimeRejected" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "502": { $ref: "#/components/responses/RealtimeUnavailable" }
+
+  /health:
+    get:
+      tags: [Health]
+      operationId: health
+      summary: Is the calls service up?
+      security: []
+      responses:
+        "200":
+          description: Up.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, version]
+                properties:
+                  status: { const: ok }
+                  version:
+                    type: string
+                    description: The deployed version (`calls-` + 12 hex digits of the commit), `dev` locally.
+                    examples: [calls-9b5e622a1c3d]
+        "503":
+          description: |
+            The Worker runs but its configuration is incomplete. `problems` names what is wrong, never a value.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, version, problems]
+                properties:
+                  status: { const: misconfigured }
+                  version: { type: string }
+                  problems:
+                    type: array
+                    items: { type: string }
+
+components:
+  parameters:
+    callId: { name: callId, in: path, required: true, schema: { $ref: "#/components/schemas/CallId" } }
+    sessionId:
+      name: sessionId
+      in: path
+      required: true
+      description: The caller's own SFU session id (from `POST .../sessions`).
+      schema: { type: string, pattern: "^[A-Za-z0-9_-]{1,64}$" }
+
+  responses:
+    InvalidRequest:
+      description: "`invalid_request` (message says what), `unsupported_media_type`, `payload_too_large` (64 KiB)."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Unauthorized:
+      description: "`invalid_token`: no chat token, or it is expired, for another host or not from the account API."
+      headers:
+        WWW-Authenticate: { schema: { type: string, const: Bearer } }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    ConversationNotAllowed:
+      description: |
+        `conversation_not_allowed`: the chat service doesn't list you as a current member of that conversation (it
+        must be open, and not deleted by you).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: "`not_found`: no such call, or you are not (or no longer) a member of its conversation."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    CallEnded:
+      description: "`call_ended`: the call is over."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    Forbidden:
+      description: |
+        `not_participant` (join first), `not_your_session` (the session is another participant's), or
+        `track_not_in_call` (that remote track is not published in this call).
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RateLimited:
+      description: "`rate_limited`: per account, 10 calls started and 30 joins a minute. Wait `Retry-After` seconds."
+      headers:
+        Retry-After: { schema: { type: integer, const: 60 } }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    KeysUnavailable:
+      description: |
+        `keys_unavailable`: the account API's keys could not be fetched; `chat_unavailable`: the chat service could
+        not confirm the membership. Retry later.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RealtimeAnswer:
+      description: Cloudflare Realtime's answer, passed through (check each track's `errorCode`).
+      content:
+        application/json:
+          schema: { type: object }
+    RealtimeRejected:
+      description: "`invalid_request` (bad body) or `realtime_rejected` (Realtime refused it; the message says why)."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+    RealtimeUnavailable:
+      description: "`realtime_unavailable`: Cloudflare Realtime could not be reached. Retry later."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code: { type: string, examples: [call_full] }
+            message: { type: string }
+    Id:
+      type: string
+      pattern: "^[A-Za-z0-9_.:-]{1,128}$"
+    CallId:
+      type: string
+      format: uuid
+    Device:
+      type: object
+      required: [accountId, deviceId]
+      properties:
+        accountId: { type: string }
+        deviceId: { type: integer, minimum: 1, maximum: 127 }
+    Call:
+      type: object
+      required:
+        [callId, conversationId, state, createdAt, ringDeadline, epoch, keyLeader, participants, declined, endReason]
+      properties:
+        callId: { $ref: "#/components/schemas/CallId" }
+        conversationId: { $ref: "#/components/schemas/Id" }
+        state: { type: string, enum: [ringing, active, ended] }
+        createdAt: { type: string, format: date-time }
+        ringDeadline: { type: string, format: date-time }
+        epoch:
+          type: integer
+          minimum: 1
+          description: The call key generation. Goes up on every join and leave.
+        keyLeader:
+          description: The device that makes and sends the call key for the current epoch (null once ended).
+          oneOf: [{ $ref: "#/components/schemas/Device" }, { type: "null" }]
+        participants:
+          type: array
+          maxItems: 8
+          items:
+            type: object
+            required: [accountId, deviceId, role, joinedAt, sessionId, tracks, connected]
+            properties:
+              accountId: { type: string }
+              deviceId: { type: integer }
+              role: { type: string, enum: [parent, kid] }
+              joinedAt: { type: string, format: date-time }
+              sessionId:
+                { type: [string, "null"], description: "Their SFU session: subscribe to their tracks with it." }
+              tracks: { type: array, items: { type: string }, description: Their published track names. }
+              connected: { type: boolean, description: Their events WebSocket is open. }
+        declined: { type: array, items: { type: string }, description: Account ids that declined. }
+        endReason:
+          oneOf:
+            - type: string
+              enum: [hung_up, no_answer, declined, max_duration, disconnected]
+            - type: "null"
+    CallLogEntry:
+      type: object
+      required: [callId, createdAt, createdBy, answeredAt, endedAt, endReason, peakParticipants]
+      properties:
+        callId: { $ref: "#/components/schemas/CallId" }
+        createdAt: { type: string, format: date-time }
+        createdBy: { $ref: "#/components/schemas/Device" }
+        answeredAt: { type: [string, "null"], format: date-time }
+        endedAt: { type: [string, "null"], format: date-time }
+        endReason: { type: [string, "null"] }
+        peakParticipants: { type: integer }
+    IceServers:
+      type: array
+      description: |
+        For RTCPeerConnection. Short-lived TURN credentials (at most 1 h) from Cloudflare's TURN service; if TURN can't
+        be reached, Cloudflare's STUN server only.
+      items:
+        type: object
+        required: [urls]
+        properties:
+          urls: { type: array, items: { type: string } }
+          username: { type: string }
+          credential: { type: string }
+    SessionDescription:
+      type: object
+      required: [type, sdp]
+      additionalProperties: false
+      properties:
+        type: { type: string, enum: [offer, answer] }
+        sdp: { type: string, maxLength: 60000 }
+    Track:
+      type: object
+      required: [location, trackName]
+      additionalProperties: false
+      properties:
+        location: { type: string, enum: [local, remote] }
+        trackName: { type: string, pattern: "^[A-Za-z0-9_-]{1,64}$" }
+        mid: { type: string }
+        sessionId: { type: string, description: "Remote tracks only: the publisher's session id." }
+        kind: { type: string, enum: [audio, video] }
+        bidirectionalMediaStream: { type: boolean }
+
+  securitySchemes:
+    chatToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: The ES256 chat token from the account API (`POST /v1/chat/token`), at most 15 minutes old.
