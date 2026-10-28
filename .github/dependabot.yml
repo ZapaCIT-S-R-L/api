@@ -17,6 +17,18 @@ updates:
         applies-to: version-updates
         patterns: ["*"]
   - package-ecosystem: npm
+    directory: /services/chat
+    schedule:
+      interval: weekly
+    versioning-strategy: increase
+    groups:
+      chat-npm-security:
+        applies-to: security-updates
+        patterns: ["*"]
+      chat-npm:
+        applies-to: version-updates
+        patterns: ["*"]
+  - package-ecosystem: npm
     directory: /services/calls
     schedule:
       interval: weekly

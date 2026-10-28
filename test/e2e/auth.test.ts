@@ -1,74 +1,16 @@
 // Sign-in end to end over HTTP. Locally (wrangler dev started with APPLE_JWKS_URL / GOOGLE_JWKS_URL pointing at
-// the JWKS server below, see the e2e job in ci.yml) the full flow runs with test keys. Against a deployed
-// environment (LIVE=1) only the checks that need no valid token run: the real Apple and Google keys reject ours.
+// the JWKS server of global-setup.ts, see the e2e job in ci.yml) the full flow runs with test keys. Against a
+// deployed environment (LIVE=1) only the checks that need no valid token run: the real Apple and Google keys reject
+// ours.
 import { createHash } from "node:crypto";
-import { createServer, type Server } from "node:http";
-import { exportJWK, generateKeyPair, SignJWT, type JWK, type JWTPayload } from "jose";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { type JWTPayload } from "jose";
+import { describe, expect, it } from "vitest";
 import { api, bodyOf, LIVE } from "./base";
-
-export const JWKS_PORT = Number(process.env.JWKS_PORT ?? 8788);
-const GOOGLE_AUDIENCE = "000000000000-zapakidlocaltest.apps.googleusercontent.com";
-
-interface Signer {
-  jwk: JWK;
-  sign(claims: JWTPayload, exp?: number): Promise<string>;
-}
-
-async function signer(kid: string): Promise<Signer> {
-  const { publicKey, privateKey } = await generateKeyPair("RS256", { extractable: true });
-  return {
-    jwk: { ...(await exportJWK(publicKey)), kid, alg: "RS256", use: "sig" },
-    sign: (claims, exp) =>
-      new SignJWT(claims)
-        .setProtectedHeader({ alg: "RS256", kid })
-        .setIssuedAt()
-        .setExpirationTime(exp ?? "10m")
-        .sign(privateKey),
-  };
-}
+import { ADULT as adult, freshNonce, GOOGLE_AUDIENCE, post, signToken } from "./identity";
 
 const run = Date.now().toString(36);
-let apple: Signer;
-let google: Signer;
-let server: Server | undefined;
-
-beforeAll(async () => {
-  apple = await signer(`e2e-apple-${run}`);
-  google = await signer(`e2e-google-${run}`);
-  if (LIVE) return;
-  server = createServer((req, res) => {
-    const keys = req.url === "/apple" ? [apple.jwk] : req.url === "/google" ? [google.jwk] : null;
-    res.writeHead(keys ? 200 : 404, { "content-type": "application/json" });
-    res.end(JSON.stringify(keys ? { keys } : {}));
-  });
-  await new Promise<void>((resolve) => server?.listen(JWKS_PORT, "127.0.0.1", resolve));
-});
-
-afterAll(async () => {
-  await new Promise<void>((resolve) => {
-    if (server)
-      server.close(() => {
-        resolve();
-      });
-    else resolve();
-  });
-});
-
-const adult = { availability: "shared", source: "apple_declared_age_range", lowerBound: 18, upperBound: null };
-const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
-  api(path, {
-    method: "POST",
-    headers: { "content-type": "application/json", ...headers },
-    body: JSON.stringify(body),
-  });
-// A fresh one-time nonce from the API; the token carries its SHA-256 (hex).
-async function freshNonce(): Promise<{ nonce: string; hash: string }> {
-  const res = await api("/v1/auth/nonce", { method: "POST" });
-  expect(res.status).toBe(200);
-  const { nonce } = await bodyOf<{ nonce: string }>(res);
-  return { nonce, hash: createHash("sha256").update(nonce).digest("hex") };
-}
+const apple = { sign: (claims: JWTPayload, exp?: number) => signToken("apple", claims, exp) };
+const google = { sign: (claims: JWTPayload, exp?: number) => signToken("google", claims, exp) };
 
 // An Apple sign-in body for a fresh nonce.
 async function appleSignIn(claims: JWTPayload = {}, ageRange: object = adult, exp?: number) {
