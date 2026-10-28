@@ -1,4 +1,4 @@
-# Deploys the API to staging (api-staging.zapakid.ro) when a PR is merged to main, then runs the end-to-end tests
+# Deploys the account API (the repo root) to staging (api-staging.zapakid.ro) when a PR is merged to main, then runs the end-to-end tests
 # against it and rolls back to the previous Worker version if they fail.
 # Before deploying it tags the commit vMAJOR.MINOR.PATCH (scripts/next-version.js): patch by default, minor when
 # the merged PR has the `minor` label, major when it has the `major` label. The release gets an SBOM (CycloneDX).
@@ -11,9 +11,8 @@ name: deploy
 on:
   push:
     branches: [main]
-    # Each service in services/ deploys itself (deploy-calls.yml).
-    paths-ignore:
-      - services/**
+    # Each service under services/ has its own deploy workflow (deploy-chat.yml, deploy-calls.yml).
+    paths-ignore: ["services/**"]
   workflow_dispatch:
 
 permissions:

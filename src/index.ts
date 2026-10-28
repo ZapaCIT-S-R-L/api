@@ -6,6 +6,7 @@ import { handleChatToken, handleJwks } from "./chat-token";
 import { handleCountPreKeys, handleGetIdentity, handleRegisterDevice, handleRemoveDevice } from "./devices";
 import { handleHealth } from "./health";
 import type { Env } from "./env";
+import { routeFamilies } from "./families";
 import { error } from "./http";
 import { purgeExpired } from "./purge";
 import { limitAuth } from "./rate-limit";
@@ -60,7 +61,7 @@ export default {
           }
           return await p.handler(request, env, decodeURIComponent(match[1] ?? ""));
         }
-        return error(404, "not_found", "No such endpoint.");
+        return (await routeFamilies(request, env, url.pathname)) ?? error(404, "not_found", "No such endpoint.");
       }
       if (request.method !== route.method) {
         return error(405, "method_not_allowed", `Use ${route.method}.`, { allow: route.method });

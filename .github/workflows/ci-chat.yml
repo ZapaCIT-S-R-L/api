@@ -1,0 +1,91 @@
+# Checks the chat service (services/chat, chat.zapakid.ro) on every PR and push to main that touches it. No
+# secrets are used here, so PRs from forks are safe. The repo-wide checks (gitleaks over the whole history, CLA)
+# stay in ci.yml, which runs on every PR.
+#   chat-unit   node:test for scripts/, Vitest inside the Workers runtime (npm test)
+#   chat-build  wrangler bundles the Worker (dry run, nothing uploaded)
+#   chat-e2e    the service over HTTP on a local wrangler dev server, with a fake account service key set
+#   chat-audit  npm audit of the runtime dependencies (high or critical fails)
+#   chat-lint   Prettier, ESLint, TypeScript, Redocly (openapi.yaml)
+name: ci-chat
+
+on:
+  pull_request:
+    paths: ["services/chat/**", ".github/workflows/ci-chat.yml", ".nvmrc"]
+  push:
+    branches: [main]
+    paths: ["services/chat/**", ".github/workflows/ci-chat.yml", ".nvmrc"]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: services/chat
+
+jobs:
+  chat-unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci --ignore-scripts
+      - run: npm test
+
+  chat-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci --ignore-scripts
+      - run: npx wrangler deploy --dry-run --env staging --outdir dist
+
+  chat-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci --ignore-scripts
+      - run: npx wrangler d1 migrations apply DB --local
+      # The tests serve the fake account service keys on 127.0.0.1:8789 (ACCOUNT_JWKS_URL of the local config).
+      - name: Start the chat service locally
+        run: |
+          nohup npx wrangler dev --port 8790 --ip 127.0.0.1 --show-interactive-dev-session=false \
+            < /dev/null > "$RUNNER_TEMP/wrangler.log" 2>&1 &
+          for i in $(seq 1 60); do
+            curl -sf --max-time 2 -o /dev/null http://127.0.0.1:8790/health && { echo "up after ${i}s"; exit 0; }
+            sleep 1
+          done
+          cat "$RUNNER_TEMP/wrangler.log"; exit 1
+      - run: npm run test:e2e
+        env:
+          CHAT_URL: http://127.0.0.1:8790
+      - if: failure()
+        run: cat "$RUNNER_TEMP/wrangler.log"
+
+  chat-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - run: npm audit --omit=dev --audit-level=high
+
+  chat-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci --ignore-scripts
+      - run: npm run lint
+        env:
+          REDOCLY_TELEMETRY: "off"
