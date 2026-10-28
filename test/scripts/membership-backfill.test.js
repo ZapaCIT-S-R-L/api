@@ -76,7 +76,8 @@ test("0013 re-emits every family member, connection, shared kid and device, in t
   const db = seededBefore();
   apply(db, target);
   const all = events(db);
-  const strip = ({ v, id, occurredAt, row, ...rest }) => rest;
+  const strip = (e) =>
+    Object.fromEntries(Object.entries(e).filter(([k]) => !["v", "id", "occurredAt", "row"].includes(k)));
   assert.deepEqual(all.map(strip), [
     { type: "family.member_added", familyId: "f1", accountId: "p1", role: "parent" },
     { type: "family.member_added", familyId: "f2", accountId: "p2", role: "parent" },
