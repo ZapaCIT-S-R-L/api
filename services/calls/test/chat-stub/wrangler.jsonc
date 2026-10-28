@@ -1,0 +1,13 @@
+// Tests only, never deployed: the chat stub (index.js) for the local e2e run. scripts/check.sh and ci-calls.yml start
+// it next to the calls Worker (wrangler dev -c wrangler.jsonc -c test/chat-stub/wrangler.jsonc), under the chat
+// Worker's local name, so the calls Worker's CHAT service binding reaches it. Its members come from the fake server
+// of test/e2e/fakes.ts.
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "zapakid-chat",
+  "main": "index.js",
+  "compatibility_date": "2026-10-12",
+  "workers_dev": false,
+  "preview_urls": false,
+  "vars": { "FAKE_CHAT_URL": "http://127.0.0.1:8798/chat" },
+}
