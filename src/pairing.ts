@@ -12,8 +12,9 @@ import { authenticate, hashToken } from "./sessions";
 
 export const PAIRING_TTL_SECONDS = 5 * 60;
 export const MAX_OPEN_PAIRINGS = 5;
-// A kid can't sign in again on their own, so a kid session lasts a year; pairing again gives a new one.
-export const KID_SESSION_TTL_SECONDS = 365 * 86_400;
+// A kid can't sign in again on their own; pairing again gives a new session. 30 days until kid unpair/logout
+// exists: today deleting the kid is the only way to revoke a lost kid phone.
+export const KID_SESSION_TTL_SECONDS = 30 * 86_400;
 const PAIRING_PATTERN = /^zkp_[A-Za-z0-9_-]{43}$/;
 
 const unauthorized = () =>
@@ -47,7 +48,9 @@ export async function handleCreatePairing(
     .bind(familyId, nowIso)
     .first<{ n: number }>();
   if ((open?.n ?? 0) >= MAX_OPEN_PAIRINGS) {
-    return error(429, "too_many_pairings", `At most ${MAX_OPEN_PAIRINGS} open pairing codes per family.`);
+    return error(429, "too_many_pairings", `At most ${MAX_OPEN_PAIRINGS} open pairing codes per family.`, {
+      "retry-after": String(PAIRING_TTL_SECONDS),
+    });
   }
 
   const code = `zkp_${randomBase64Url(32)}`;

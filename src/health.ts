@@ -12,8 +12,8 @@ function problems(env: Env): string[] {
   const found: string[] = [];
   if (!present.DB) found.push("DB binding missing");
   if (!present.AUTH_LIMITER) found.push("AUTH_LIMITER binding missing");
-  if (!present.APPLE_AUDIENCES || present.APPLE_AUDIENCES.split(",").every((id) => id.trim() === "")) {
-    found.push("APPLE_AUDIENCES empty");
+  if (!present.APPLE_BUNDLE_IDS || present.APPLE_BUNDLE_IDS.split(",").every((id) => id.trim() === "")) {
+    found.push("APPLE_BUNDLE_IDS empty");
   }
   if (!/^https:\/\/[a-z0-9.-]+\/\S*$/.test(present.APPLE_WEB_REDIRECT_URL ?? "")) {
     found.push("APPLE_WEB_REDIRECT_URL not an https URL");

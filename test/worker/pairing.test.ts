@@ -115,6 +115,8 @@ describe("POST /v1/families/{familyId}/kids/{kidId}/pairing", () => {
     for (let i = 0; i < 5; i++) await pair(parent.auth, family.id, kid.id);
     const res = await send(`/v1/families/${family.id}/kids/${kid.id}/pairing`, parent.auth);
     expect(res.status).toBe(429);
+    // A code lives 5 minutes, so one frees up within that.
+    expect(res.headers.get("retry-after")).toBe("300");
     expect(await errorCode(res)).toBe("too_many_pairings");
   });
 
@@ -134,8 +136,10 @@ describe("POST /v1/pairing/redeem", () => {
     expect(res.headers.get("cache-control")).toBe("no-store");
     const body = await res.json<Redeemed>();
     expect(body.session.token).toMatch(/^zkk_[A-Za-z0-9_-]{43}$/);
+    // Review of #61: 30 days until kid unpair/logout exists (365 had no way to revoke a lost kid phone).
     const days = (Date.parse(body.session.expiresAt) - Date.now()) / 86_400_000;
-    expect(days).toBeGreaterThan(364);
+    expect(days).toBeGreaterThan(29.9);
+    expect(days).toBeLessThanOrEqual(30);
     expect(body.kid).toEqual(kid);
     expect(body.family).toEqual({ id: family.id, name: "Pop" });
     const row = await env.DB.prepare("SELECT token_hash, kid_id FROM kid_sessions").first<{

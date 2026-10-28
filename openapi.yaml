@@ -170,7 +170,7 @@ paths:
                   problems:
                     type: array
                     items: { type: string }
-                    examples: [["APPLE_AUDIENCES empty"]]
+                    examples: [["APPLE_BUNDLE_IDS empty"]]
 
   /v1/auth/nonce:
     post:
@@ -521,7 +521,8 @@ paths:
         signatures 64 bytes), unique key ids and the counts, and stores only public keys and signatures. Apps
         verify the signatures with libsignal when they use a bundle; libsignal refuses a bad one.
 
-        A device that makes no request for 90 days is removed (daily), with its keys.
+        A device that makes no request for 90 days is removed (hourly purge), with its keys, and its sessions are signed
+        out.
       parameters: [{ $ref: "#/components/parameters/attestation" }]
       requestBody:
         required: true
@@ -562,7 +563,9 @@ paths:
       tags: [Devices and keys]
       operationId: removeDevice
       summary: Remove one of the account's devices (an old phone or install) with its keys.
-      description: Only the caller's own devices. Sessions bound to it are unbound.
+      description: |
+        Only the caller's own devices. Every session bound to that device is signed out (a lost phone loses access;
+        removing the caller's own device signs the caller out too). Its keys are deleted.
       parameters:
         - name: deviceId
           in: path
@@ -801,7 +804,9 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "429":
-          description: "`too_many_pairings`: 5 codes are still open. Wait until one is used or expires."
+          description: "`too_many_pairings`: 5 codes are still open. Wait until one is used or expires (`Retry-After`)."
+          headers:
+            Retry-After: { schema: { type: integer, const: 300 } }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -813,7 +818,7 @@ paths:
       summary: The kid's phone redeems the pairing code and gets a kid session.
       description: |
         No session is needed: the code is the credential. The response is a kid session (`zkk_` token), valid for
-        365 days. Store it like a parent session (keychain / Keystore). A kid session can read the kid's family
+        30 days. Store it like a parent session (keychain / Keystore). A kid session can read the kid's family
         (`GET /v1/families`), but it can't do anything that only parents may do (`401`).
 
         Rate limited per network like sign-in (`AUTH_LIMITER`). App attestation (`ZapaKid-Attestation`, over the

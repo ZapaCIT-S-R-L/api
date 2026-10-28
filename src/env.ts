@@ -6,7 +6,9 @@ export interface Env {
   VERSION: string;
   VERSION_URL: string;
   // Comma-separated accepted audiences: Apple iOS bundle id and web-flow Services id, Google OAuth client ids. Empty = provider off.
-  APPLE_AUDIENCES: string;
+  APPLE_BUNDLE_IDS: string;
+  // The Services ID(s) of Apple's web flow (Android), accepted only by its callback. Empty = web flow off.
+  APPLE_SERVICES_IDS: string;
   GOOGLE_CLIENT_IDS: string;
   // Where the Apple web flow (Android) hands the result back to the app: an Android App Link.
   APPLE_WEB_REDIRECT_URL: string;

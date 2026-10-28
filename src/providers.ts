@@ -23,12 +23,14 @@ const CONFIG = {
   apple: {
     jwksUrl: "https://appleid.apple.com/auth/keys",
     issuers: ["https://appleid.apple.com"],
-    audiences: (env: Env) => env.APPLE_AUDIENCES,
+    // Per endpoint: the native sign-in takes only the iOS bundle id, the web flow only the Services ID.
+    audiences: (env: Env, client: Client) => (client === "web" ? env.APPLE_SERVICES_IDS : env.APPLE_BUNDLE_IDS),
     override: (env: Env) => env.APPLE_JWKS_URL,
   },
   google: {
     jwksUrl: "https://www.googleapis.com/oauth2/v3/certs",
     issuers: ["https://accounts.google.com", "accounts.google.com"],
+    // Android (web client id) and iOS (iOS client id) both sign in here.
     audiences: (env: Env) => env.GOOGLE_CLIENT_IDS,
     override: (env: Env) => env.GOOGLE_JWKS_URL,
   },
@@ -54,9 +56,17 @@ function list(value: string): string[] {
     .filter(Boolean);
 }
 
-export async function verifyIdToken(provider: Provider, token: string, env: Env): Promise<Identity> {
+// Which app client the token is for: the native app, or Apple's web flow (Sign in with Apple on Android).
+export type Client = "native" | "web";
+
+export async function verifyIdToken(
+  provider: Provider,
+  token: string,
+  env: Env,
+  client: Client = "native",
+): Promise<Identity> {
   const config = CONFIG[provider];
-  const audiences = list(config.audiences(env));
+  const audiences = list(config.audiences(env, client));
   if (audiences.length === 0) throw new InvalidToken(`${provider} sign-in is not configured`);
 
   let kid: string | undefined;
