@@ -11,7 +11,7 @@ name: deploy
 on:
   push:
     branches: [main]
-    # Each service under services/ has its own deploy workflow (deploy-chat.yml, ...).
+    # Each service under services/ has its own deploy workflow (deploy-chat.yml, deploy-calls.yml).
     paths-ignore: ["services/**"]
   workflow_dispatch:
 

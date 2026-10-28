@@ -1,6 +1,6 @@
 # Daily check of the dependencies against published advisories, so a new high or critical advisory fails a run
 # (and notifies) even when nobody opens a pull request. Dependabot security updates open the fix PRs.
-#   npm-audit    runtime dependencies (what ships in the Worker): fails on high or critical
+#   npm-audit    runtime dependencies (what ships in the Workers, root and services/calls): fails on high or critical
 #   osv-scanner  the whole lockfile, dev tools included, against osv.dev: fails on any known vulnerability
 name: audit
 
@@ -23,6 +23,8 @@ jobs:
       - run: npm audit --omit=dev --audit-level=high
       - run: npm audit --omit=dev --audit-level=high
         working-directory: services/chat
+      - run: npm audit --omit=dev --audit-level=high
+        working-directory: services/calls
 
   osv-scanner:
     runs-on: ubuntu-latest
@@ -32,4 +34,4 @@ jobs:
       - run: >-
           docker run --rm -v "$PWD:/src:ro" -w /src
           ghcr.io/google/osv-scanner:v2.7.0@sha256:4f3b7e2c64b9d38a5febc5a7e4a3dfef1d1362f726dea7a2ef4762b46469fcd0
-          scan source --lockfile package-lock.json --lockfile services/chat/package-lock.json
+          scan source --lockfile package-lock.json --lockfile services/chat/package-lock.json --lockfile services/calls/package-lock.json
