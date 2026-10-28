@@ -4,7 +4,9 @@
 import { createScheduledController } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { parseDeviceKeys as parsedKeys, storeDevice } from "../../src/devices";
 import worker from "../../src/index";
+import { authenticate } from "../../src/sessions";
 import {
   ADULT,
   appleClaims,
@@ -69,6 +71,12 @@ const register = (token: string, body: unknown, headers: Record<string, string> 
     headers: { "content-type": "application/json", ...bearer(token), ...headers },
     body: JSON.stringify(body),
   });
+
+async function authenticateToken(token: string) {
+  const session = await authenticate(workerRequest("https://api.test/", { headers: bearer(token) }), env);
+  if (!session) throw new Error("no session");
+  return session;
+}
 
 async function expectError(res: Response, status: number, code: string) {
   expect(res.status).toBe(status);
@@ -307,6 +315,48 @@ describe("POST /v1/devices", () => {
       ATTESTATION_ALLOWLIST: "apple:parent-allowlisted",
     });
     expect(res.status).toBe(201);
+  });
+});
+
+// Regression (security review 2026-10-27, L1): the session is read at the start of a registration; the write must
+// still require that session to exist and be unbound, so a logout in between or a parallel registration on the
+// same session can't leave extra or orphaned devices.
+describe("registration is atomic with its session", () => {
+  it("parallel registrations on one session with the same keys → one device, all answers the same id", async () => {
+    const a = await signIn();
+    const body = deviceKeys();
+    const answers = await Promise.all(Array.from({ length: 5 }, () => register(a.session.token, body)));
+    expect(answers.map((r) => r.status)).toEqual([201, 201, 201, 201, 201]);
+    const ids = await Promise.all(answers.map((r) => r.json<{ deviceId: number }>()));
+    expect(new Set(ids.map((i) => i.deviceId)).size).toBe(1);
+    expect(await count("devices")).toBe(1);
+  });
+
+  it("parallel registrations on one session with different keys → one device, the others 409", async () => {
+    const identityKey = ec();
+    const a = await signIn();
+    const answers = await Promise.all(
+      Array.from({ length: 4 }, () => register(a.session.token, deviceKeys(identityKey))),
+    );
+    const statuses = answers.map((r) => r.status).sort();
+    expect(statuses).toEqual([201, 409, 409, 409]);
+    expect(await count("devices")).toBe(1);
+  });
+
+  it("a session signed out after it was read can't register a device", async () => {
+    const a = await signIn();
+    const session = await authenticateToken(a.session.token);
+    await call("/v1/auth/logout", { method: "POST", headers: bearer(a.session.token) });
+    const stored = await storeDevice(env, session, 1, parsedKeys(deviceKeys()), new Date().toISOString());
+    expect(stored).toBe(false);
+    expect(await count("devices")).toBe(0);
+  });
+
+  it("logout then register → 401, no device", async () => {
+    const a = await signIn();
+    await call("/v1/auth/logout", { method: "POST", headers: bearer(a.session.token) });
+    expect((await register(a.session.token, deviceKeys())).status).toBe(401);
+    expect(await count("devices")).toBe(0);
   });
 });
 
