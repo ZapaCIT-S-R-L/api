@@ -4,7 +4,7 @@ import { appleSignIn, googleSignIn, invalid, onlyFields, readJson, readJsonBody,
 import type { Env } from "./env";
 import { empty, error, json } from "./http";
 import { ProviderUnavailable } from "./jwks";
-import { devicesRemovedEvents, flushMembershipEvents, sessionsRevokedEvent } from "./membership-events";
+import { deviceRemovedEvents, flushMembershipEvents, sessionsRevokedEvent } from "./membership-events";
 import { checkNonceClaim, consumeNonce, InvalidNonce, issueNonce } from "./nonces";
 import { getParent, setDisplayName, signIn } from "./parents";
 import {
@@ -163,7 +163,10 @@ export async function handleLogoutAll(request: Request, env: Env): Promise<Respo
     env.DB.prepare("UPDATE parents SET session_epoch = session_epoch + 1 WHERE id = ?").bind(parentId),
     env.DB.prepare("DELETE FROM sessions WHERE parent_id = ?").bind(parentId),
     ...(removeDevices === "true"
-      ? [devicesRemovedEvents(env, parentId), env.DB.prepare("DELETE FROM devices WHERE account_id = ?").bind(parentId)]
+      ? [
+          deviceRemovedEvents(env, "account_id = ?", [parentId]),
+          env.DB.prepare("DELETE FROM devices WHERE account_id = ?").bind(parentId),
+        ]
       : []),
     sessionsRevokedEvent(env, parentId),
   ]);

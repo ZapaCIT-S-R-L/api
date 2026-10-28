@@ -5,7 +5,8 @@ import { invalid, onlyFields, readJson, readJsonBody } from "./body";
 import { randomBase64Url, sha256Hex } from "./crypto";
 import type { Env } from "./env";
 import { loadKid, type Kid } from "./families";
-import { error, json } from "./http";
+import { empty, error, json } from "./http";
+import { deviceRemovedEvents, flushMembershipEvents } from "./membership-events";
 import { isAllowlisted } from "./play-integrity";
 import { attest } from "./routes";
 import { authenticate, hashToken } from "./sessions";
@@ -31,13 +32,9 @@ export async function handleCreatePairing(
   const session = await authenticate(request, env);
   if (!session) return unauthorized();
   // The kid must belong to a family the caller is a parent of.
-  const member = await env.DB.prepare(
-    `SELECT 1 AS ok FROM kids k JOIN family_parents fp ON fp.family_id = k.family_id
-     WHERE k.id = ? AND k.family_id = ? AND fp.parent_id = ?`,
-  )
-    .bind(kidId, familyId, session.parentId)
-    .first<{ ok: number }>();
-  if (!member) return error(404, "not_found", "No such kid.");
+  if (!(await kidInParentsFamily(env, session.parentId, familyId, kidId))) {
+    return error(404, "not_found", "No such kid.");
+  }
   // No body is fine, and so is an empty one: the iOS app sends Content-Length: 0 without a Content-Type.
   if (request.body && request.headers.get("content-length") !== "0")
     onlyFields(await readJson(request), [], "the body");
@@ -126,4 +123,44 @@ async function parentAllowlisted(env: Env, parentId: string): Promise<boolean> {
     .bind(parentId)
     .all<{ provider: string; subject: string }>();
   return results.some((r) => isAllowlisted(env, r.provider, r.subject));
+}
+
+// Whether the kid belongs to this family and the parent is one of its parents.
+export async function kidInParentsFamily(
+  env: Env,
+  parentId: string,
+  familyId: string,
+  kidId: string,
+): Promise<boolean> {
+  const member = await env.DB.prepare(
+    `SELECT 1 AS ok FROM kids k JOIN family_parents fp ON fp.family_id = k.family_id
+     WHERE k.id = ? AND k.family_id = ? AND fp.parent_id = ?`,
+  )
+    .bind(kidId, familyId, parentId)
+    .first<{ ok: number }>();
+  return member !== null;
+}
+
+// The statements that sign out every phone of a kid: device.removed events, its devices (prekeys cascade), its
+// sessions and its open pairing codes. The kid's identity stays (a new phone changes it: PUT /v1/keys/identity).
+export function revokeKidPhones(env: Env, kidId: string): D1PreparedStatement[] {
+  return [
+    deviceRemovedEvents(env, "account_id = ?", [kidId]),
+    env.DB.prepare("DELETE FROM devices WHERE account_id = ?").bind(kidId),
+    env.DB.prepare("DELETE FROM kid_sessions WHERE kid_id = ?").bind(kidId),
+    env.DB.prepare("DELETE FROM kid_pairings WHERE kid_id = ? AND used_at IS NULL").bind(kidId),
+  ];
+}
+
+// DELETE /v1/families/{familyId}/kids/{kidId}/pairing: unpair every phone of the kid (lost or handed down). The kid
+// stays in the family; pairing again gives a new phone a new session.
+export async function handleUnpair(request: Request, env: Env, familyId: string, kidId: string): Promise<Response> {
+  const session = await authenticate(request, env);
+  if (!session) return unauthorized();
+  if (!(await kidInParentsFamily(env, session.parentId, familyId, kidId))) {
+    return error(404, "not_found", "No such kid.");
+  }
+  await env.DB.batch(revokeKidPhones(env, kidId));
+  await flushMembershipEvents(env);
+  return empty(204);
 }

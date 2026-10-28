@@ -4,11 +4,11 @@
 // made and stored by scripts/set-chat-token-key.sh. Rotating it: run the script again; tokens signed with the old
 // key stop verifying, and the apps fetch a new token on the 401 (they live at most 15 minutes anyway).
 import { importJWK, SignJWT, type JWK } from "jose";
+import { authenticateAccount, type Account } from "./accounts";
 import { randomBase64Url } from "./crypto";
 import type { Env } from "./env";
 import { error, json } from "./http";
 import { membership } from "./membership";
-import { authenticate, type Session } from "./sessions";
 
 export const MAX_TTL_SECONDS = 900;
 const MIN_TTL_SECONDS = 60;
@@ -88,11 +88,11 @@ export function chatTokenProblems(env: Partial<Env>): string[] {
 // statement, or null if the session is gone. Logout-all increments the epoch and deletes the sessions in one
 // transaction, so a request authenticated just before it either sees the old epoch (which the services then refuse)
 // or no session at all, never the new epoch (api #81).
-export async function sessionEpoch(env: Env, session: Session): Promise<number | null> {
+export async function sessionEpoch(env: Env, session: Pick<Account, "id" | "tokenHash">): Promise<number | null> {
   return await env.DB.prepare(
     "SELECT p.session_epoch FROM sessions s JOIN parents p ON p.id = s.parent_id WHERE s.token_hash = ? AND s.parent_id = ?",
   )
-    .bind(session.tokenHash, session.parentId)
+    .bind(session.tokenHash, session.id)
     .first<number>("session_epoch");
 }
 
@@ -110,7 +110,8 @@ const signInFirst = () =>
   });
 
 export async function handleChatToken(request: Request, env: Env): Promise<Response> {
-  const session = await authenticate(request, env);
+  // Parents and paired kids alike.
+  const session = await authenticateAccount(request, env);
   if (!session) return signInFirst();
   const ttl = chatTokenTtl(env);
   const key = await signingKey(env);
@@ -120,18 +121,23 @@ export async function handleChatToken(request: Request, env: Env): Promise<Respo
   if (device === null) {
     return error(409, "device_required", "Register this device first (POST /v1/devices), then ask again.");
   }
-  const conversations = await source.conversations(env, session.parentId);
-  // Last read before signing: a logout-all after it raises the epoch above this token's `sep`.
-  const epoch = await sessionEpoch(env, session);
-  if (epoch === null) return signInFirst();
-  const now = Math.floor(Date.now() / 1000);
+  const conversations = await source.conversations(env, session.id);
   // `sep`: the parent's session epoch. POST /v1/auth/logout-all increments it and tells the chat and calls
-  // services, which then refuse tokens with a lower one (api #81).
-  const token = await new SignJWT({ dev: device, role: "parent", conv: conversations, sep: epoch })
+  // services, which then refuse tokens with a lower one (api #81). Last read before signing: a logout-all after it
+  // raises the epoch above this token's `sep`. Kids have no logout-all and no epoch: their tokens carry none (the
+  // services read a missing `sep` as 0).
+  const claims: Record<string, unknown> = { dev: device, role: session.role, conv: conversations };
+  if (session.role === "parent") {
+    const epoch = await sessionEpoch(env, session);
+    if (epoch === null) return signInFirst();
+    claims.sep = epoch;
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const token = await new SignJWT(claims)
     .setProtectedHeader({ alg: "ES256", kid: key.kid, typ: "JWT" })
     .setIssuer(env.CHAT_TOKEN_ISSUER)
     .setAudience(chatTokenAudiences(env.CHAT_TOKEN_AUDIENCES))
-    .setSubject(session.parentId)
+    .setSubject(session.id)
     .setJti(randomBase64Url(16))
     .setIssuedAt(now)
     .setExpirationTime(now + ttl)

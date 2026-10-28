@@ -6,7 +6,7 @@ import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseDeviceKeys as parsedKeys, storeDevice } from "../../src/devices";
 import worker from "../../src/index";
-import { authenticate } from "../../src/sessions";
+import { authenticateAccount } from "../../src/accounts";
 import {
   ADULT,
   appleClaims,
@@ -80,8 +80,13 @@ async function outboxEvents(): Promise<Record<string, unknown>[]> {
   return results.map((r) => ({ ...(JSON.parse(r.body) as Record<string, unknown>), sent: r.sent_at !== null }));
 }
 
+// The outbox without the device.upserted events that registering writes.
+async function removalEvents(): Promise<Record<string, unknown>[]> {
+  return (await outboxEvents()).filter((e) => e.type !== "device.upserted");
+}
+
 async function authenticateToken(token: string) {
-  const session = await authenticate(workerRequest("https://api.test/", { headers: bearer(token) }), env);
+  const session = await authenticateAccount(workerRequest("https://api.test/", { headers: bearer(token) }), env);
   if (!session) throw new Error("no session");
   return session;
 }
@@ -455,9 +460,9 @@ describe("DELETE /v1/devices/{id}", () => {
     await register(a.session.token, deviceKeys());
     const other = await signIn();
     expect((await call("/v1/devices/2", { method: "DELETE", headers: bearer(other.session.token) })).status).toBe(404);
-    expect(await outboxEvents()).toEqual([]);
+    expect(await removalEvents()).toEqual([]);
     expect((await call("/v1/devices/1", { method: "DELETE", headers: bearer(other.session.token) })).status).toBe(204);
-    const events = await outboxEvents();
+    const events = await removalEvents();
     expect(events).toHaveLength(1);
     expect(events[0]).toMatchObject({ v: 1, type: "device.removed", accountId: a.parent.id, deviceId: 1, sent: true });
   });
@@ -479,7 +484,7 @@ describe("DELETE /v1/devices/{id}", () => {
     expect(await count("one_time_prekeys")).toBe(3);
     expect((await call("/v1/me", { headers: bearer(lost.session.token) })).status).toBe(401);
     expect((await call("/v1/me", { headers: bearer(stranger.session.token) })).status).toBe(200);
-    const events = await outboxEvents();
+    const events = await removalEvents();
     expect(events.map((e) => [e.type, e.deviceId])).toEqual([
       ["device.removed", 1],
       ["device.removed", 2],
@@ -516,7 +521,7 @@ describe("DELETE /v1/devices/{id}", () => {
     expect(registered).toBe(true);
     expect(res.status).toBe(204);
     expect(await count("devices")).toBe(0);
-    const events = await outboxEvents();
+    const events = await removalEvents();
     expect(events.map((e) => [e.type, e.deviceId])).toEqual([
       ["device.removed", 1],
       ["device.removed", 2],
@@ -533,7 +538,7 @@ describe("DELETE /v1/devices/{id}", () => {
     await register(a.session.token, deviceKeys());
     expect((await call("/v1/auth/logout-all", { method: "POST", headers: bearer(a.session.token) })).status).toBe(204);
     expect(await count("devices")).toBe(1);
-    expect((await outboxEvents()).map((e) => e.type)).toEqual(["account.sessions_revoked"]);
+    expect((await removalEvents()).map((e) => e.type)).toEqual(["account.sessions_revoked"]);
   });
 
   it("removing the caller's own device signs the caller out", async () => {
