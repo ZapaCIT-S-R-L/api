@@ -153,7 +153,7 @@ paths:
                   problems:
                     type: array
                     items: { type: string }
-                    examples: [["APPLE_AUDIENCES empty"]]
+                    examples: [["APPLE_BUNDLE_IDS empty"]]
 
   /v1/auth/nonce:
     post:
