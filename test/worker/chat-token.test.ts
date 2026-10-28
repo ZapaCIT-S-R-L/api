@@ -177,6 +177,33 @@ describe("POST /v1/chat/token", () => {
     expect(payload.sep).toBe(1);
   });
 
+  // api #84 review: logout-all completing between authentication and issuance must not yield a token with the new
+  // epoch (the deleted session would escape revocation).
+  it("logout-all between authentication and issuance → 401, no token with the new epoch", async () => {
+    const { session, parent } = await signIn();
+    seeded.devices.set(parent.id, 1);
+    let loggedOut = false;
+    useMembershipSource({
+      ...seededSource,
+      conversations: async (envArg, accountId) => {
+        // Runs after authenticate() and before the epoch is read.
+        const res = await call("/v1/auth/logout-all", { method: "POST", headers: bearer(session.token) });
+        expect(res.status).toBe(204);
+        loggedOut = true;
+        return seededSource.conversations(envArg, accountId);
+      },
+    });
+    const res = await token(session.token);
+    expect(loggedOut).toBe(true);
+    expect(res.status).toBe(401);
+    expect(res.headers.get("www-authenticate")).toBe("Bearer");
+    expect((await res.json<ErrorBody>()).error.code).toBe("unauthorized");
+    const epoch = await env.DB.prepare("SELECT session_epoch FROM parents WHERE id = ?")
+      .bind(parent.id)
+      .first<number>("session_epoch");
+    expect(epoch).toBe(1);
+  });
+
   it("after logout → 401", async () => {
     const { session, parent } = await signIn();
     seeded.devices.set(parent.id, 1);

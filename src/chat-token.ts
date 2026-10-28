@@ -8,7 +8,7 @@ import { randomBase64Url } from "./crypto";
 import type { Env } from "./env";
 import { error, json } from "./http";
 import { membership } from "./membership";
-import { authenticate } from "./sessions";
+import { authenticate, type Session } from "./sessions";
 
 export const MAX_TTL_SECONDS = 900;
 const MIN_TTL_SECONDS = 60;
@@ -84,12 +84,16 @@ export function chatTokenProblems(env: Partial<Env>): string[] {
   return found;
 }
 
-// The parent's current session epoch (0 until the first logout-all).
-export async function sessionEpoch(env: Env, parentId: string): Promise<number> {
-  const epoch = await env.DB.prepare("SELECT session_epoch FROM parents WHERE id = ?")
-    .bind(parentId)
+// The parent's current session epoch (0 until the first logout-all), read together with the session in one
+// statement, or null if the session is gone. Logout-all increments the epoch and deletes the sessions in one
+// transaction, so a request authenticated just before it either sees the old epoch (which the services then refuse)
+// or no session at all, never the new epoch (api #81).
+export async function sessionEpoch(env: Env, session: Session): Promise<number | null> {
+  return await env.DB.prepare(
+    "SELECT p.session_epoch FROM sessions s JOIN parents p ON p.id = s.parent_id WHERE s.token_hash = ? AND s.parent_id = ?",
+  )
+    .bind(session.tokenHash, session.parentId)
     .first<number>("session_epoch");
-  return epoch ?? 0;
 }
 
 const notConfigured = () => error(503, "not_configured", "Chat tokens are not available yet. Try again later.");
@@ -100,13 +104,14 @@ export async function handleJwks(_request: Request, env: Env): Promise<Response>
   return json({ keys: [key.publicJwk] }, 200, { "cache-control": "public, max-age=300" });
 }
 
+const signInFirst = () =>
+  error(401, "unauthorized", "Sign in first: send Authorization: Bearer <session token>.", {
+    "www-authenticate": "Bearer",
+  });
+
 export async function handleChatToken(request: Request, env: Env): Promise<Response> {
   const session = await authenticate(request, env);
-  if (!session) {
-    return error(401, "unauthorized", "Sign in first: send Authorization: Bearer <session token>.", {
-      "www-authenticate": "Bearer",
-    });
-  }
+  if (!session) return signInFirst();
   const ttl = chatTokenTtl(env);
   const key = await signingKey(env);
   if (!key) return notConfigured();
@@ -116,7 +121,9 @@ export async function handleChatToken(request: Request, env: Env): Promise<Respo
     return error(409, "device_required", "Register this device first (POST /v1/devices), then ask again.");
   }
   const conversations = await source.conversations(env, session.parentId);
-  const epoch = await sessionEpoch(env, session.parentId);
+  // Last read before signing: a logout-all after it raises the epoch above this token's `sep`.
+  const epoch = await sessionEpoch(env, session);
+  if (epoch === null) return signInFirst();
   const now = Math.floor(Date.now() / 1000);
   // `sep`: the parent's session epoch. POST /v1/auth/logout-all increments it and tells the chat and calls
   // services, which then refuse tokens with a lower one (api #81).
