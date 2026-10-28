@@ -33,7 +33,7 @@ const ROUTES: Record<string, { method: string; handler: Handler; limited?: true 
   },
   "/v1/auth/logout": { method: "POST", handler: handleLogout },
   "/v1/auth/logout-all": { method: "POST", handler: handleLogoutAll },
-  "/v1/me": { method: "GET", handler: handleMe },
+  "/v1/me": { method: "GET, PATCH", handler: handleMe },
   "/v1/devices": { method: "POST", handler: handleRegisterDevice, limited: true },
   "/v1/keys/prekeys": { method: "GET", handler: handleCountPreKeys },
   "/v1/pairing/redeem": { method: "POST", handler: handleRedeemPairing, limited: true },
@@ -67,7 +67,7 @@ export default {
         }
         return (await routeFamilies(request, env, url.pathname)) ?? error(404, "not_found", "No such endpoint.");
       }
-      if (request.method !== route.method) {
+      if (!route.method.split(", ").includes(request.method)) {
         return error(405, "method_not_allowed", `Use ${route.method}.`, { allow: route.method });
       }
       if (route.limited) {
