@@ -1,0 +1,9 @@
+# Lint rules for openapi.yaml (npm run lint:api).
+extends:
+  - recommended
+rules:
+  # The stream answers 101 (WebSocket upgrade), not 2xx.
+  operation-2xx-response: warn
+  # MembershipEvent describes the Queue messages, not an HTTP body, so no operation references it.
+  no-unused-components: off
+  security-defined: error
