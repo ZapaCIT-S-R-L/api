@@ -5,6 +5,7 @@ import { ACCOUNT_ID, CONVERSATION_ID, onlyFields, randomId, readJson } from "./b
 import type { Env } from "./env";
 import { allowedTogether, isParent, loadFamilies, missingGuardians, roleOf, type Role } from "./graph";
 import { empty, HttpError, invalid, json, notAllowed, notFound } from "./http";
+import { purgeConversationAttachments } from "./attachments";
 import { limit } from "./limits";
 import type { Rooms } from "./rooms";
 
@@ -188,6 +189,7 @@ export async function purgeIfAbandoned(env: Env, rooms: Rooms, conversationId: s
     .first<{ n: number }>();
   if ((remaining?.n ?? 0) > 0) return false;
   await rooms.purge(conversationId);
+  await purgeConversationAttachments(env, conversationId);
   await env.DB.prepare("DELETE FROM conversations WHERE id = ?1").bind(conversationId).run();
   return true;
 }
