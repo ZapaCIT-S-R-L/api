@@ -81,10 +81,10 @@ test("Realtime and TURN: the real Cloudflare API in every deployed environment; 
   }
 });
 
-test("call limits: at most 8 participants, 45 s ring, 2 h, TURN credentials at most 1 h", () => {
+test("call limits: at most 8 participants, 30 s ring (about 5 rings), 2 h, TURN credentials at most 1 h", () => {
   for (const env of [rawConfig, staging, production]) {
     assert.equal(env.vars.MAX_PARTICIPANTS, "8");
-    assert.equal(env.vars.RING_TIMEOUT_SECONDS, "45");
+    assert.equal(env.vars.RING_TIMEOUT_SECONDS, "30");
     assert.equal(env.vars.MAX_CALL_SECONDS, "7200");
     assert.ok(Number(env.vars.TURN_TTL_SECONDS) <= 3600);
     assert.equal(env.vars.RECONNECT_GRACE_SECONDS, "30");
