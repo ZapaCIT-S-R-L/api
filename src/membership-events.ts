@@ -12,6 +12,9 @@ export type MembershipEvent = { v: 1; id: string; occurredAt: string } & (
   | { type: "connection.removed"; connectionId: string }
   | { type: "connection.kid_shared"; connectionId: string; kidAccountId: string }
   | { type: "connection.kid_unshared"; connectionId: string; kidAccountId: string }
+  | { type: "device.upserted"; accountId: string; deviceId: number; registrationId: number }
+  | { type: "device.removed"; accountId: string; deviceId: number }
+  | { type: "account.deleted"; accountId: string }
 );
 
 type EventData = MembershipEvent extends infer E
@@ -38,6 +41,22 @@ export function membershipEvent(
     now,
     ...(onlyIf?.binds ?? []),
   );
+}
+
+// A random UUID (version 4) in SQL, evaluated per row, for events written by INSERT ... SELECT.
+const UUID_SQL = `lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)), 2) || '-' ||
+  substr('89ab', 1 + (abs(random()) % 4), 1) || substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6)))`;
+
+// A device.removed event for every device row matching `where` (SQL over the devices table, with its binds), to put
+// in the batch right before the statement that deletes those devices. One event per device, in device order.
+export function deviceRemovedEvents(env: Env, where: string, binds: unknown[]): D1PreparedStatement {
+  const now = new Date().toISOString();
+  return env.DB.prepare(
+    `INSERT INTO membership_outbox (body, created_at)
+     SELECT json_object('v', 1, 'id', ${UUID_SQL}, 'type', 'device.removed', 'accountId', account_id,
+       'deviceId', device_id, 'occurredAt', ?1), ?1
+     FROM devices WHERE ${where} ORDER BY account_id, device_id`,
+  ).bind(now, ...binds);
 }
 
 // Sends unsent events in order and marks them sent. Returns how many were sent. Never throws: a missing binding or

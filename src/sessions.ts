@@ -50,14 +50,17 @@ export async function authenticate(request: Request, env: Env): Promise<Session 
     await env.DB.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(tokenHash).run();
     return null;
   }
-  if (row.device_id !== null) {
-    // Device activity for the 90-day expiry; written at most once a day per device.
-    const now = Date.now();
-    await env.DB.prepare(
-      "UPDATE devices SET last_seen_at = ? WHERE account_id = ? AND device_id = ? AND last_seen_at < ?",
-    )
-      .bind(new Date(now).toISOString(), row.parent_id, row.device_id, new Date(now - DAY_MS).toISOString())
-      .run();
-  }
+  await touchDevice(env, row.parent_id, row.device_id);
   return { tokenHash, parentId: row.parent_id, deviceId: row.device_id };
+}
+
+// Device activity for the 90-day expiry; written at most once a day per device.
+export async function touchDevice(env: Env, accountId: string, deviceId: number | null): Promise<void> {
+  if (deviceId === null) return;
+  const now = Date.now();
+  await env.DB.prepare(
+    "UPDATE devices SET last_seen_at = ? WHERE account_id = ? AND device_id = ? AND last_seen_at < ?",
+  )
+    .bind(new Date(now).toISOString(), accountId, deviceId, new Date(now - DAY_MS).toISOString())
+    .run();
 }

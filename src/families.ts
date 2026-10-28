@@ -5,9 +5,9 @@ import { authenticateAccount } from "./accounts";
 import { invalid, onlyFields, readJson } from "./body";
 import { randomBase64Url, sha256Hex } from "./crypto";
 import type { Env } from "./env";
-import { error, json } from "./http";
+import { empty, error, json } from "./http";
 import { flushMembershipEvents, membershipEvent } from "./membership-events";
-import { handleCreatePairing } from "./pairing";
+import { handleCreatePairing, handleUnpair, kidInParentsFamily, revokeKidPhones } from "./pairing";
 import { authenticate } from "./sessions";
 
 export const INVITATION_TTL_SECONDS = 72 * 3600;
@@ -55,9 +55,15 @@ export async function routeFamilies(request: Request, env: Env, path: string): P
     return request.method === "POST" ? handleInvite(request, env, match[1] ?? "") : methodNotAllowed();
   }
   if ((match = /^\/v1\/families\/([^/]+)\/kids\/([^/]+)\/pairing$/.exec(path))) {
-    return request.method === "POST"
-      ? handleCreatePairing(request, env, match[1] ?? "", match[2] ?? "")
-      : methodNotAllowed();
+    const [, familyId = "", kidId = ""] = match;
+    if (request.method === "POST") return handleCreatePairing(request, env, familyId, kidId);
+    if (request.method === "DELETE") return handleUnpair(request, env, familyId, kidId);
+    return error(405, "method_not_allowed", "Use POST or DELETE.", { allow: "POST, DELETE" });
+  }
+  if ((match = /^\/v1\/families\/([^/]+)\/kids\/([^/]+)$/.exec(path))) {
+    return request.method === "DELETE"
+      ? handleRemoveKid(request, env, match[1] ?? "", match[2] ?? "")
+      : error(405, "method_not_allowed", "Use DELETE.", { allow: "DELETE" });
   }
   if ((match = /^\/v1\/families\/([^/]+)\/kids$/.exec(path))) {
     return request.method === "POST" ? handleAddKid(request, env, match[1] ?? "") : methodNotAllowed();
@@ -324,4 +330,27 @@ async function handleAddKid(request: Request, env: Env, familyId: string): Promi
   if (result?.meta.changes !== 1) return error(409, "too_many_kids", `A family has at most ${MAX_KIDS} kids.`);
   await flushMembershipEvents(env);
   return json({ id, nickname, avatar: body.avatar, grade, createdAt: now } satisfies Kid, 201);
+}
+
+// DELETE /v1/families/{familyId}/kids/{kidId}: the kid account goes, with its phones (sessions, devices, keys,
+// identity), pairing codes and shares. Any parent of the family. Events: device.removed per device,
+// family.member_removed and account.deleted.
+async function handleRemoveKid(request: Request, env: Env, familyId: string, kidId: string): Promise<Response> {
+  const session = await authenticate(request, env);
+  if (!session) return unauthorized();
+  if (!(await kidInParentsFamily(env, session.parentId, familyId, kidId))) {
+    return error(404, "not_found", "No such kid.");
+  }
+  const exists = { sql: "EXISTS (SELECT 1 FROM kids WHERE id = ? AND family_id = ?)", binds: [kidId, familyId] };
+  const results = await env.DB.batch([
+    ...revokeKidPhones(env, kidId),
+    membershipEvent(env, { type: "family.member_removed", familyId, accountId: kidId }, exists),
+    membershipEvent(env, { type: "account.deleted", accountId: kidId }, exists),
+    // Identity and key history go with the kid row (trigger kids_delete_keys); sessions, codes, shares cascade.
+    env.DB.prepare("DELETE FROM kids WHERE id = ? AND family_id = ? RETURNING id").bind(kidId, familyId),
+  ]);
+  // RETURNING, not meta.changes: D1 counts the cascaded rows too.
+  if (!results.at(-1)?.results.length) return error(404, "not_found", "No such kid.");
+  await flushMembershipEvents(env);
+  return empty(204);
 }

@@ -6,7 +6,7 @@ import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseDeviceKeys as parsedKeys, storeDevice } from "../../src/devices";
 import worker from "../../src/index";
-import { authenticate } from "../../src/sessions";
+import { authenticateAccount } from "../../src/accounts";
 import {
   ADULT,
   appleClaims,
@@ -73,7 +73,7 @@ const register = (token: string, body: unknown, headers: Record<string, string> 
   });
 
 async function authenticateToken(token: string) {
-  const session = await authenticate(workerRequest("https://api.test/", { headers: bearer(token) }), env);
+  const session = await authenticateAccount(workerRequest("https://api.test/", { headers: bearer(token) }), env);
   if (!session) throw new Error("no session");
   return session;
 }
