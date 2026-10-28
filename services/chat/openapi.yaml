@@ -62,7 +62,8 @@ tags:
       A parent or a kid starts a conversation with accounts from their own family and from connected families
       (`GET /v1/contacts` lists who). The server adds the current parents of every kid's family as `observer`
       members (`guardian: true`, the older name); they are real recipients of the encryption but read-only, and
-      observers don't count toward the limit of 64 members (they have their own limit of 64).
+      observers don't count toward the limit of 64 members (they have their own limit of 64). If a later family
+      change would bring in more than 64 observers, none are added and the conversation is `closed` instead.
       When a connection is removed or a kid is unshared, the affected conversations are `closed`: history stays on
       the phones, nothing new can be sent, and the remaining devices rotate their sender keys.
   - name: Messages

@@ -3,7 +3,7 @@
 import { createExecutionContext, createMessageBatch, getQueueResult } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
-import { reconcile } from "../../src/conversations";
+import { MAX_OBSERVERS, reconcile } from "../../src/conversations";
 import worker from "../../src/index";
 import { applyEvent, parseEvent, revokedBefore } from "../../src/membership";
 import {
@@ -314,6 +314,38 @@ describe("graph changes and existing conversations", () => {
     expect((await as(await tokenFor(issuer, MUM, { sep: 3 }), `/v1/conversations/${c.id}`)).status).toBe(200);
     await apply(rooms, { type: "account.deleted", accountId: MUM });
     expect(await revokedBefore(env, MUM)).toBe(0);
+  });
+
+  // MAX_OBSERVERS is enforced when the graph changes too, not only at creation (review of api #87).
+  it("a new parent that would exceed MAX_OBSERVERS isn't added; the conversation closes instead", async () => {
+    const parents = Array.from({ length: MAX_OBSERVERS }, (_, i) => `acc_p${i}`);
+    for (const accountId of [...parents, "acc_k1", "acc_k2"]) {
+      await apply(
+        recordingRooms(),
+        {
+          type: "family.member_added",
+          familyId: "famx",
+          accountId,
+          role: accountId.startsWith("acc_p") ? "parent" : "kid",
+        },
+        { type: "device.upserted", accountId, deviceId: 1, registrationId: 1 },
+      );
+    }
+    const c = await create("acc_k1", ["acc_k2"]);
+    expect(c.members.filter((m) => m.role === "observer")).toHaveLength(MAX_OBSERVERS);
+
+    const rooms = recordingRooms();
+    await apply(rooms, { type: "family.member_added", familyId: "famx", accountId: "acc_extra", role: "parent" });
+    const after = await get("acc_k1", c.id);
+    expect(after?.state).toBe("closed");
+    expect(after?.members.map((m) => m.accountId)).not.toContain("acc_extra");
+    expect(after?.members.filter((m) => m.role === "observer")).toHaveLength(MAX_OBSERVERS);
+    expect(rooms.log).toContain(`notify ${c.id} conversation_closed`);
+    expect(await get("acc_extra", c.id)).toBeNull();
+
+    // Under the cap again, a closed conversation stays as it is: closed ones never gain observers.
+    await apply(rooms, { type: "family.member_removed", familyId: "famx", accountId: "acc_p0" });
+    expect((await get("acc_k1", c.id))?.members.map((m) => m.accountId)).not.toContain("acc_extra");
   });
 
   it("reconcile is a no-op on a healthy conversation", async () => {
