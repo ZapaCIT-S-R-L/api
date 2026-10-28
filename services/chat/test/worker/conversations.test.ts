@@ -96,7 +96,12 @@ describe("POST /v1/conversations", () => {
     expect(res.status).toBe(201);
     const body = await res.json<ConversationBody>();
     expect(memberIds(body)).toEqual([ALEX, DAD, MUM, SAM].sort());
-    expect(body.members.filter((m) => m.guardian).map((m) => m.accountId).sort()).toEqual([DAD, MUM].sort());
+    expect(
+      body.members
+        .filter((m) => m.guardian)
+        .map((m) => m.accountId)
+        .sort(),
+    ).toEqual([DAD, MUM].sort());
   });
 
   it("a kid starts a chat with a shared kid of a connected family; every kid's parents are added", async () => {
