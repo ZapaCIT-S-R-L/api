@@ -222,6 +222,28 @@ describe("graph changes and existing conversations", () => {
     expect(await anaDevices()).toEqual([{ deviceId: 1, registrationId: 103 }]);
   });
 
+  // api #91 review: a removal older than the last upsert must not forget that upsert's timestamp.
+  it("devices: a delayed removal keeps the newer upsert's timestamp, so a stale upsert stays ignored", async () => {
+    await seedFamilies();
+    const c = await create(MUM, [ANA]);
+    const rooms = recordingRooms();
+    const at = (iso: string, body: Record<string, unknown>) =>
+      applyEvent(env, rooms, { ...event(body), occurredAt: iso });
+    const anaDevices = async () => (await get(MUM, c.id))?.members.find((m) => m.accountId === ANA)?.devices;
+    const upsert = { type: "device.upserted", accountId: ANA, deviceId: 2, registrationId: 500 };
+
+    await at("2026-10-28T10:00:03.000Z", upsert);
+    await at("2026-10-28T10:00:02.000Z", { type: "device.removed", accountId: ANA, deviceId: 2 });
+    await at("2026-10-28T10:00:02.500Z", upsert);
+    expect(await anaDevices()).toEqual([{ deviceId: 1, registrationId: 103 }]);
+
+    // A later registration still applies, and a newer removal still removes it.
+    await at("2026-10-28T10:00:04.000Z", { ...upsert, registrationId: 600 });
+    expect(await anaDevices()).toContainEqual({ deviceId: 2, registrationId: 600 });
+    await at("2026-10-28T10:00:05.000Z", { type: "device.removed", accountId: ANA, deviceId: 2 });
+    expect(await anaDevices()).toEqual([{ deviceId: 1, registrationId: 103 }]);
+  });
+
   // api #81: after a logout-all, the account's chat tokens from before the new epoch are refused.
   it("account.sessions_revoked keeps the highest epoch and closes the account's older streams", async () => {
     await seedFamilies();

@@ -176,16 +176,16 @@ export async function applyEvent(env: Env, rooms: Rooms, event: MembershipEvent)
         .run();
       await reconcileAll(env, rooms, await conversationsOf(env, [event.kidAccountId]));
       return;
-    // Device events are ordered by occurredAt (api #90): an upsert at or before the device's last removal, or older
-    // than the change that last wrote the row, is ignored, so a late or backfilled upsert can't bring back a removed
-    // device. A removal always applies.
+    // Device events are ordered by occurredAt (api #90): an upsert older than the change that last wrote the row, or
+    // at or before the newest event seen for the device when it was last removed (its tombstone), is ignored, so a late
+    // or backfilled upsert can't bring back a removed device. A removal always applies.
     case "device.upserted": {
       const at = Date.parse(event.occurredAt);
       const { meta } = await db
         .prepare(
           `INSERT INTO devices (account_id, device_id, registration_id, push_provider, push_token, occurred_at)
            SELECT ?1, ?2, ?3, ?4, ?5, ?6 WHERE NOT EXISTS (
-             SELECT 1 FROM device_tombstones WHERE account_id = ?1 AND device_id = ?2 AND removed_at >= ?6)
+             SELECT 1 FROM device_tombstones WHERE account_id = ?1 AND device_id = ?2 AND last_seen_at >= ?6)
            ON CONFLICT (account_id, device_id) DO UPDATE
              SET registration_id = ?3, push_provider = ?4, push_token = ?5, occurred_at = ?6
              WHERE devices.occurred_at <= ?6`,
@@ -207,8 +207,12 @@ export async function applyEvent(env: Env, rooms: Rooms, event: MembershipEvent)
       await db.batch([
         db
           .prepare(
-            `INSERT INTO device_tombstones (account_id, device_id, removed_at) VALUES (?1, ?2, ?3)
-             ON CONFLICT (account_id, device_id) DO UPDATE SET removed_at = max(removed_at, excluded.removed_at)`,
+            // The tombstone keeps the removed row's timestamp when it is newer than the removal: an upsert between
+            // the two must not bring the device back either.
+            `INSERT INTO device_tombstones (account_id, device_id, last_seen_at)
+             SELECT ?1, ?2, max(?3, coalesce(
+               (SELECT occurred_at FROM devices WHERE account_id = ?1 AND device_id = ?2), 0)) WHERE true
+             ON CONFLICT (account_id, device_id) DO UPDATE SET last_seen_at = max(last_seen_at, excluded.last_seen_at)`,
           )
           .bind(event.accountId, event.deviceId, Date.parse(event.occurredAt)),
         db
