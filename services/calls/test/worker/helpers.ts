@@ -101,6 +101,8 @@ export interface FakeRealtime {
   failNext: number | null;
   // The same for the next PUT tracks/close only (the GET before it answers normally).
   failNextClose: number | null;
+  // A Retry-After header for the next failed answer (failNext/failNextClose), or null for none.
+  retryAfter: string | null;
   turnDown: boolean;
 }
 
@@ -112,6 +114,7 @@ export function fakeRealtime(stub: FetchStub): FakeRealtime {
     tracks: new Map(),
     failNext: null,
     failNextClose: null,
+    retryAfter: null,
     turnDown: false,
   };
   let n = 0;
@@ -127,7 +130,11 @@ export function fakeRealtime(stub: FetchStub): FakeRealtime {
     if (status !== null) {
       if (fake.failNext !== null) fake.failNext = null;
       else fake.failNextClose = null;
-      return Promise.resolve(Response.json({ errorCode: "fake_error", errorDescription: "fake refusal" }, { status }));
+      const headers: Record<string, string> = fake.retryAfter === null ? {} : { "retry-after": fake.retryAfter };
+      fake.retryAfter = null;
+      return Promise.resolve(
+        Response.json({ errorCode: "fake_error", errorDescription: "fake refusal" }, { status, headers }),
+      );
     }
     if (path.startsWith("/turn/")) {
       if (fake.turnDown) return Promise.resolve(new Response("down", { status: 503 }));

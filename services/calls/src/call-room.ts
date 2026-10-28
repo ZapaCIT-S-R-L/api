@@ -7,8 +7,9 @@
 // envelope for a device that is not connected yet waits here until it connects, for the current epoch only.
 // A member the chat service removes from the conversation (src/conversation-events.ts) is dropped the same way:
 // their devices leave with reason `removed`, the epoch moves on without them, their sockets are closed, and their
-// SFU sessions are closed: kept in `closing` and retried from the alarm until Realtime confirms, so a Realtime
-// outage never leaves a removed device's tracks open.
+// SFU sessions are closed: kept in `closing` and retried from the alarm with backoff (a bounded number of times)
+// until Realtime confirms or says the session is gone. A session whose retries run out stays on the list, logged,
+// and keeps the call's state from being deleted: a pending clean-up is never silently dropped.
 import { DurableObject } from "cloudflare:workers";
 import type { Caller, Role } from "./auth";
 import { ChatUnavailable, membership } from "./chat";
@@ -47,6 +48,8 @@ interface PendingClose {
   attempts: number;
   // When to try (again).
   nextAt: number;
+  // Set when CLOSE_MAX_ATTEMPTS failed: no more retries, but kept (and logged) since the tracks may still be open.
+  exhausted?: true;
 }
 
 interface CallState {
@@ -106,10 +109,14 @@ const MAX_MESSAGE_CHARS = 64 * 1024;
 const MAX_TRACKS = 16;
 const MAX_SOCKETS = 32;
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
-// Closing a dropped device's SFU tracks is retried with this backoff (5 s, 10 s, 20 s... 5 min) until Realtime
-// confirms or the call's state is deleted (an hour after the end).
+// Closing a dropped device's SFU tracks is retried with this backoff (5 s, 10 s, 20 s... 5 min), or later when
+// Realtime's Retry-After says so (up to an hour), at most CLOSE_MAX_ATTEMPTS times in all (about 20 minutes).
 const CLOSE_RETRY_MS = 5_000;
 const CLOSE_RETRY_MAX_MS = 5 * 60_000;
+const CLOSE_RETRY_AFTER_MAX_MS = 60 * 60_000;
+const CLOSE_MAX_ATTEMPTS = 10;
+// Realtime no longer has the session: nothing left to close.
+const SESSION_GONE = new Set([404, 410]);
 
 export const deviceKey = (accountId: string, deviceId: number) => JSON.stringify([accountId, deviceId]);
 
@@ -392,10 +399,8 @@ export class CallRoom extends DurableObject<Env> {
     if (!call) return;
     const now = Date.now();
     if (call.state === "ended") {
-      if (now >= (call.endedAt ?? 0) + KEEP_ENDED_MS) {
-        for (const c of call.closing ?? []) {
-          console.error(JSON.stringify({ msg: "sfu session given up", callId: call.callId, attempts: c.attempts }));
-        }
+      // Deleted an hour after the end, but not while a session is still to close (see schedule()).
+      if (now >= (call.endedAt ?? 0) + KEEP_ENDED_MS && !call.closing?.length) {
         this.call = null;
         await this.ctx.storage.deleteAll();
       } else {
@@ -463,9 +468,11 @@ export class CallRoom extends DurableObject<Env> {
     const call = this.call;
     if (!call) return;
     // While closeSessions() runs, its retries are scheduled when it is done (no alarm storm meanwhile).
-    const due = this.closingNow ? [] : (call.closing ?? []).map((c) => c.nextAt);
+    const due = this.closingNow ? [] : (call.closing ?? []).flatMap((c) => (c.exhausted ? [] : [c.nextAt]));
     if (call.state === "ended") {
-      due.push((call.endedAt ?? Date.now()) + KEEP_ENDED_MS);
+      // The ended call is deleted after its hour once no session is left to close; with only exhausted ones left
+      // nothing is due: the state stays, for an operator (logged as "sfu session close retries exhausted").
+      if (!call.closing?.length) due.push((call.endedAt ?? Date.now()) + KEEP_ENDED_MS);
     } else {
       const l = limits(this.env);
       due.push(call.createdAt + l.maxCallSeconds * 1000);
@@ -473,6 +480,11 @@ export class CallRoom extends DurableObject<Env> {
       for (const p of call.participants) {
         if (p.disconnectedAt !== null) due.push(p.disconnectedAt + l.reconnectGraceSeconds * 1000);
       }
+    }
+    if (due.length === 0) {
+      // While closeSessions() runs, it schedules when it is done.
+      if (!this.closingNow) await this.ctx.storage.deleteAlarm();
+      return;
     }
     const next = Math.min(...due);
     if ((await this.ctx.storage.getAlarm()) !== next) await this.ctx.storage.setAlarm(next);
@@ -520,9 +532,10 @@ export class CallRoom extends DurableObject<Env> {
     await this.closeSessions();
   }
 
-  // Closes the SFU tracks of every session on the closing list that is due. Done when Realtime confirms, or refuses
-  // for good (4xx, e.g. the session is gone); when Realtime is unavailable or rate limits us (5xx, 408, 425, 429, see
-  // sfu()) the session stays on the list and the alarm tries again with backoff. The roster never waits for this: the rotated key is what keeps a dropped device out.
+  // Closes the SFU tracks of every session on the closing list that is due. Done when Realtime confirms, or says the
+  // session is gone (404, 410). On any other failure (unavailable, rate limited, another refusal) the session stays on
+  // the list and the alarm tries again with backoff, not before Retry-After; after CLOSE_MAX_ATTEMPTS it stays on the
+  // list without retries. The roster never waits for this: the rotated key is what keeps a dropped device out.
   private async closeSessions(): Promise<void> {
     if (this.closingNow) return;
     this.closingNow = true;
@@ -530,14 +543,16 @@ export class CallRoom extends DurableObject<Env> {
       for (;;) {
         const call = this.call;
         const now = Date.now();
-        const next = call?.closing?.find((c) => c.nextAt <= now);
+        const next = call?.closing?.find((c) => !c.exhausted && c.nextAt <= now);
         if (!call || !next) break;
         let done = true;
+        let retryAfterMs = 0;
         try {
           await closeSession(this.env, next.sessionId);
         } catch (e) {
           if (!(e instanceof RealtimeUnavailable || e instanceof RealtimeRejected)) throw e;
-          done = e instanceof RealtimeRejected;
+          done = e instanceof RealtimeRejected && SESSION_GONE.has(e.upstreamStatus);
+          if (e instanceof RealtimeUnavailable) retryAfterMs = Math.min(e.retryAfterMs, CLOSE_RETRY_AFTER_MAX_MS);
           console.error(JSON.stringify({ msg: "sfu session not closed", callId: call.callId, done, err: e.message }));
         }
         // The call may have changed, or been deleted, during the request: update it as it is now.
@@ -545,9 +560,19 @@ export class CallRoom extends DurableObject<Env> {
         if (!current?.closing || current.callId !== call.callId) break;
         if (done) {
           current.closing = current.closing.filter((c) => c !== next);
+        } else if (++next.attempts >= CLOSE_MAX_ATTEMPTS) {
+          next.exhausted = true;
+          console.error(
+            JSON.stringify({
+              msg: "sfu session close retries exhausted",
+              callId: call.callId,
+              sessionId: next.sessionId,
+              attempts: next.attempts,
+            }),
+          );
         } else {
-          next.attempts++;
-          next.nextAt = Date.now() + Math.min(CLOSE_RETRY_MS * 2 ** (next.attempts - 1), CLOSE_RETRY_MAX_MS);
+          const backoff = Math.min(CLOSE_RETRY_MS * 2 ** (next.attempts - 1), CLOSE_RETRY_MAX_MS);
+          next.nextAt = Date.now() + Math.max(backoff, retryAfterMs);
         }
         await this.save();
       }

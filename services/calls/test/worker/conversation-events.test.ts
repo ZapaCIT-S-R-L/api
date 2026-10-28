@@ -358,6 +358,85 @@ describe("conversation.members_removed", () => {
     expect(await errorCode(await mum.join(call.callId))).toBe("call_ended");
   });
 
+  it("waits for Retry-After on a 429, retries with backoff through other failures, and closes the tracks at last", async () => {
+    const { mum4, sockets, callId, mumSession } = await familyCall();
+    await removeMember("conv-1", mum4.accountId);
+    const sessionRequests = () => realtime.requests.filter((r) => r.path.includes(mumSession)).length;
+
+    // 429 with Retry-After: 30 (seconds): the retry is due in 30 s, not the 5 s backoff.
+    realtime.failNextClose = 429;
+    realtime.retryAfter = "30";
+    await deliver([
+      event({ type: "conversation.members_removed", conversationId: "conv-1", accountIds: [mum4.accountId] }),
+    ]);
+    await sockets.mum4.next("__closed");
+    const first = await room(callId).pendingCloses();
+    expect(first).toEqual([{ sessionId: mumSession, attempts: 1, nextAt: expect.any(Number) as number }]);
+    expect(first[0]?.nextAt).toBeGreaterThanOrEqual(Date.now() + 29_000);
+    expect(await runInDurableObject(room(callId), (_, state) => state.storage.getAlarm())).toBe(first[0]?.nextAt);
+    const tried = sessionRequests();
+    await advance(callId, 6);
+    expect(sessionRequests()).toBe(tried);
+
+    // 429 again, Retry-After as an HTTP date 45 s ahead (longer than the 10 s backoff): honoured.
+    realtime.failNext = 429;
+    realtime.retryAfter = new Date(Date.now() + 25_000 + 45_000).toUTCString();
+    await advance(callId, 25);
+    const second = await room(callId).pendingCloses();
+    expect(second).toEqual([{ sessionId: mumSession, attempts: 2, nextAt: expect.any(Number) as number }]);
+    expect(second[0]?.nextAt).toBeGreaterThan(Date.now() + 43_000);
+
+    // A refusal that does not say the session is gone (400) is retried too, with the backoff (20 s).
+    realtime.failNext = 400;
+    await advance(callId, 46);
+    const third = await room(callId).pendingCloses();
+    expect(third).toEqual([{ sessionId: mumSession, attempts: 3, nextAt: expect.any(Number) as number }]);
+    expect(third[0]?.nextAt).toBeGreaterThan(Date.now() + 19_000);
+    expect(third[0]?.nextAt).toBeLessThanOrEqual(Date.now() + 20_000);
+    expect(realtime.tracks.get(mumSession)).toHaveLength(2);
+
+    // The fourth try gets through: every track closed, nothing left to retry.
+    await advance(callId, 21);
+    expect(realtime.tracks.get(mumSession)).toEqual([]);
+    expect(await room(callId).pendingCloses()).toEqual([]);
+    for (const s of Object.values(sockets)) s.close();
+  });
+
+  it("keeps the SFU clean-up when its retries run out, and keeps the ended call's state for it", async () => {
+    const dad = await phone(issuer, uniqueAccount(), 1);
+    const mum = await phone(issuer, uniqueAccount(), 2);
+    const { call } = await dad.create();
+    await mum.join(call.callId);
+    const dadSession = await session(dad, call.callId);
+    await publish(dad, call.callId, dadSession, "audio-dad");
+    const dadRequests = () => realtime.requests.filter((r) => r.path.includes(dadSession)).length;
+
+    // Realtime fails every attempt to close dad's session: the first now, then 9 retries (about 20 minutes).
+    realtime.failNext = 503;
+    await deliver([
+      event({ type: "conversation.closed", conversationId: "conv-1", occurredAt: new Date().toISOString() }),
+    ]);
+    for (let attempt = 2; attempt <= 10; attempt++) {
+      expect(await room(call.callId).pendingCloses()).toEqual([
+        { sessionId: dadSession, attempts: attempt - 1, nextAt: expect.any(Number) as number },
+      ]);
+      realtime.failNext = 503;
+      await advance(call.callId, 301);
+    }
+
+    // Retries exhausted: no more requests and no alarm for it, but the session stays on the list, tracks still open.
+    const kept = [{ sessionId: dadSession, attempts: 10, nextAt: expect.any(Number) as number, exhausted: true }];
+    expect(await room(call.callId).pendingCloses()).toEqual(kept);
+    expect(realtime.tracks.get(dadSession)).toHaveLength(1);
+    expect(await runInDurableObject(room(call.callId), (_, state) => state.storage.getAlarm())).toBeNull();
+    const tried = dadRequests();
+
+    // Past the ended call's hour the state is not deleted while a clean-up is pending.
+    await advance(call.callId, 3600);
+    expect(dadRequests()).toBe(tried);
+    expect(await room(call.callId).pendingCloses()).toEqual(kept);
+  });
+
   it("a replayed event does not drop a member who was readmitted and rejoined since", async () => {
     const { dad, mum4, mum5, grandma, callId, sockets } = await familyCall();
     await removeMember("conv-1", mum4.accountId);
