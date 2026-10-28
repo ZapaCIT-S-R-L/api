@@ -5,10 +5,11 @@
 // "Current member" here is the same rule as the chat API's: a row in conversation_members that the account hasn't
 // deleted, in a conversation that is still open (a closed conversation is read-only, so no calls either). Members
 // who deleted the conversation are neither callers nor rung. Only ids leave this service: no names, no keys.
-// When api #73 lands, observers will be excluded from calls; for now every member is included.
+// Observers (a kid's parents reading the chat, api #73) are not members for calls: they can't start or join one,
+// they aren't rung and they never get the call key. `observer: true` lets the calls service show them the call log.
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { ACCOUNT_ID, CONVERSATION_ID } from "./body";
-import { devicesOf, membersOf } from "./conversations";
+import { devicesOf, isObserver, membersOf } from "./conversations";
 import type { Env } from "./env";
 import type { Role } from "./graph";
 import { revokedBefore } from "./membership";
@@ -22,11 +23,14 @@ export interface CallMember {
 
 export interface Membership {
   member: boolean;
-  // Every current member, the asking account included; empty unless `member` is true.
+  // The asking account reads the conversation as a parent: it may see the call log, nothing else.
+  observer: boolean;
+  // Every current member who takes part in calls, the asking account included; empty unless `member` is true.
   members: CallMember[];
 }
 
-const NOT_A_MEMBER: Membership = { member: false, members: [] };
+const NOT_A_MEMBER: Membership = { member: false, observer: false, members: [] };
+const OBSERVER: Membership = { member: false, observer: true, members: [] };
 
 // null: no such conversation (or not a conversation id).
 export async function membership(env: Env, conversationId: unknown, accountId: unknown): Promise<Membership | null> {
@@ -39,14 +43,18 @@ export async function membership(env: Env, conversationId: unknown, accountId: u
     return NOT_A_MEMBER;
   }
   const current = (await membersOf(env, conversationId)).filter((m) => m.deleted_at === null);
-  if (!current.some((m) => m.account_id === accountId)) return NOT_A_MEMBER;
+  const me = current.find((m) => m.account_id === accountId);
+  if (!me) return NOT_A_MEMBER;
+  if (isObserver(me)) return OBSERVER;
+  const callers = current.filter((m) => !isObserver(m));
   const devices = await devicesOf(
     env,
-    current.map((m) => m.account_id),
+    callers.map((m) => m.account_id),
   );
   return {
     member: true,
-    members: current.map((m) => ({
+    observer: false,
+    members: callers.map((m) => ({
       accountId: m.account_id,
       role: m.role,
       devices: (devices.get(m.account_id) ?? []).map((d) => d.deviceId),

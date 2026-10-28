@@ -34,7 +34,8 @@ function chat(method: string, url: string, body: Record<string, unknown>): [numb
     if (method === "PUT") {
       const members = chats.get(conversationId) ?? new Map<string, { role: string; devices: number[] }>();
       chats.set(conversationId, members);
-      const m = members.get(accountId) ?? { role: body.role === "kid" ? "kid" : "parent", devices: [] };
+      const role = body.role === "kid" || body.role === "observer" ? body.role : "parent";
+      const m = members.get(accountId) ?? { role, devices: [] };
       if (!m.devices.includes(Number(body.deviceId))) m.devices.push(Number(body.deviceId));
       members.set(accountId, m);
       return [204, null];

@@ -193,7 +193,9 @@ async function join(c: Context): Promise<Response> {
 async function list(c: Context): Promise<Response> {
   const conversationId = new URL(c.request.url).searchParams.get("conversationId");
   if (conversationId === null) throw invalid("conversationId is required.");
-  if (!(await membership(c.env, id(conversationId, "conversationId"), c.who.accountId)).member) return notAllowed();
+  // Observers (a kid's parents, api #73) see the log ("Alex called Maria, 12 min"), never the audio.
+  const who = await membership(c.env, id(conversationId, "conversationId"), c.who.accountId);
+  if (!who.member && !who.observer) return notAllowed();
   const { results } = await c.env.DB.prepare(
     `SELECT id, created_at, created_by_account, created_by_device, answered_at, ended_at, end_reason, peak_participants
      FROM calls WHERE conversation_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?`,

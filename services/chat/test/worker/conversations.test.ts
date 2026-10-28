@@ -1,5 +1,5 @@
-// Conversations and the family rules: parents and kids start them, kids' parents are always in, other families' kids
-// only when shared through a connection.
+// Conversations and the family rules: parents and kids start them, kids' parents read along as observers (unless
+// oversight is off for that kid), other families' kids only when shared through a connection.
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { noRooms } from "../../src/rooms";
@@ -39,7 +39,7 @@ describe("POST /v1/conversations", () => {
     await seedFamilies();
   });
 
-  it("a parent and their kid: direct, and the other parent joins as guardian", async () => {
+  it("a parent and their kid: direct, and the other parent joins as observer", async () => {
     const res = await create(MUM, [ALEX]);
     expect(res.status).toBe(201);
     const body = await res.json<ConversationBody>();
@@ -47,8 +47,10 @@ describe("POST /v1/conversations", () => {
     expect(body.kind).toBe("direct");
     expect(body.state).toBe("open");
     expect(memberIds(body)).toEqual([ALEX, DAD, MUM].sort());
-    expect(body.members.find((m) => m.accountId === DAD)).toMatchObject({ guardian: true, role: "parent" });
+    expect(body.members.find((m) => m.accountId === DAD)).toMatchObject({ guardian: true, role: "observer" });
     expect(body.members.find((m) => m.accountId === ALEX)).toMatchObject({ guardian: false, role: "kid" });
+    // A parent who is in the conversation in their own right writes like anyone else.
+    expect(body.members.find((m) => m.accountId === MUM)).toMatchObject({ guardian: false, role: "parent" });
     expect(body.members.find((m) => m.accountId === MUM)?.devices).toEqual([{ deviceId: 1, registrationId: 100 }]);
   });
 
@@ -59,23 +61,47 @@ describe("POST /v1/conversations", () => {
     expect((await again.json<ConversationBody>()).id).toBe(first.id);
   });
 
-  it("a group across connected families includes every kid's parents", async () => {
+  it("a group across connected families includes every kid's parents as observers", async () => {
     const res = await create(MUM, [ALEX, MARIA]);
     expect(res.status).toBe(201);
     const body = await res.json<ConversationBody>();
     expect(body.kind).toBe("group");
     expect(memberIds(body)).toEqual([ALEX, ANA, DAD, MARIA, MUM].sort());
+    expect(
+      body.members
+        .filter((m) => m.role === "observer")
+        .map((m) => m.accountId)
+        .sort(),
+    ).toEqual([ANA, DAD]);
+  });
+
+  // Stefan, 2026-10-27 (#73): oversight is on by default and parents can turn it off per kid.
+  it("oversight off for a kid: its parents aren't added; a sibling with oversight on still brings them", async () => {
+    await apply(
+      noRooms,
+      { type: "family.member_added", familyId: "fam1", accountId: SAM, role: "kid" },
+      { type: "device.upserted", accountId: SAM, deviceId: 1, registrationId: 200 },
+      { type: "connection.kid_shared", connectionId: "con12", kidAccountId: SAM },
+      { type: "kid.oversight_changed", kidAccountId: ALEX, enabled: false },
+    );
+    const alone = await (await create(ALEX, [MARIA])).json<ConversationBody>();
+    expect(memberIds(alone)).toEqual([ALEX, ANA, MARIA].sort());
+    const withSam = await (await create(ALEX, [SAM, MARIA])).json<ConversationBody>();
+    expect(memberIds(withSam)).toEqual([ALEX, ANA, DAD, MARIA, MUM, SAM].sort());
+    await apply(noRooms, { type: "kid.oversight_changed", kidAccountId: ALEX, enabled: true });
+    const again = await (await create(ALEX, [ANA])).json<ConversationBody>();
+    expect(memberIds(again)).toEqual([ALEX, ANA, DAD, MUM].sort());
   });
 
   // Stefan, 2026-10-28: kids start chats too ("alex can't initiate a chat with a parent" was a bug). The family
   // graph still decides who may be in it, and the kids' parents are always added.
-  it("a kid starts a chat with their own parent; the other parent joins as guardian", async () => {
+  it("a kid starts a chat with their own parent; the other parent joins as observer", async () => {
     const res = await create(ALEX, [MUM]);
     expect(res.status).toBe(201);
     const body = await res.json<ConversationBody>();
     expect(body.kind).toBe("direct");
     expect(memberIds(body)).toEqual([ALEX, DAD, MUM].sort());
-    expect(body.members.find((m) => m.accountId === DAD)).toMatchObject({ guardian: true, role: "parent" });
+    expect(body.members.find((m) => m.accountId === DAD)).toMatchObject({ guardian: true, role: "observer" });
     expect(body.members.find((m) => m.accountId === ALEX)).toMatchObject({ guardian: false, role: "kid" });
   });
 
@@ -86,7 +112,7 @@ describe("POST /v1/conversations", () => {
     expect((await byAlex.json<ConversationBody>()).id).toBe(byMum.id);
   });
 
-  it("a kid starts a chat with a sibling; both parents are added as guardians", async () => {
+  it("a kid starts a chat with a sibling; both parents are added as observers", async () => {
     await apply(
       noRooms,
       { type: "family.member_added", familyId: "fam1", accountId: SAM, role: "kid" },
@@ -146,6 +172,40 @@ describe("POST /v1/conversations", () => {
       body: "x",
     });
     expect(notJson.status).toBe(415);
+  });
+});
+
+describe("GET /v1/contacts (discovery)", () => {
+  const contacts = async (account: string, role = "parent") => {
+    const res = await as(await token(account, role), "/v1/contacts");
+    expect(res.status).toBe(200);
+    const body = await res.json<{ contacts: { accountId: string; role: string; familyId: string }[] }>();
+    return body.contacts;
+  };
+
+  it("a kid sees its family and the shared kids (and parents) of connected families, ids only", async () => {
+    await seedFamilies();
+    const alex = await contacts(ALEX, "kid");
+    expect(alex.map((c) => c.accountId).sort()).toEqual([ANA, DAD, MARIA, MUM].sort());
+    expect(alex.find((c) => c.accountId === MARIA)).toEqual({ accountId: MARIA, role: "kid", familyId: "fam2" });
+    expect(alex.find((c) => c.accountId === MUM)).toEqual({ accountId: MUM, role: "parent", familyId: "fam1" });
+    expect(JSON.stringify(alex)).not.toMatch(/name|avatar/);
+  });
+
+  it("an unshared kid isn't listed, and doesn't see the other family; a lone family sees nobody", async () => {
+    await seedFamilies();
+    await apply(noRooms, { type: "connection.kid_unshared", connectionId: "con12", kidAccountId: MARIA });
+    expect((await contacts(ALEX, "kid")).map((c) => c.accountId).sort()).toEqual([ANA, DAD, MUM].sort());
+    expect((await contacts(MARIA, "kid")).map((c) => c.accountId)).toEqual([ANA]);
+    expect(await contacts(STRANGER)).toEqual([]);
+    expect(await contacts("acc_nobody")).toEqual([]);
+  });
+
+  it("a parent sees the connected family's parents and shared kids", async () => {
+    await seedFamilies();
+    expect((await contacts(ANA)).map((c) => c.accountId).sort()).toEqual([ALEX, DAD, MARIA, MUM].sort());
+    await apply(noRooms, { type: "connection.removed", connectionId: "con12" });
+    expect((await contacts(ANA)).map((c) => c.accountId)).toEqual([MARIA]);
   });
 });
 

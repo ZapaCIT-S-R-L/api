@@ -7,6 +7,7 @@ import { durableRooms } from "../../src/room";
 import {
   ALEX,
   ANA,
+  DAD,
   as,
   call,
   event,
@@ -99,6 +100,18 @@ describe("attachments", () => {
     const c = await conversation();
     await applyEvent(env, durableRooms(env), event({ type: "connection.removed", connectionId: "con12" }));
     expect((await reserve(c)).status).toBe(403);
+  });
+
+  it("an observer (a kid's parent reading the chat, #73) can't reserve an upload", async () => {
+    const res = await as(await tok(MUM), "/v1/conversations", {
+      method: "POST",
+      body: JSON.stringify({ members: [ALEX] }),
+    });
+    const c = await res.json<ConversationBody>();
+    expect(c.members.find((m) => m.accountId === DAD)?.role).toBe("observer");
+    const refused = await reserve(c, DAD);
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toMatchObject({ error: { code: "observer_read_only" } });
   });
 
   it("the body must be exactly the reserved size; size is capped at 25 MiB", async () => {

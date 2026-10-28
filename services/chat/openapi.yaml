@@ -25,8 +25,18 @@ info:
 
     **Membership** (families, kids, connections, devices) comes from the account service as events on a Cloudflare
     Queue (see the `MembershipEvent` schema). The chat service keeps its own copy and enforces the family rules:
-    parents and kids both start conversations, every conversation with a kid includes the parents of every family in
-    it, and kids from another family must be shared through a connection.
+    parents and kids both start conversations, kids from another family must be shared through a connection, and
+    every conversation with a kid includes the kid's current parents as read-only *observers* (unless the family
+    turned oversight off for that kid).
+
+    **Parent oversight (observers).** A kid's parents are members with role `observer`: their devices get every
+    sealed envelope like any member, so they read the whole chat on their phones, but they can't send (messages,
+    reactions, attachments: `403 observer_read_only`), they aren't part of calls and they get no push. A parent who
+    is in a conversation in their own right (started it, or was listed as a member) is a normal `parent` member.
+    Kids aren't shown who observes (Stefan, 2026-10-27); every parent of every kid in a chat may be reading it,
+    which the privacy policy and the apps state when families connect or share a kid. Oversight is on by default
+    and can be turned off per kid (`kid.oversight_changed`); turning it back on adds the parents again, and the
+    kid's own device re-seals the history to them, because the server has no plaintext to send.
 
     **Transport.** HTTPS only, TLS 1.3 only, HSTS. No cookies and no CORS. **Data location:** D1, R2 and Durable
     Objects in the EU jurisdiction. **Errors** are JSON `{"error": {"code": "...", "message": "..."}}`.
@@ -49,17 +59,19 @@ tags:
   - name: Conversations
     description: |
       1:1 (`direct`) and group chats. Members are accounts; each member's devices receive their own envelopes.
-      A parent starts a conversation with accounts from their own family and from connected families. The server
-      adds the parents of every kid's family (`guardian: true`); they are real members of the encryption.
+      A parent or a kid starts a conversation with accounts from their own family and from connected families
+      (`GET /v1/contacts` lists who). The server adds the current parents of every kid's family as `observer`
+      members (`guardian: true`, the older name); they are real recipients of the encryption but read-only, and
+      observers don't count toward the limit of 64 members (they have their own limit of 64).
       When a connection is removed or a kid is unshared, the affected conversations are `closed`: history stays on
       the phones, nothing new can be sent, and the remaining devices rotate their sender keys.
   - name: Messages
     description: |
       One sealed envelope per recipient device: libsignal `PreKeySignalMessage` (`prekey_message`), `SignalMessage`
       (`message`) or `SenderKeyMessage` (`sender_key_message`). Sender keys travel as pairwise-encrypted messages.
-      The envelopes of a send must cover exactly the current devices of every member except the sending device
-      (the sender's own other devices included), so nobody is silently left out (`409`) and a re-installed device
-      is noticed (`410`).
+      The envelopes of a send must cover exactly the current devices of every member, observers included, except
+      the sending device (the sender's own other devices included), so nobody is silently left out (`409`) and a
+      re-installed device is noticed (`410`). Observers can't send (`403 observer_read_only`).
 
       **Delivery.** Each envelope is a *delivery copy* for one device. It stays queued until that device
       acknowledges it, the device is removed, or the conversation is deleted by every member. Connected devices get
@@ -176,6 +188,36 @@ paths:
                 required: [conversations]
                 properties:
                   conversations: { type: array, items: { $ref: "#/components/schemas/Conversation" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/contacts:
+    get:
+      tags: [Conversations]
+      operationId: listContacts
+      summary: The accounts the caller may start a conversation with (discovery).
+      description: |
+        Everyone in the caller's own family, and from each connected family its parents and the kids shared through
+        that connection (for a kid caller: only when the kid itself is shared through it). Ids and roles only: names
+        and avatars come from the account service. A kid uses this to find the kids shared with it.
+      responses:
+        "200":
+          description: Contacts, grouped by family.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [contacts]
+                properties:
+                  contacts:
+                    type: array
+                    maxItems: 2000
+                    items:
+                      type: object
+                      required: [accountId, role, familyId]
+                      properties:
+                        accountId: { $ref: "#/components/schemas/AccountId" }
+                        role: { $ref: "#/components/schemas/Role" }
+                        familyId: { type: string, maxLength: 64 }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /v1/conversations/{conversationId}:
@@ -471,9 +513,10 @@ components:
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     Forbidden:
       description: |
-        `not_allowed`: the family rules don't allow it (kids can't start conversations; families must be connected
-        and kids shared). `conversation_closed`: the conversation is read-only. `device_not_registered`: the token's
-        device isn't registered with the account service (sending and the stream need a registered device).
+        `not_allowed`: the family rules don't allow it (families must be connected and kids shared).
+        `conversation_closed`: the conversation is read-only. `observer_read_only`: the caller reads this
+        conversation as a kid's parent and can't send to it. `device_not_registered`: the token's device isn't
+        registered with the account service (sending and the stream need a registered device).
       content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
     NotFound:
       description: "`not_found`: no such conversation or attachment for this account."
@@ -521,6 +564,12 @@ components:
     Role:
       type: string
       enum: [parent, kid]
+    MemberRole:
+      type: string
+      enum: [parent, kid, observer]
+      description: |
+        `observer`: a parent of a kid in the conversation, added by the server; receives everything, sends nothing,
+        takes no part in calls.
 
     DeviceAddress:
       type: object
@@ -548,10 +597,11 @@ components:
             required: [accountId, role, guardian, devices]
             properties:
               accountId: { $ref: "#/components/schemas/AccountId" }
-              role: { $ref: "#/components/schemas/Role" }
+              role: { $ref: "#/components/schemas/MemberRole" }
               guardian:
                 type: boolean
-                description: Added by the server as a parent of a kid in the conversation.
+                deprecated: true
+                description: "The same as `role: observer`; kept for the apps built against the first contract."
               devices:
                 type: array
                 items:
@@ -616,6 +666,7 @@ components:
             - connection.removed
             - connection.kid_shared
             - connection.kid_unshared
+            - kid.oversight_changed
             - device.upserted
             - device.removed
             - account.deleted
@@ -659,6 +710,16 @@ components:
             type: { const: connection.kid_unshared }
             connectionId: { type: string, maxLength: 64 }
             kidAccountId: { $ref: "#/components/schemas/AccountId" }
+        - title: kid.oversight_changed
+          description: |
+            The kid's family turned parent oversight on or off for this kid (on by default; no event = on). Off: the
+            kid's parents leave the kid's conversations as observers. On: they join again, and the kid's device
+            re-seals the history to them.
+          required: [type, kidAccountId, enabled]
+          properties:
+            type: { const: kid.oversight_changed }
+            kidAccountId: { $ref: "#/components/schemas/AccountId" }
+            enabled: { type: boolean }
         - title: device.upserted
           description: A device was registered, re-installed (new registration id) or got a new push token.
           required: [type, accountId, deviceId, registrationId]

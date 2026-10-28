@@ -26,12 +26,15 @@ async function chatStub(method: string, path: string, body: unknown): Promise<vo
   if (res.status !== 204) throw new Error(`chat stub answered ${res.status}`);
 }
 
-// What the chat service knows: this device of this account is a member of the conversation.
+export type StubRole = "parent" | "kid" | "observer";
+
+// What the chat service knows: this device of this account is a member of the conversation ("observer": a kid's
+// parent reading the chat, not a member for calls).
 export function addMember(
   conversationId: string,
   accountId: string,
   deviceId = 1,
-  role: "parent" | "kid" = "parent",
+  role: StubRole = "parent",
 ): Promise<void> {
   return chatStub("PUT", "/members", { conversationId, accountId, deviceId, role });
 }
@@ -63,15 +66,16 @@ export async function phone(
   accountId: string,
   deviceId = 1,
   conversations = ["conv-1"],
-  role: "parent" | "kid" = "parent",
+  role: StubRole = "parent",
   { member = true, conv, sep }: { member?: boolean; conv?: string[]; sep?: number } = {},
 ): Promise<Phone> {
   if (member) for (const c of conversations) await addMember(c, accountId, deviceId, role);
   const token = await issuer.sign(
+    // An observer is a parent account; "observer" is its role in the conversation, not in the token.
     chatClaims({
       sub: accountId,
       dev: deviceId,
-      role,
+      role: role === "observer" ? "parent" : role,
       ...(conv === undefined ? {} : { conv }),
       ...(sep === undefined ? {} : { sep }),
     }),

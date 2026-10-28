@@ -12,8 +12,11 @@ only routing metadata (who is in which conversation, which device sent to which 
   root), checked against its JWKS (`ACCOUNT_JWKS_URL`, cached; served from cache through an outage of up to a day).
 - **Family graph:** membership events from the account service on the Cloudflare Queue
   `zapakid-membership-<env>` (dead letters in `…-dlq`). The chat service keeps its own copy and enforces the family
-  rules: parents and kids start conversations, kids' parents are always members, other families' kids only when
-  shared.
+  rules: parents and kids start conversations, other families' kids only when shared, and a kid's parents read the
+  kid's chats as **observers** (api #73): their devices get every sealed envelope, but they can't send
+  (`403 observer_read_only`), they aren't in calls and they get no push. Oversight is on by default and can be
+  turned off per kid (`kid.oversight_changed`); the server keeps that in `kid_oversight`. Kids aren't told who
+  observes. `GET /v1/contacts` lists who an account may chat with (ids only).
 
 - **Messages:** one Durable Object per conversation (SQLite, EU) holds a delivery copy per recipient device until
   that device acknowledges it, and serves the WebSocket stream (hibernation). Devices without a stream get a
@@ -23,10 +26,12 @@ only routing metadata (who is in which conversation, which device sent to which 
 - **Calls:** the calls service asks `ChatMembership.member(conversationId, accountId)` (`src/rpc.ts`) whether the
   caller is a current member of an open conversation, and which members and devices to ring, and
   `ChatMembership.revoked(accountId, sep)` whether a chat token's session epoch was revoked by a logout-all.
-  Workers RPC through its `CHAT` service binding only; there is no HTTP route for it. The other way round, when
-  chat removes members from a conversation or closes it, it tells the calls service with a `ConversationEvent` on
-  the Cloudflare Queue `zapakid-conversation-events-<env>` (`src/conversation-events.ts`, transactional outbox in
-  D1, flushed right after the change and hourly), so a live call drops those members' devices at once.
+  Observers are not members for calls (never rung, never given the call key); the answer flags them
+  (`observer: true`) so the calls service can show them the call log. Workers RPC through its `CHAT` service
+  binding only; there is no HTTP route for it. The other way round, when chat removes members from a conversation
+  or closes it, it tells the calls service with a `ConversationEvent` on the Cloudflare Queue
+  `zapakid-conversation-events-<env>` (`src/conversation-events.ts`, transactional outbox in D1, flushed right
+  after the change and hourly), so a live call drops those members' devices at once.
 
 - **Sign out everywhere:** `account.sessions_revoked` (from `POST /v1/auth/logout-all` on the account service)
   stores the account's new session epoch (`session_epochs`). Chat tokens with a lower `sep` claim are refused and

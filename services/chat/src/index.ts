@@ -10,7 +10,7 @@ import {
 import { authenticate, type Caller } from "./auth";
 import { readJson } from "./body";
 import { flushConversationEvents, purgeConversationOutbox } from "./conversation-events";
-import { handleCreate, handleDelete, handleGet, handleList } from "./conversations";
+import { handleContacts, handleCreate, handleDelete, handleGet, handleList } from "./conversations";
 import type { Env } from "./env";
 import { handleHealth } from "./health";
 import { error, HttpError, isLoopback, json } from "./http";
@@ -36,6 +36,7 @@ type Authed = (
 const ROUTES: { method: string; pattern: RegExp; handler: Authed }[] = [
   { method: "POST", pattern: /^\/v1\/conversations$/, handler: (r, env, c) => handleCreate(r, env, c) },
   { method: "GET", pattern: /^\/v1\/conversations$/, handler: (r, env, c) => handleList(r, env, c) },
+  { method: "GET", pattern: /^\/v1\/contacts$/, handler: (_r, env, c) => handleContacts(env, c) },
   {
     method: "GET",
     pattern: /^\/v1\/conversations\/([^/]+)$/,

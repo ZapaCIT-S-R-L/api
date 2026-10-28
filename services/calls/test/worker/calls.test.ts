@@ -20,7 +20,7 @@ import {
 
 let issuer: TestIssuer;
 let realtime: FakeRealtime;
-const rings: { callId: string; conversationId: string; event: string }[] = [];
+const rings: { callId: string; conversationId: string; event: string; to?: { accountId: string }[] }[] = [];
 const push: PushProvider = {
   ring: (call) => {
     rings.push({ ...call, event: "ring" });
@@ -326,6 +326,23 @@ describe("GET /v1/calls (call log)", () => {
     const dad = await phone(issuer, uniqueAccount(), 1, ["conv-1"]);
     expect((await dad.request("GET", "/v1/calls?conversationId=conv-2")).status).toBe(403);
     expect((await dad.request("GET", "/v1/calls")).status).toBe(400);
+  });
+
+  // api #73: a kid's parents read the chat as observers. They see the call log, never the audio.
+  it("an observer sees the log but can't start or join a call, and isn't rung", async () => {
+    const alex = await phone(issuer, uniqueAccount(), 1, ["conv-obs"], "kid");
+    const maria = await phone(issuer, uniqueAccount(), 1, ["conv-obs"], "kid");
+    const mum = await phone(issuer, uniqueAccount(), 1, ["conv-obs"], "observer");
+    const started = await alex.create("conv-obs");
+    expect(rings.flatMap((r) => r.to ?? []).map((t) => t.accountId)).toEqual([maria.accountId]);
+    expect((await mum.request("POST", "/v1/calls", { conversationId: "conv-obs" })).status).toBe(403);
+    expect((await mum.request("POST", `/v1/calls/${started.call.callId}/join`)).status).toBe(404);
+    expect((await mum.request("GET", `/v1/calls/${started.call.callId}`)).status).toBe(404);
+    const log = await mum.request("GET", "/v1/calls?conversationId=conv-obs");
+    expect(log.status).toBe(200);
+    expect((await log.json<{ calls: { callId: string }[] }>()).calls.map((c) => c.callId)).toEqual([
+      started.call.callId,
+    ]);
   });
 
   it("the daily purge drops calls older than the retention period", async () => {

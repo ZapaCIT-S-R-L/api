@@ -18,6 +18,7 @@ const TABLES = [
   "session_epochs",
   "device_tombstones",
   "processed_events",
+  "kid_oversight",
   "conversation_outbox",
 ];
 
