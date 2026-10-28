@@ -55,6 +55,12 @@ export async function getParent(env: Env, id: string): Promise<Parent | null> {
   return row ? toParent(row) : null;
 }
 
+export async function setDisplayName(env: Env, id: string, displayName: string): Promise<void> {
+  await env.DB.prepare("UPDATE parents SET display_name = ?, updated_at = ? WHERE id = ?")
+    .bind(displayName, new Date().toISOString(), id)
+    .run();
+}
+
 export interface SignInResult {
   session: { token: string; expiresAt: string };
   parent: Parent;

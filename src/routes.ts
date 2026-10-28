@@ -1,11 +1,11 @@
 // The stable v1 endpoints: sign-in with Apple or Google, the signed-in parent, logout.
 import { decide, type AgeRange } from "./age";
-import { appleSignIn, googleSignIn, readJsonBody, type SignInRequest } from "./body";
+import { appleSignIn, googleSignIn, invalid, onlyFields, readJson, readJsonBody, type SignInRequest } from "./body";
 import type { Env } from "./env";
 import { empty, error, json } from "./http";
 import { ProviderUnavailable } from "./jwks";
 import { checkNonceClaim, consumeNonce, InvalidNonce, issueNonce } from "./nonces";
-import { getParent, signIn } from "./parents";
+import { getParent, setDisplayName, signIn } from "./parents";
 import {
   AttestationFailed,
   AttestationUnavailable,
@@ -117,12 +117,30 @@ export async function handleNonce(_request: Request, env: Env): Promise<Response
   return json(await issueNonce(env));
 }
 
+// GET reads the signed-in parent; PATCH changes their display name (the only field a parent edits).
 export async function handleMe(request: Request, env: Env): Promise<Response> {
   const session = await authenticate(request, env);
   if (!session) return unauthorized();
+  if (request.method === "PATCH") {
+    const body = await readJson(request);
+    onlyFields(body, ["displayName"], "the body");
+    await setDisplayName(env, session.parentId, displayNameFrom(body.displayName));
+  }
   const parent = await getParent(env, session.parentId);
   if (!parent) return unauthorized();
   return json(parent);
+}
+
+const MAX_DISPLAY_NAME = 40;
+
+// Trimmed, 1-40 characters, no control characters (names show in other phones' member lists and chats).
+function displayNameFrom(value: unknown): string {
+  const name = typeof value === "string" ? value.trim() : "";
+  // eslint-disable-next-line no-control-regex
+  if (name.length === 0 || name.length > MAX_DISPLAY_NAME || /[\u0000-\u001f\u007f-\u009f]/.test(name)) {
+    throw invalid(`displayName must be 1 to ${MAX_DISPLAY_NAME} characters, without control characters.`);
+  }
+  return name;
 }
 
 export async function handleLogout(request: Request, env: Env): Promise<Response> {
