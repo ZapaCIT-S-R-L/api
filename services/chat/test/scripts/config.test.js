@@ -73,6 +73,14 @@ test("rate limits: separate counters per environment, never shared with the acco
   }
 });
 
+test("each environment has its own attachments bucket in the EU jurisdiction", () => {
+  for (const [name, env] of Object.entries(deployed)) {
+    assert.deepEqual(env.r2_buckets, [
+      { binding: "ATTACHMENTS", bucket_name: `zapakid-chat-attachments-${name}`, jurisdiction: "eu" },
+    ]);
+  }
+});
+
 test("hourly retention purge in every deployed environment", () => {
   for (const env of [staging, production]) assert.deepEqual(env.triggers, { crons: ["23 * * * *"] });
 });

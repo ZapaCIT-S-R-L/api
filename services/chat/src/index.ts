@@ -1,5 +1,12 @@
 // ZapaKid chat Worker (chat.zapakid.ro): conversations and sealed envelopes. It only ever sees ciphertext and
 // routing metadata; it can never decrypt a chat.
+import {
+  handleDownload,
+  handleGetAttachment,
+  handleReserve,
+  handleUpload,
+  purgeAbandonedAttachments,
+} from "./attachments";
 import { authenticate, type Caller } from "./auth";
 import { readJson } from "./body";
 import { handleCreate, handleDelete, handleGet, handleList } from "./conversations";
@@ -35,6 +42,12 @@ const ROUTES: { method: string; pattern: RegExp; handler: Authed }[] = [
     method: "DELETE",
     pattern: /^\/v1\/conversations\/([^/]+)$/,
     handler: (_r, env, c, [id]) => handleDelete(env, rooms(env), c, id ?? ""),
+  },
+  { method: "POST", pattern: /^\/v1\/attachments$/, handler: (r, env, c) => handleReserve(r, env, c) },
+  {
+    method: "GET",
+    pattern: /^\/v1\/attachments\/([^/]+)$/,
+    handler: (r, env, c, [id]) => handleGetAttachment(r, env, c, id ?? ""),
   },
   {
     method: "POST",
@@ -76,6 +89,14 @@ async function route(request: Request, env: Env, ctx: ExecutionContext): Promise
     return handleHealth(request, env);
   }
   if (url.pathname === "/__e2e/membership" && request.method === "POST") return e2eMembership(request, env);
+  // One-time URLs: the token in the URL is the authorization, no chat token.
+  const oneTime = /^\/v1\/attachments\/([^/]+)\/(upload|download)$/.exec(url.pathname);
+  if (oneTime) {
+    const [, id = "", kind] = oneTime;
+    const method = kind === "upload" ? "PUT" : "GET";
+    if (request.method !== method) return error(405, "method_not_allowed", `Use ${method}.`, { allow: method });
+    return kind === "upload" ? handleUpload(request, env, id) : handleDownload(request, env, id);
+  }
   const matches = ROUTES.filter((r) => r.pattern.test(url.pathname));
   if (matches.length === 0) return error(404, "not_found", "No such endpoint.");
   const match = matches.find((r) => r.method === request.method);
@@ -106,5 +127,6 @@ export default {
 
   async scheduled(_controller, env): Promise<void> {
     await purgeProcessedEvents(env);
+    await purgeAbandonedAttachments(env);
   },
 } satisfies ExportedHandler<Env>;

@@ -18,6 +18,10 @@ only routing metadata (who is in which conversation, which device sent to which 
   content-free push through the `PushProvider` interface (`src/push.ts`); it is switched off until the APNs/FCM
   credentials exist (ios #27, android #25).
 
+- **Attachments:** ciphertext only, in R2 (EU) under a random id, ≤ 25 MiB, through one-time upload/download URLs
+  (15 minutes, usable once; only the token's hash is stored). Kept until the conversation is purged; abandoned
+  reservations and expired download URLs are purged hourly.
+
 ## Develop
 
 Node 24 (`../../.nvmrc`). In this folder: `npm ci --ignore-scripts`, then

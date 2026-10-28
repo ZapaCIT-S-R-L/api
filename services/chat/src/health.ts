@@ -7,7 +7,14 @@ function problems(env: Env): string[] {
   const present: Partial<Env> = env;
   const found: string[] = [];
   if (!present.DB) found.push("DB binding missing");
-  for (const name of ["ROOMS", "CREATE_LIMITER", "SEND_LIMITER", "CONNECT_LIMITER"] as const) {
+  for (const name of [
+    "ROOMS",
+    "ATTACHMENTS",
+    "CREATE_LIMITER",
+    "SEND_LIMITER",
+    "CONNECT_LIMITER",
+    "ATTACH_LIMITER",
+  ] as const) {
     if (!present[name]) found.push(`${name} binding missing`);
   }
   if (!present.TOKEN_ISSUER) found.push("TOKEN_ISSUER empty");

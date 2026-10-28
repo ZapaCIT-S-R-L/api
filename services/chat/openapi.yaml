@@ -24,7 +24,6 @@ info:
     **Transport.** HTTPS only, TLS 1.3 only, HSTS. No cookies and no CORS. **Data location:** D1, R2 and Durable
     Objects in the EU jurisdiction. **Errors** are JSON `{"error": {"code": "...", "message": "..."}}`.
 
-    **Stability.** Operations marked `x-status: draft` are planned and not implemented yet.
   license:
     name: AGPL-3.0-only
     identifier: AGPL-3.0-only
@@ -310,7 +309,6 @@ paths:
     post:
       tags: [Attachments]
       operationId: createAttachment
-      x-status: draft
       summary: Reserve an upload for an encrypted photo or voice message.
       requestBody:
         required: true
@@ -352,7 +350,6 @@ paths:
     get:
       tags: [Attachments]
       operationId: getAttachment
-      x-status: draft
       summary: A one-time download URL for an uploaded attachment (conversation members only).
       responses:
         "200":
@@ -376,7 +373,6 @@ paths:
     put:
       tags: [Attachments]
       operationId: uploadAttachment
-      x-status: draft
       summary: The one-time upload URL from `createAttachment`.
       security: []
       requestBody:
@@ -389,13 +385,13 @@ paths:
         "400": { $ref: "#/components/responses/InvalidRequest" }
         "404": { description: "`not_found`: unknown, expired or already used URL." }
         "413": { $ref: "#/components/responses/TooLarge" }
+        "411": { description: "`length_required`: send Content-Length (exactly the reserved size)." }
 
   /v1/attachments/{attachmentId}/download:
     parameters: [{ $ref: "#/components/parameters/attachmentId" }, { $ref: "#/components/parameters/oneTimeToken" }]
     get:
       tags: [Attachments]
       operationId: downloadAttachment
-      x-status: draft
       summary: The one-time download URL from `getAttachment`.
       security: []
       responses:

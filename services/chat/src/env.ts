@@ -9,6 +9,10 @@ export interface Env {
   CREATE_LIMITER: RateLimit;
   SEND_LIMITER: RateLimit;
   CONNECT_LIMITER: RateLimit;
+  // Per device per minute: attachment reservations and download URLs.
+  ATTACH_LIMITER: RateLimit;
+  // Encrypted attachments (EU jurisdiction when deployed), keyed by attachment id.
+  ATTACHMENTS: R2Bucket;
   VERSION: string;
   VERSION_URL: string;
   // Chat tokens: the account service's host (`iss`), this service's host (in `aud`) and the account JWKS.
