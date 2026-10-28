@@ -84,6 +84,14 @@ export function chatTokenProblems(env: Partial<Env>): string[] {
   return found;
 }
 
+// The parent's current session epoch (0 until the first logout-all).
+export async function sessionEpoch(env: Env, parentId: string): Promise<number> {
+  const epoch = await env.DB.prepare("SELECT session_epoch FROM parents WHERE id = ?")
+    .bind(parentId)
+    .first<number>("session_epoch");
+  return epoch ?? 0;
+}
+
 const notConfigured = () => error(503, "not_configured", "Chat tokens are not available yet. Try again later.");
 
 export async function handleJwks(_request: Request, env: Env): Promise<Response> {
@@ -108,8 +116,11 @@ export async function handleChatToken(request: Request, env: Env): Promise<Respo
     return error(409, "device_required", "Register this device first (POST /v1/devices), then ask again.");
   }
   const conversations = await source.conversations(env, session.parentId);
+  const epoch = await sessionEpoch(env, session.parentId);
   const now = Math.floor(Date.now() / 1000);
-  const token = await new SignJWT({ dev: device, role: "parent", conv: conversations })
+  // `sep`: the parent's session epoch. POST /v1/auth/logout-all increments it and tells the chat and calls
+  // services, which then refuse tokens with a lower one (api #81).
+  const token = await new SignJWT({ dev: device, role: "parent", conv: conversations, sep: epoch })
     .setProtectedHeader({ alg: "ES256", kid: key.kid, typ: "JWT" })
     .setIssuer(env.CHAT_TOKEN_ISSUER)
     .setAudience(chatTokenAudiences(env.CHAT_TOKEN_AUDIENCES))

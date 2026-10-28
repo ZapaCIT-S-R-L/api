@@ -10,8 +10,11 @@ Audio is never stored; the call log in D1 (EU) is metadata only.
   (`ACCOUNT_JWKS_URL`). No login of its own. The token's `conv` claim holds membership scopes, not conversation
   ids, so it is not used to authorize: on every start, join and view the Worker asks the chat service
   (`ChatMembership.member`, `services/chat/src/rpc.ts`) over the `CHAT` service binding (Workers RPC, never public
-  HTTP) whether the caller is a current member, and which members' devices to ring (`src/chat.ts`). Tests and the
-  local e2e run play the chat service with `test/chat-stub`.
+  HTTP) whether the caller is a current member, and which members' devices to ring (`src/chat.ts`). On every request
+  it also asks `ChatMembership.revoked(accountId, sep)` whether the token's session epoch (`sep`) was revoked by a
+  logout-all at the account API; a live call re-asks for each participant every minute and before every relayed
+  key, and drops the ones revoked (`left` with reason `revoked`, socket closed with `4401`). Tests and the local
+  e2e run play the chat service with `test/chat-stub`.
 - Node 24 (`../../.nvmrc`). In this folder: `npm ci --ignore-scripts`, then
   - `npm test`: `test/scripts` (node:test) and `test/worker` (Vitest in the Workers runtime);
   - `scripts/check.sh`: everything CI runs (`.github/workflows/ci-calls.yml`), including the e2e tests against

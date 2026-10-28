@@ -20,8 +20,13 @@ only routing metadata (who is in which conversation, which device sent to which 
   credentials exist (ios #27, android #25).
 
 - **Calls:** the calls service asks `ChatMembership.member(conversationId, accountId)` (`src/rpc.ts`) whether the
-  caller is a current member of an open conversation, and which members and devices to ring. Workers RPC through
-  its `CHAT` service binding only; there is no HTTP route for it.
+  caller is a current member of an open conversation, and which members and devices to ring, and
+  `ChatMembership.revoked(accountId, sep)` whether a chat token's session epoch was revoked by a logout-all.
+  Workers RPC through its `CHAT` service binding only; there is no HTTP route for it.
+
+- **Sign out everywhere:** `account.sessions_revoked` (from `POST /v1/auth/logout-all` on the account service)
+  stores the account's new session epoch (`session_epochs`). Chat tokens with a lower `sep` claim are refused and
+  their open streams closed with `4401`, so a lost phone loses chat within seconds, not when its token expires.
 
 - **Attachments:** ciphertext only, in R2 (EU) under a random id, ≤ 25 MiB, through one-time upload/download URLs
   (15 minutes, usable once; only the token's hash is stored). Kept until the conversation is purged; abandoned

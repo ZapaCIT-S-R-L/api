@@ -4,6 +4,7 @@
 import { invalid, onlyFields, readJsonBody } from "./body";
 import type { Env } from "./env";
 import { empty, error, json } from "./http";
+import { flushMembershipEvents, membershipEvent } from "./membership-events";
 import { isAllowlisted } from "./play-integrity";
 import { attest } from "./routes";
 import { authenticate, type Session } from "./sessions";
@@ -285,7 +286,17 @@ export async function handleRemoveDevice(request: Request, env: Env, rawId: stri
   const deviceId = /^[1-9]\d{0,2}$/.test(rawId) ? Number(rawId) : 0;
   const notFound = () => error(404, "not_found", "No such device on this account.");
   if (deviceId < 1 || deviceId > MAX_DEVICES) return notFound();
-  const [removed] = await env.DB.batch([
+  const [, removed] = await env.DB.batch([
+    // The chat service drops the device's queued envelopes and tells the other phones to stop sealing to it.
+    // Written before the delete, only if the device exists (same transaction).
+    membershipEvent(
+      env,
+      { type: "device.removed", accountId: session.parentId, deviceId },
+      {
+        sql: "EXISTS (SELECT 1 FROM devices WHERE account_id = ? AND device_id = ?)",
+        binds: [session.parentId, deviceId],
+      },
+    ),
     env.DB.prepare("DELETE FROM devices WHERE account_id = ? AND device_id = ? RETURNING device_id").bind(
       session.parentId,
       deviceId,
@@ -294,6 +305,7 @@ export async function handleRemoveDevice(request: Request, env: Env, rawId: stri
     env.DB.prepare("DELETE FROM sessions WHERE parent_id = ? AND device_id = ?").bind(session.parentId, deviceId),
   ]);
   if (!removed?.results.length) return notFound();
+  await flushMembershipEvents(env);
   return empty(204);
 }
 

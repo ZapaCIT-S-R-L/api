@@ -4,7 +4,7 @@
 import { authenticate, InvalidToken, type Caller } from "./auth";
 import { BadRequest, id, invalid, onlyFields, readJson } from "./body";
 import type { CallView, Result } from "./call-room";
-import { ChatUnavailable, membership, ringTargets } from "./chat";
+import { ChatUnavailable, membership, revoked, ringTargets } from "./chat";
 import type { Env } from "./env";
 import { empty, error, json } from "./http";
 import { KeysUnavailable } from "./jwks";
@@ -75,6 +75,18 @@ export async function routeCalls(request: Request, env: Env): Promise<Response |
         console.error(JSON.stringify({ msg: "account keys unavailable", err: e.message }));
         return error(503, "keys_unavailable", "Calls are unavailable right now. Try again later.");
       }
+      throw e;
+    }
+    // Signed out everywhere since the token was issued (api #81): refused like an invalid token.
+    try {
+      if (await revoked(env, who)) {
+        console.log(JSON.stringify({ msg: "token rejected", reason: "revoked" }));
+        return error(401, "invalid_token", "This chat token was revoked (signed out everywhere). Sign in again.", {
+          "www-authenticate": "Bearer",
+        });
+      }
+    } catch (e) {
+      if (e instanceof ChatUnavailable) return chatUnavailable(e);
       throw e;
     }
     const callId = match[1] ?? "";

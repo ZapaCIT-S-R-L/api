@@ -7,18 +7,23 @@
 // envelope for a device that is not connected yet waits here until it connects, for the current epoch only.
 import { DurableObject } from "cloudflare:workers";
 import type { Caller, Role } from "./auth";
-import { ChatUnavailable, membership } from "./chat";
+import { ChatUnavailable, membership, revoked } from "./chat";
 import type { Env } from "./env";
 import { limits } from "./limits";
 import { pushProvider } from "./push";
 
 export type EndReason = "hung_up" | "no_answer" | "declined" | "max_duration" | "disconnected";
 type State = "ringing" | "active" | "ended";
+// Why a participant left: hung up, lost the connection for longer than the grace, or the account signed out
+// everywhere (its chat token was revoked, api #81).
+export type LeaveReason = "left" | "disconnected" | "revoked";
 
 interface Participant {
   accountId: string;
   deviceId: number;
   role: Role;
+  // The chat token's session epoch at join (missing in calls from before it was kept: counts as 0).
+  sep?: number;
   joinedAt: number;
   sessionId: string | null;
   tracks: string[];
@@ -52,6 +57,9 @@ interface CallState {
   // The devices rung at the start (the other members' devices, from the chat service), to cancel the same ring.
   // Missing in calls started before it was kept.
   ring?: { accountId: string; deviceId: number }[];
+  // When the participants' chat tokens are next checked for revocation with the chat service (api #81). Missing in
+  // calls from before it was kept: checked at the next alarm.
+  revalidateAt?: number;
 }
 
 export interface CallView {
@@ -90,12 +98,21 @@ const MAX_MESSAGE_CHARS = 64 * 1024;
 const MAX_TRACKS = 16;
 const MAX_SOCKETS = 32;
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
+// How often a live call asks the chat service whether a participant's chat token was revoked (a logout-all): the
+// longest a lost phone stays in a call it joined before the sign-out. The chat service is also asked before every
+// key a phone relays.
+export const REVALIDATE_MS = 60 * 1000;
+// Close code for a socket whose chat token was revoked: the app asks the account API for a new token (and gets 401
+// until the parent signs in again), as for an expired one.
+export const CLOSE_TOKEN_REVOKED = 4401;
 
 export const deviceKey = (accountId: string, deviceId: number) => JSON.stringify([accountId, deviceId]);
 
 interface SocketInfo {
   accountId: string;
   deviceId: number;
+  // The chat token's session epoch (missing on sockets from before it was kept: counts as 0).
+  sep?: number;
 }
 
 export class CallRoom extends DurableObject<Env> {
@@ -135,6 +152,7 @@ export class CallRoom extends DurableObject<Env> {
       peak: 1,
       pending: [],
       ring,
+      revalidateAt: now + REVALIDATE_MS,
     };
     await this.env.DB.prepare(
       "INSERT INTO calls (id, conversation_id, created_by_account, created_by_device, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -272,7 +290,7 @@ export class CallRoom extends DurableObject<Env> {
     const [client, server] = [pair[0], pair[1]];
     const key = deviceKey(who.accountId, who.deviceId);
     this.ctx.acceptWebSocket(server, [key]);
-    server.serializeAttachment({ accountId: who.accountId, deviceId: who.deviceId } satisfies SocketInfo);
+    server.serializeAttachment({ accountId: who.accountId, deviceId: who.deviceId, sep: who.sep } satisfies SocketInfo);
     const p = this.find(who);
     if (p && p.disconnectedAt !== null) {
       p.disconnectedAt = null;
@@ -306,6 +324,20 @@ export class CallRoom extends DurableObject<Env> {
     const keys = parseKeys(parsed);
     if (typeof keys === "string") {
       send(ws, { type: "error", code: "invalid_message", message: keys });
+      return;
+    }
+    // A phone whose account signed out everywhere must not hand out call keys (api #81).
+    let gone: boolean;
+    try {
+      gone = await revoked(this.env, { accountId: info.accountId, sep: info.sep ?? 0 });
+    } catch (e) {
+      if (!(e instanceof ChatUnavailable)) throw e;
+      console.error(JSON.stringify({ msg: "chat unavailable", err: e.message }));
+      send(ws, { type: "error", code: "chat_unavailable", message: "Try again in a moment." });
+      return;
+    }
+    if (gone) {
+      await this.revoke(info);
       return;
     }
     await this.relayKeys(ws, info, keys);
@@ -350,6 +382,10 @@ export class CallRoom extends DurableObject<Env> {
     if (call.state === "ringing" && now >= call.createdAt + l.ringTimeoutSeconds * 1000) {
       await this.end("no_answer");
       return;
+    }
+    if (now >= (call.revalidateAt ?? 0)) {
+      await this.revalidate(call, now);
+      if (this.call?.state === "ended") return;
     }
     const gone = call.participants.filter(
       (p) => p.disconnectedAt !== null && now >= p.disconnectedAt + l.reconnectGraceSeconds * 1000,
@@ -406,7 +442,7 @@ export class CallRoom extends DurableObject<Env> {
       next = (call.endedAt ?? Date.now()) + KEEP_ENDED_MS;
     } else {
       const l = limits(this.env);
-      const due = [call.createdAt + l.maxCallSeconds * 1000];
+      const due = [call.createdAt + l.maxCallSeconds * 1000, call.revalidateAt ?? Date.now()];
       if (call.state === "ringing") due.push(call.createdAt + l.ringTimeoutSeconds * 1000);
       for (const p of call.participants) {
         if (p.disconnectedAt !== null) due.push(p.disconnectedAt + l.reconnectGraceSeconds * 1000);
@@ -416,7 +452,40 @@ export class CallRoom extends DurableObject<Env> {
     if ((await this.ctx.storage.getAlarm()) !== next) await this.ctx.storage.setAlarm(next);
   }
 
-  private async remove(p: Participant, reason: "left" | "disconnected"): Promise<void> {
+  // Asks the chat service whether any participant's chat token was revoked since the last check, and removes those
+  // (api #81). A chat outage leaves everyone in and tries again at the next check.
+  private async revalidate(call: CallState, now: number): Promise<void> {
+    call.revalidateAt = now + REVALIDATE_MS;
+    for (const p of [...call.participants]) {
+      if (this.call?.state === "ended") return;
+      let gone: boolean;
+      try {
+        gone = await revoked(this.env, { accountId: p.accountId, sep: p.sep ?? 0 });
+      } catch (e) {
+        if (!(e instanceof ChatUnavailable)) throw e;
+        console.error(JSON.stringify({ msg: "chat unavailable", err: e.message }));
+        break;
+      }
+      if (gone) await this.revoke(p);
+    }
+    if (this.call?.state !== "ended") await this.save();
+  }
+
+  // The account signed out everywhere: its device leaves the call (the others get a new call key) and its sockets
+  // are closed.
+  private async revoke(device: { accountId: string; deviceId: number }): Promise<void> {
+    const p = this.find(device);
+    if (p && this.call?.state !== "ended") await this.remove(p, "revoked");
+    for (const ws of this.ctx.getWebSockets(deviceKey(device.accountId, device.deviceId))) {
+      try {
+        ws.close(CLOSE_TOKEN_REVOKED, "session revoked");
+      } catch {
+        // Already closed.
+      }
+    }
+  }
+
+  private async remove(p: Participant, reason: LeaveReason): Promise<void> {
     const call = this.call;
     if (!call) return;
     call.participants = call.participants.filter((q) => q !== p);
@@ -579,6 +648,7 @@ function participant(who: Caller, now: number): Participant {
     accountId: who.accountId,
     deviceId: who.deviceId,
     role: who.role,
+    sep: who.sep,
     joinedAt: now,
     sessionId: null,
     tracks: [],

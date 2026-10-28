@@ -119,6 +119,7 @@ describe("POST /v1/chat/token", () => {
     expect(payload.dev).toBe(3);
     expect(payload.role).toBe("parent");
     expect(payload.conv).toEqual(["conv-a", "conv-b"]);
+    expect(payload.sep).toBe(0);
     expect(payload.jti).toMatch(/^[A-Za-z0-9_-]{22,}$/);
     const lifetime = (payload.exp ?? 0) - (payload.iat ?? 0);
     expect(lifetime).toBe(600);
@@ -162,6 +163,18 @@ describe("POST /v1/chat/token", () => {
     const res = await call("/v1/chat/token", { method: "POST" });
     expect(res.status).toBe(401);
     expect(res.headers.get("www-authenticate")).toBe("Bearer");
+  });
+
+  // api #81: the chat and calls services refuse tokens with a `sep` below the parent's current epoch.
+  it("carries the parent's session epoch (sep), which logout-all increments", async () => {
+    const { session, parent } = await signIn();
+    seeded.devices.set(parent.id, 1);
+    await call("/v1/auth/logout-all", { method: "POST", headers: bearer(session.token) });
+    expect((await token(session.token)).status).toBe(401);
+    const again = await signIn();
+    const { token: jwt } = await (await token(again.session.token)).json<{ token: string }>();
+    const { payload } = await jwtVerify(jwt, createLocalJWKSet(await jwks()), { audience: "chat.localhost" });
+    expect(payload.sep).toBe(1);
   });
 
   it("after logout → 401", async () => {

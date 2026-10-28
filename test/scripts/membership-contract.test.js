@@ -21,4 +21,8 @@ test("the account spec defines MembershipEvent with the family events it sends",
   const schema = parse(readFileSync(root, "utf8")).components.schemas.MembershipEvent;
   assert.ok(schema.properties.type.enum.includes("family.member_added"));
   assert.ok(schema.properties.type.enum.includes("family.member_removed"));
+  assert.ok(schema.properties.type.enum.includes("device.removed"));
+  assert.ok(schema.properties.type.enum.includes("account.sessions_revoked"));
+  const revoked = schema.oneOf.find((v) => v.title === "account.sessions_revoked");
+  assert.deepEqual(revoked.required, ["type", "accountId", "epoch"]);
 });

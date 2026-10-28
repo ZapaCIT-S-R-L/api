@@ -13,8 +13,15 @@ info:
     the account service (`POST /v1/chat/token` on api.zapakid.ro) as `Authorization: Bearer <token>`. The chat
     service checks it against the account service's public keys (`/.well-known/jwks.json`, cached), so it keeps
     working while the account service is down. Claims: `iss` the account service URL (`https://api.zapakid.ro`), `aud` containing this host, `sub`
-    the account id, `dev` the libsignal device id (1–127), `role` `parent` or `kid`, `iat`, `exp`. A `conv` claim, if
+    the account id, `dev` the libsignal device id (1–127), `role` `parent` or `kid`, `iat`, `exp`, and `sep` the
+    account's session epoch when the token was issued (0 if missing). A `conv` claim, if
     present, is ignored here: the chat service is the source of conversation membership.
+
+    **Revocation.** When an account signs out everywhere (`POST /v1/auth/logout-all` on the account service), the
+    `account.sessions_revoked` event brings the account's new session epoch. From then on a token whose `sep` is
+    below it is refused (401), and streams opened with such tokens are closed (`4401`); the app asks the account
+    service for a new token, which answers 401 until the parent signs in again. The calls service asks this
+    service (`ChatMembership.revoked`) the same question on every request.
 
     **Membership** (families, kids, connections, devices) comes from the account service as events on a Cloudflare
     Queue (see the `MembershipEvent` schema). The chat service keeps its own copy and enforces the family rules:
@@ -63,9 +70,9 @@ tags:
       Server → client text frames: `{"type":"envelope","envelope":Envelope}` and
       `{"type":"event","event":{"kind":"members_changed"|"devices_changed"|"conversation_closed","conversationId":"…"}}`.
       Client → server: `{"type":"ack","envelopeIds":["…"]}` (deletes delivery copies) and `ping` (answered `pong`
-      without waking the object). The server closes the socket with code `4401` when the chat token expires and
-      `4403` when the account leaves the conversation; reconnect with a fresh token. Queued envelopes are sent
-      right after connecting.
+      without waking the object). The server closes the socket with code `4401` when the chat token expires or is
+      revoked (the account signed out everywhere) and `4403` when the account leaves the conversation; reconnect
+      with a fresh token. Queued envelopes are sent right after connecting.
   - name: Attachments
     description: |
       Photos and voice messages are encrypted on the phone with a fresh key per file (EXIF stripped first). Only the
@@ -583,6 +590,7 @@ components:
             - device.upserted
             - device.removed
             - account.deleted
+            - account.sessions_revoked
       oneOf:
         - title: family.member_added
           description: A parent or kid joined a family (new family, parent invitation accepted, kid added).
@@ -649,3 +657,13 @@ components:
           properties:
             type: { const: account.deleted }
             accountId: { $ref: "#/components/schemas/AccountId" }
+        - title: account.sessions_revoked
+          description: |
+            The account signed out everywhere (`POST /v1/auth/logout-all`): its session epoch is now `epoch`. Chat
+            tokens whose `sep` claim is lower (or missing) are refused from then on, and streams opened with them
+            are closed. Epochs only grow; keep the highest seen.
+          required: [type, accountId, epoch]
+          properties:
+            type: { const: account.sessions_revoked }
+            accountId: { $ref: "#/components/schemas/AccountId" }
+            epoch: { type: integer, minimum: 1 }

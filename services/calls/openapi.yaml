@@ -212,13 +212,18 @@ paths:
         **Server → phone:**
         - `{"type":"roster","call":Call}` on connect and after every change;
         - `{"type":"joined","accountId","deviceId","epoch"}`, `{"type":"left","accountId","deviceId","epoch","reason"}`
-          (`left` or `disconnected`), `{"type":"declined","accountId"}`;
+          (`left`, `disconnected`, or `revoked`: that account signed out everywhere), `{"type":"declined","accountId"}`;
         - `{"type":"key","epoch","fromAccount","fromDevice","blob"}`: a sealed call key for this device (queued
           envelopes for the current epoch arrive right after connecting);
         - `{"type":"keys_ack","epoch","delivered","queued"}`;
         - `{"type":"ended","reason"}`, then the server closes the socket;
-        - `{"type":"error","code","message"}`: `invalid_message`, `not_participant`, `stale_epoch` (with `epoch`);
+        - `{"type":"error","code","message"}`: `invalid_message`, `not_participant`, `stale_epoch` (with `epoch`),
+          `chat_unavailable`;
         - `{"type":"pong"}`.
+
+        The server closes the socket with code `4401` when the chat token it was opened with is revoked (the
+        account signed out everywhere, `POST /v1/auth/logout-all` at the account API): that device leaves the call.
+        Participants are checked against the chat service every minute and before every key they relay.
 
         **Phone → server:**
         - `{"type":"keys","epoch":N,"envelopes":[{"toAccount","toDevice","blob"}]}`: 1-8 envelopes, each the libsignal
@@ -404,7 +409,10 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Unauthorized:
-      description: "`invalid_token`: no chat token, or it is expired, for another host or not from the account API."
+      description: |
+        `invalid_token`: no chat token, or it is expired, revoked (the account signed out everywhere after it was
+        issued: its `sep` claim is below the account's session epoch, which the chat service knows), for another
+        host or not from the account API.
       headers:
         WWW-Authenticate: { schema: { type: string, const: Bearer } }
       content:

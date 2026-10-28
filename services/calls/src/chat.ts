@@ -21,6 +21,8 @@ export interface Membership {
 // The chat service's ChatMembership entrypoint, as the binding exposes it. null: no such conversation.
 export interface ChatMembershipRpc {
   member(conversationId: string, accountId: string): Promise<Membership | null>;
+  // Whether a chat token issued at session epoch `sep` for the account was revoked by a logout-all (api #81).
+  revoked(accountId: string, sep: number): Promise<boolean>;
 }
 
 // The chat service failed or answered something unexpected: refuse (503), never allow.
@@ -63,6 +65,20 @@ export async function membership(env: Env, conversationId: string, accountId: st
     member: true,
     members: a.members.map((m) => ({ accountId: m.accountId, role: m.role, devices: [...m.devices] })),
   };
+}
+
+// Whether the caller's chat token was revoked: the account signed out everywhere (POST /v1/auth/logout-all at the
+// account API) after the token was issued. Only the chat service receives that event, so it is asked on every
+// request and before every relayed key; a token found revoked is refused like an invalid one.
+export async function revoked(env: Env, who: { accountId: string; sep: number }): Promise<boolean> {
+  let answer: unknown;
+  try {
+    answer = await env.CHAT.revoked(who.accountId, who.sep);
+  } catch (e) {
+    throw new ChatUnavailable(String(e));
+  }
+  if (typeof answer !== "boolean") throw new ChatUnavailable("unexpected answer from ChatMembership.revoked");
+  return answer;
 }
 
 // The devices to ring for a call: every device of every other member (not the caller's own devices).

@@ -8,6 +8,9 @@ import type { Env } from "./env";
 export type MembershipEvent = { v: 1; id: string; occurredAt: string } & (
   | { type: "family.member_added"; familyId: string; accountId: string; role: "parent" | "kid" }
   | { type: "family.member_removed"; familyId: string; accountId: string }
+  | { type: "device.removed"; accountId: string; deviceId: number }
+  // POST /v1/auth/logout-all: chat tokens with a `sep` claim below `epoch` are revoked (api #81).
+  | { type: "account.sessions_revoked"; accountId: string; epoch: number }
 );
 
 type EventData = MembershipEvent extends infer E
@@ -34,6 +37,24 @@ export function membershipEvent(
     now,
     ...(onlyIf?.binds ?? []),
   );
+}
+
+// The outbox insert for an account.sessions_revoked event, to put in the batch right after the statement that
+// increments parents.session_epoch: `epoch` is read from the row in the same transaction, so the event always
+// carries the epoch the increment produced.
+export function sessionsRevokedEvent(env: Env, accountId: string): D1PreparedStatement {
+  const now = new Date().toISOString();
+  const body = JSON.stringify({
+    v: 1,
+    id: crypto.randomUUID(),
+    type: "account.sessions_revoked",
+    accountId,
+    epoch: 0,
+    occurredAt: now,
+  });
+  return env.DB.prepare(
+    "INSERT INTO membership_outbox (body, created_at) SELECT json_set(?, '$.epoch', session_epoch), ? FROM parents WHERE id = ?",
+  ).bind(body, now, accountId);
 }
 
 // Sends unsent events in order and marks them sent. Returns how many were sent. Never throws: a missing binding or

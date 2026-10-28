@@ -4,6 +4,7 @@ import { appleSignIn, googleSignIn, invalid, onlyFields, readJson, readJsonBody,
 import type { Env } from "./env";
 import { empty, error, json } from "./http";
 import { ProviderUnavailable } from "./jwks";
+import { flushMembershipEvents, membershipEvent, sessionsRevokedEvent } from "./membership-events";
 import { checkNonceClaim, consumeNonce, InvalidNonce, issueNonce } from "./nonces";
 import { getParent, setDisplayName, signIn } from "./parents";
 import {
@@ -143,11 +144,40 @@ function displayNameFrom(value: unknown): string {
   return name;
 }
 
-// Signs out every session of the signed-in parent (a lost phone, or "sign out everywhere").
+// Signs out every session of the signed-in parent (a lost phone, or "sign out everywhere"), and bumps the parent's
+// session epoch so chat tokens already issued stop working at the chat and calls services too (api #81): the
+// account.sessions_revoked event carries the new epoch. With ?removeDevices=true the parent's registered devices
+// go as well (a device.removed event each), so other phones stop sealing messages to the lost phone; every phone
+// registers again at its next sign-in.
 export async function handleLogoutAll(request: Request, env: Env): Promise<Response> {
   const session = await authenticate(request, env);
   if (!session) return unauthorized();
-  await env.DB.prepare("DELETE FROM sessions WHERE parent_id = ?").bind(session.parentId).run();
+  const removeDevices = new URL(request.url).searchParams.get("removeDevices");
+  if (removeDevices !== null && removeDevices !== "true" && removeDevices !== "false") {
+    throw invalid("removeDevices must be true or false.");
+  }
+  const parentId = session.parentId;
+  let devices: number[] = [];
+  if (removeDevices === "true") {
+    const rows = await env.DB.prepare("SELECT device_id FROM devices WHERE account_id = ? ORDER BY device_id")
+      .bind(parentId)
+      .all<{ device_id: number }>();
+    devices = rows.results.map((r) => r.device_id);
+  }
+  await env.DB.batch([
+    env.DB.prepare("UPDATE parents SET session_epoch = session_epoch + 1 WHERE id = ?").bind(parentId),
+    env.DB.prepare("DELETE FROM sessions WHERE parent_id = ?").bind(parentId),
+    ...(devices.length > 0
+      ? [
+          env.DB.prepare(
+            "DELETE FROM devices WHERE account_id = ? AND device_id IN (SELECT value FROM json_each(?))",
+          ).bind(parentId, JSON.stringify(devices)),
+          ...devices.map((deviceId) => membershipEvent(env, { type: "device.removed", accountId: parentId, deviceId })),
+        ]
+      : []),
+    sessionsRevokedEvent(env, parentId),
+  ]);
+  await flushMembershipEvents(env);
   return empty(204);
 }
 

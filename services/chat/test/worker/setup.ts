@@ -15,6 +15,7 @@ const TABLES = [
   "connections",
   "shared_kids",
   "devices",
+  "session_epochs",
   "processed_events",
 ];
 

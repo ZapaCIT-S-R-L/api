@@ -1,6 +1,19 @@
 // Chat tokens: ES256 from the account service's JWKS, this audience, at most 15 minutes, sub/dev/role.
 import { beforeEach, describe, expect, it } from "vitest";
-import { as, call, claims, makeIssuer, MUM, seedFamilies, stubJwks, type Issuer, type JwksStub } from "./helpers";
+import { noRooms } from "../../src/rooms";
+import {
+  apply,
+  as,
+  call,
+  claims,
+  DAD,
+  makeIssuer,
+  MUM,
+  seedFamilies,
+  stubJwks,
+  type Issuer,
+  type JwksStub,
+} from "./helpers";
 
 let issuer: Issuer;
 let jwks: JwksStub;
@@ -68,6 +81,33 @@ describe("chat token", () => {
     for (const bad of [{ sub: "" }, { dev: 0 }, { dev: 128 }, { dev: "x" }, { role: "admin" }, { role: undefined }]) {
       expect(await status(await issuer.sign(claims(MUM, bad))), JSON.stringify(bad)).toBe(401);
     }
+  });
+
+  // api #81: logout-all revokes the chat tokens issued before the account's new session epoch.
+  describe("session epoch (sep)", () => {
+    it("without a revocation, any sep (or none) works; a malformed one is refused", async () => {
+      expect(await status(await issuer.sign(claims(MUM)))).toBe(200);
+      expect(await status(await issuer.sign(claims(MUM, { sep: 0 })))).toBe(200);
+      expect(await status(await issuer.sign(claims(MUM, { sep: 7 })))).toBe(200);
+      for (const sep of [-1, 1.5, "1", null, {}]) {
+        expect(await status(await issuer.sign(claims(MUM, { sep }))), JSON.stringify(sep)).toBe(401);
+      }
+    });
+
+    it("after account.sessions_revoked, tokens below the epoch (or without sep) are refused, others work", async () => {
+      await apply(noRooms, { type: "account.sessions_revoked", accountId: MUM, epoch: 2 });
+      const res = await as(await issuer.sign(claims(MUM, { sep: 1 })), "/v1/conversations");
+      expect(res.status).toBe(401);
+      expect(res.headers.get("www-authenticate")).toBe("Bearer");
+      const body = await res.json<{ error: { code: string; message: string } }>();
+      expect(body.error.code).toBe("unauthorized");
+      expect(body.error.message).toMatch(/revoked/);
+      expect(await status(await issuer.sign(claims(MUM)))).toBe(401);
+      expect(await status(await issuer.sign(claims(MUM, { sep: 2 })))).toBe(200);
+      expect(await status(await issuer.sign(claims(MUM, { sep: 3 })))).toBe(200);
+      // Other accounts are not affected.
+      expect(await status(await issuer.sign(claims(DAD, { sep: 0 })))).toBe(200);
+    });
   });
 
   it("dev as a decimal string is accepted", async () => {

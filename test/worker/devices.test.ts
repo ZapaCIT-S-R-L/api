@@ -72,6 +72,14 @@ const register = (token: string, body: unknown, headers: Record<string, string> 
     body: JSON.stringify(body),
   });
 
+async function outboxEvents(): Promise<Record<string, unknown>[]> {
+  const { results } = await env.DB.prepare("SELECT body, sent_at FROM membership_outbox ORDER BY seq").all<{
+    body: string;
+    sent_at: string | null;
+  }>();
+  return results.map((r) => ({ ...(JSON.parse(r.body) as Record<string, unknown>), sent: r.sent_at !== null }));
+}
+
 async function authenticateToken(token: string) {
   const session = await authenticate(workerRequest("https://api.test/", { headers: bearer(token) }), env);
   if (!session) throw new Error("no session");
@@ -439,6 +447,56 @@ describe("DELETE /v1/devices/{id}", () => {
     expect(reRegister.status).toBe(401);
     expect((await call("/v1/me", { headers: bearer(other.session.token) })).status).toBe(200);
     expect(await count("sessions")).toBe(1);
+  });
+
+  // api #81: the chat service must stop other phones sealing to a removed (lost) device.
+  it("sends device.removed to the chat service, only when the device existed", async () => {
+    const a = await signIn();
+    await register(a.session.token, deviceKeys());
+    const other = await signIn();
+    expect((await call("/v1/devices/2", { method: "DELETE", headers: bearer(other.session.token) })).status).toBe(404);
+    expect(await outboxEvents()).toEqual([]);
+    expect((await call("/v1/devices/1", { method: "DELETE", headers: bearer(other.session.token) })).status).toBe(204);
+    const events = await outboxEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ v: 1, type: "device.removed", accountId: a.parent.id, deviceId: 1, sent: true });
+  });
+
+  it("logout-all?removeDevices=true removes every device of the parent and sends device.removed for each", async () => {
+    const identityKey = ec();
+    const lost = await signIn();
+    await register(lost.session.token, deviceKeys(identityKey));
+    const other = await signIn();
+    await register(other.session.token, deviceKeys(identityKey));
+    const stranger = await signIn("parent-s");
+    await register(stranger.session.token, deviceKeys());
+    const res = await call("/v1/auth/logout-all?removeDevices=true", {
+      method: "POST",
+      headers: bearer(other.session.token),
+    });
+    expect(res.status).toBe(204);
+    expect(await count("devices")).toBe(1);
+    expect(await count("one_time_prekeys")).toBe(3);
+    expect((await call("/v1/me", { headers: bearer(lost.session.token) })).status).toBe(401);
+    expect((await call("/v1/me", { headers: bearer(stranger.session.token) })).status).toBe(200);
+    const events = await outboxEvents();
+    expect(events.map((e) => [e.type, e.deviceId])).toEqual([
+      ["device.removed", 1],
+      ["device.removed", 2],
+      ["account.sessions_revoked", undefined],
+    ]);
+    expect(events.every((e) => e.accountId === lost.parent.id && e.sent)).toBe(true);
+    // The identity stays: the phones register again with the same keys at their next sign-in.
+    const again = await signIn();
+    expect((await register(again.session.token, deviceKeys(identityKey))).status).toBe(201);
+  });
+
+  it("logout-all without removeDevices keeps the devices", async () => {
+    const a = await signIn();
+    await register(a.session.token, deviceKeys());
+    expect((await call("/v1/auth/logout-all", { method: "POST", headers: bearer(a.session.token) })).status).toBe(204);
+    expect(await count("devices")).toBe(1);
+    expect((await outboxEvents()).map((e) => e.type)).toEqual(["account.sessions_revoked"]);
   });
 
   it("removing the caller's own device signs the caller out", async () => {

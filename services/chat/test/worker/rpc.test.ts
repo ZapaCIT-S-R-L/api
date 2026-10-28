@@ -110,6 +110,31 @@ describe("ChatMembership.member", () => {
     });
   });
 
+  // api #81: the calls service asks on every request whether the caller's chat token was revoked by a logout-all.
+  it("revoked(accountId, sep): false until an account.sessions_revoked, then true below its epoch", async () => {
+    const revoked = (accountId: unknown, sep: unknown) =>
+      exports.ChatMembership.revoked(accountId as string, sep as number);
+    expect(await revoked(MUM, 0)).toBe(false);
+    expect(await revoked(MUM, 5)).toBe(false);
+    await apply(noRooms, { type: "account.sessions_revoked", accountId: MUM, epoch: 2 });
+    expect(await revoked(MUM, 0)).toBe(true);
+    expect(await revoked(MUM, 1)).toBe(true);
+    expect(await revoked(MUM, 2)).toBe(false);
+    expect(await revoked(MUM, 3)).toBe(false);
+    expect(await revoked(DAD, 0)).toBe(false);
+    // Anything malformed counts as revoked.
+    for (const [a, e] of [
+      [MUM, -1],
+      [MUM, 1.5],
+      [MUM, "2"],
+      [MUM, undefined],
+      ["", 2],
+      [null, 2],
+    ]) {
+      expect(await revoked(a, e), JSON.stringify([a, e])).toBe(true);
+    }
+  });
+
   it("is not reachable over HTTP", async () => {
     const res = await as(await tokenFor(issuer, MUM), "/ChatMembership/member", { method: "POST", body: "{}" });
     expect(res.status).toBe(404);

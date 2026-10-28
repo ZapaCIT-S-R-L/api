@@ -100,7 +100,10 @@ tags:
 
       - **Sent today.** `family.member_added`: a family is created (its first parent), a parent joins with an
         invitation, or a kid is added. `family.member_removed`: a parent leaves an empty family to join another one
-        (the empty family is deleted).
+        (the empty family is deleted). `device.removed`: `DELETE /v1/devices/{deviceId}`, or
+        `POST /v1/auth/logout-all?removeDevices=true` (one per device). `account.sessions_revoked`:
+        `POST /v1/auth/logout-all`, with the parent's new session epoch; chat tokens whose `sep` claim is lower are
+        refused from then on and their open streams closed.
       - **Delivery.** At least once; dedupe by `id`. Events are written in the same D1 transaction as the change (a
         transactional outbox), so an event exists exactly when the change happened. They are sent right after the
         change in outbox order, and again by the cron if the queue was unavailable. Without the queue binding they
@@ -386,10 +389,26 @@ paths:
       operationId: logoutAll
       summary: Sign out every session of this parent, on every phone.
       description: |
-        For a lost phone, or "sign out everywhere". Every token of the parent stops working, this one included.
-        Registered devices keep their keys; a phone that signs in again registers as a new device.
+        For a lost phone, or "sign out everywhere". Every session token of the parent stops working, this one
+        included. Chat tokens already issued (`POST /v1/chat/token`) stop working at the chat and calls services
+        too, within seconds rather than at their expiry: the parent's session epoch (the token's `sep` claim) is
+        incremented and sent to those services (`account.sessions_revoked`), which refuse older tokens and close
+        the streams opened with them.
+
+        A lost phone keeps its registered device keys, so other phones would keep sealing messages to it. Remove
+        it as well: `removeDevices=true` removes every registered device of the parent in the same request (a
+        `device.removed` event each), which is the right call when you can't tell which device the lost phone is.
+        Every phone registers again (`POST /v1/devices`) at its next sign-in, as it does after a plain logout-all.
+        To remove one known device instead, sign in again and use `DELETE /v1/devices/{deviceId}`.
+      parameters:
+        - name: removeDevices
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+          description: Also remove every registered device of this parent (its keys and queued messages).
       responses:
         "204": { description: "Signed out everywhere." }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /v1/me:
@@ -438,7 +457,9 @@ paths:
       summary: A short-lived token for the chat and calls services.
       description: |
         Needs a session with a registered device (`POST /v1/devices`). Membership (`conv`) is what the account
-        belongs to now; ask again after joining a conversation.
+        belongs to now; ask again after joining a conversation. Claims: `sub` the account id, `dev` the device id,
+        `role`, `conv`, `sep` the parent's session epoch (`POST /v1/auth/logout-all` increments it and revokes
+        tokens with a lower one), `iat`, `exp`, `jti`.
       responses:
         "200":
           description: The token.
@@ -1454,6 +1475,7 @@ components:
             - device.upserted
             - device.removed
             - account.deleted
+            - account.sessions_revoked
       oneOf:
         - title: family.member_added
           description: A parent or kid joined a family (new family, parent invitation accepted, kid added).
@@ -1520,6 +1542,16 @@ components:
           properties:
             type: { const: account.deleted }
             accountId: { $ref: "#/components/schemas/AccountId" }
+        - title: account.sessions_revoked
+          description: |
+            The account signed out everywhere (`POST /v1/auth/logout-all`): its session epoch is now `epoch`. Chat
+            tokens whose `sep` claim is lower (or missing) are refused from then on, and streams opened with them
+            are closed. Epochs only grow; keep the highest seen.
+          required: [type, accountId, epoch]
+          properties:
+            type: { const: account.sessions_revoked }
+            accountId: { $ref: "#/components/schemas/AccountId" }
+            epoch: { type: integer, minimum: 1 }
 
     AccountId:
       type: string
