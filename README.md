@@ -23,6 +23,7 @@ its own `package.json`, wrangler config, OpenAPI spec, CI (`ci-<service>.yml`) a
 
 - [`services/chat`](services/chat/README.md): conversations, encrypted envelopes, stream, attachments
   (chat.zapakid.ro).
+- [`services/calls`](services/calls/README.md): voice calls (calls.zapakid.ro).
 
 A PR that changes only `services/**` skips the account API's checks and deploy.
 
@@ -44,20 +45,43 @@ D1 migrations are not rolled back with the Worker, so every migration must keep 
 Each GitHub environment (`staging`, `production`) has its own secret `CLOUDFLARE_API_TOKEN` and variable
 `CLOUDFLARE_ACCOUNT_ID`. Create one custom API token per environment (My Profile → API Tokens → Create Custom Token):
 
-| Scope             | Permission             | Why                                                                     |
-| ----------------- | ---------------------- | ----------------------------------------------------------------------- |
-| Account           | Workers Scripts: Edit  | upload the Worker and its versions, roll back, attach the custom domain |
-| Account           | D1: Edit               | find or create the EU database, apply migrations                        |
-| Account           | Account Settings: Read | Wrangler reads the account                                              |
-| Zone `zapakid.ro` | Workers Routes: Edit   | routes on the zone                                                      |
-| Zone `zapakid.ro` | DNS: Edit              | the custom domain's DNS record (`api-staging`)                          |
-| Zone `zapakid.ro` | Zone: Read             | Wrangler looks up the zone                                              |
+| Scope             | Permission               | Why                                                                     |
+| ----------------- | ------------------------ | ----------------------------------------------------------------------- |
+| Account           | Workers Scripts: Edit    | upload the Worker and its versions, roll back, attach the custom domain |
+| Account           | D1: Edit                 | find or create the EU database, apply migrations                        |
+| Account           | Account Settings: Read   | Wrangler reads the account                                              |
+| Account           | Calls: Write             | create the Realtime SFU app and TURN key (bootstrap-secrets.yml)        |
+| Account           | Queues: Edit             | queues for the chat service                                             |
+| Account           | Workers R2 Storage: Edit | encrypted attachments in R2 (EU)                                        |
+| Zone `zapakid.ro` | Workers Routes: Edit     | routes on the zone                                                      |
+| Zone `zapakid.ro` | DNS: Edit                | the custom domain's DNS record (`api-staging`)                          |
+| Zone `zapakid.ro` | Zone: Read               | Wrangler looks up the zone                                              |
 
 The workflows give the token only to the steps that run wrangler, never to `npm ci` (always `--ignore-scripts`) or
 the tests, so a compromised dependency can't read it (`test/scripts/workflow-secrets.test.js`).
 
-Account resources: only the ZapaCIT account; zone resources: only `zapakid.ro`. Add Account → Workers R2 Storage: Edit
-when R2 (attachments) arrives; Durable Objects need no extra permission (they deploy with the Worker script).
+Account resources: only the ZapaCIT account; zone resources: only `zapakid.ro`. Durable Objects need no extra
+permission (they deploy with the Worker script).
+
+### Generated secrets: the bootstrap-secrets workflow
+
+Secrets the Workers can generate for themselves are made by a workflow, never on a laptop: Actions →
+`bootstrap-secrets` → Run workflow, with `env` = `staging` or `production` (the environment's approval applies).
+It runs `scripts/bootstrap-secrets.js` with the environment's `CLOUDFLARE_API_TOKEN`:
+
+| Worker (from its wrangler config) | Secrets                                  | Made by                                    |
+| --------------------------------- | ---------------------------------------- | ------------------------------------------ |
+| account (`zapakid-api-<env>`)     | `CHAT_TOKEN_SIGNING_KEY`                 | a new ES256 key pair, generated in the job |
+| calls (`zapakid-calls-<env>`)     | `REALTIME_APP_ID`, `REALTIME_APP_SECRET` | a new Realtime SFU app `zapakid-<env>`     |
+|                                   | `TURN_KEY_ID`, `TURN_KEY_API_TOKEN`      | a new Realtime TURN key `zapakid-<env>`    |
+
+- Idempotent: secrets already on the Worker are skipped. `rotate` = `chat-token-key`, `realtime` or `all` replaces
+  them (apps fetch a new chat token on the 401; a rotated Realtime app or TURN key leaves the old one in the
+  dashboard to delete once calls use the new one).
+- A Worker that isn't deployed yet, or whose config isn't on `main` yet, is skipped with a notice: deploy it first,
+  then run the workflow again.
+- Values are masked the moment they exist and reach `wrangler secret put` on stdin only: never echoed, uploaded or
+  cached (`test/scripts/workflow-hygiene.test.js`).
 
 Play Integrity (Android app attestation on sign-in, `ATTESTATION_POLICY` in `wrangler.jsonc`):
 
@@ -72,6 +96,13 @@ Play Integrity (Android app attestation on sign-in, `ATTESTATION_POLICY` in `wra
 5. Staging only, optional: test accounts that may sign in without attestation (debug builds Play doesn't
    recognise) go in the secret `ATTESTATION_ALLOWLIST`, comma separated `google:<sub>` / `apple:<sub>`:
    `npx wrangler secret put ATTESTATION_ALLOWLIST --env staging`. Production has no allowlist (`required`).
+
+Chat tokens (`POST /v1/chat/token`, verified by the chat and calls services against `/.well-known/jwks.json`): the
+signing key is the Worker secret `CHAT_TOKEN_SIGNING_KEY`, a private P-256 JWK. Stefan creates it per environment,
+never an agent or CI: `scripts/set-chat-token-key.sh staging` (and `production`). The script pipes a new key from
+`scripts/chat-token-key.js` straight into `wrangler secret put`; it is never printed or written to disk. Running it
+again rotates the key (apps fetch a new token on the 401). Until it is set, both endpoints answer
+`503 not_configured` and the staging e2e check of the JWKS fails, so set it before merging the chat token PR.
 
 App Attest (iOS app attestation): nothing to set up on Cloudflare. The App ID `ro.zapakid.app` (team `9572LYGZ7S`)
 has App Attest enabled; the API pins Apple's App Attestation Root CA (`src/app-attest-root.ts`) and accepts

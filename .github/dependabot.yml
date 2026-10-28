@@ -28,6 +28,18 @@ updates:
       chat-npm:
         applies-to: version-updates
         patterns: ["*"]
+  - package-ecosystem: npm
+    directory: /services/calls
+    schedule:
+      interval: weekly
+    versioning-strategy: increase
+    groups:
+      calls-npm-security:
+        applies-to: security-updates
+        patterns: ["*"]
+      calls-npm:
+        applies-to: version-updates
+        patterns: ["*"]
   - package-ecosystem: github-actions
     directory: /
     schedule:

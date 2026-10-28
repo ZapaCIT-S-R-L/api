@@ -77,10 +77,12 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npx wrangler d1 migrations apply DB --local
       # The test JWKS server (test/e2e/auth.test.ts) listens on 127.0.0.1:8788. Only loopback overrides are honoured.
+      # The chat token signing key is a throwaway one for this run (scripts/chat-token-key.js).
       - name: Start the API locally
         run: |
           nohup npx wrangler dev --port 8787 --ip 127.0.0.1 --show-interactive-dev-session=false \
             --var APPLE_JWKS_URL:http://127.0.0.1:8788/apple --var GOOGLE_JWKS_URL:http://127.0.0.1:8788/google \
+            --var "CHAT_TOKEN_SIGNING_KEY:$(node scripts/chat-token-key.js)" \
             < /dev/null > "$RUNNER_TEMP/wrangler.log" 2>&1 &
           for i in $(seq 1 60); do
             curl -sf --max-time 2 -o /dev/null http://127.0.0.1:8787/health && { echo "up after ${i}s"; exit 0; }
