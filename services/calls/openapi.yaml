@@ -42,7 +42,10 @@ tags:
       (`GET /v1/calls/{callId}/events`) right away. A member answers with `join` or `decline`. Nobody answering
       within `ringTimeoutSeconds` (45 s) ends the call (`no_answer`). Calls last at most `maxDurationSeconds` (2 h)
       and hold at most `maxParticipants` (8) devices. A participant whose WebSocket stays closed for 30 s is taken out
-      (`disconnected`). The last one to leave ends the call.
+      (`disconnected`). The last one to leave ends the call. A member the chat service removes from the conversation
+      (unpaired, family left, connection removed, kid unshared, account deleted) is taken out at once (`left` with
+      reason `removed`, their SFU tracks closed, the key rotated without them); a closed conversation ends its call.
+      The chat service says so with a `ConversationEvent` on a Cloudflare Queue (schema below).
 
       **Audio.** Each participant creates its own SFU session (`POST .../sessions`), publishes its microphone track
       (`tracks/new` with `location: local`) and subscribes to the others' published tracks (`location: remote`,
@@ -212,13 +215,20 @@ paths:
         **Server → phone:**
         - `{"type":"roster","call":Call}` on connect and after every change;
         - `{"type":"joined","accountId","deviceId","epoch"}`, `{"type":"left","accountId","deviceId","epoch","reason"}`
-          (`left` or `disconnected`), `{"type":"declined","accountId"}`;
+          (`left`, `disconnected`, `revoked`: that account signed out everywhere, or `removed`: no longer a member of
+          the conversation; that device's socket is then closed with code `4403` and the call answers `404` to it from
+          then on), `{"type":"declined","accountId"}`;
         - `{"type":"key","epoch","fromAccount","fromDevice","blob"}`: a sealed call key for this device (queued
           envelopes for the current epoch arrive right after connecting);
         - `{"type":"keys_ack","epoch","delivered","queued"}`;
         - `{"type":"ended","reason"}`, then the server closes the socket;
-        - `{"type":"error","code","message"}`: `invalid_message`, `not_participant`, `stale_epoch` (with `epoch`);
+        - `{"type":"error","code","message"}`: `invalid_message`, `not_participant`, `stale_epoch` (with `epoch`),
+          `chat_unavailable`;
         - `{"type":"pong"}`.
+
+        The server closes the socket with code `4401` when the chat token it was opened with is revoked (the
+        account signed out everywhere, `POST /v1/auth/logout-all` at the account API): that device leaves the call.
+        Participants are checked against the chat service every minute and before every key they relay.
 
         **Phone → server:**
         - `{"type":"keys","epoch":N,"envelopes":[{"toAccount","toDevice","blob"}]}`: 1-8 envelopes, each the libsignal
@@ -404,7 +414,10 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     Unauthorized:
-      description: "`invalid_token`: no chat token, or it is expired, for another host or not from the account API."
+      description: |
+        `invalid_token`: no chat token, or it is expired, revoked (the account signed out everywhere after it was
+        issued: its `sep` claim is below the account's session epoch, which the chat service knows), for another
+        host or not from the account API.
       headers:
         WWW-Authenticate: { schema: { type: string, const: Bearer } }
       content:
@@ -459,7 +472,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     RealtimeUnavailable:
-      description: "`realtime_unavailable`: Cloudflare Realtime could not be reached. Retry later."
+      description: "`realtime_unavailable`: Cloudflare Realtime could not be reached, or is rate limiting. Retry later."
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
@@ -566,6 +579,42 @@ components:
         sessionId: { type: string, description: "Remote tracks only: the publisher's session id." }
         kind: { type: string, enum: [audio, video] }
         bidirectionalMediaStream: { type: boolean }
+
+    ConversationEvent:
+      description: |
+        Not an HTTP body: the messages on the Cloudflare Queue `zapakid-conversation-events-<environment>`
+        (staging, production), produced by the chat service when it removes members from a conversation or closes
+        one (the same schema is in `services/chat/openapi.yaml`), and consumed here: the live calls of that
+        conversation drop those members' devices at once. Delivery is at least once and not ordered: an `id` already
+        applied (kept 14 days) is acknowledged and not applied again, and an event whose `occurredAt` is older than
+        the call, or than a device's join (the member was readmitted meanwhile), leaves it alone. Unknown `type`s are acknowledged
+        and ignored; a malformed event goes to `zapakid-conversation-events-<environment>-dlq` after 5 retries.
+      type: object
+      required: [v, id, type, occurredAt, conversationId]
+      properties:
+        v: { type: integer, const: 1 }
+        id: { type: string, format: uuid }
+        occurredAt: { type: string, format: date-time }
+        conversationId: { $ref: "#/components/schemas/Id" }
+        type:
+          type: string
+          enum:
+            - conversation.members_removed
+            - conversation.closed
+      oneOf:
+        - title: conversation.members_removed
+          description: These accounts are no longer members of the conversation.
+          required: [type, conversationId, accountIds]
+          properties:
+            type: { const: conversation.members_removed }
+            conversationId: { $ref: "#/components/schemas/Id" }
+            accountIds: { type: array, minItems: 1, maxItems: 64, items: { $ref: "#/components/schemas/Id" } }
+        - title: conversation.closed
+          description: The conversation is read-only from now on; its call ends.
+          required: [type, conversationId]
+          properties:
+            type: { const: conversation.closed }
+            conversationId: { $ref: "#/components/schemas/Id" }
 
   securitySchemes:
     chatToken:

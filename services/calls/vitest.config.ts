@@ -28,7 +28,11 @@ export default defineConfig({
             compatibilityDate: "2026-10-12",
           },
         ],
-        serviceBindings: { CHAT_STUB: "zapakid-chat" },
+        // OLD_CHAT: a chat Worker without ChatMembership.revoked (deployed after calls), for the rollout tests.
+        serviceBindings: {
+          CHAT_STUB: "zapakid-chat",
+          OLD_CHAT: { name: "zapakid-chat", entrypoint: "OldChatMembership" },
+        },
         // A small create limit, so test/worker/calls.test.ts can reach it (counted per account).
         ratelimits: {
           CREATE_LIMITER: { namespace_id: "9101", simple: { limit: 5, period: 60 } },

@@ -45,8 +45,12 @@
   ],
   "r2_buckets": [{ "binding": "ATTACHMENTS", "bucket_name": "zapakid-chat-attachments-local" }],
   "queues": {
-    // Local only, for the E2E_HOOKS route. In deployed environments the account service is the producer.
-    "producers": [{ "binding": "MEMBERSHIP_E2E", "queue": "zapakid-membership-local" }],
+    // MEMBERSHIP_E2E is local only, for the E2E_HOOKS route (in deployed environments the account service is the
+    // producer). CONVERSATION_EVENTS carries conversation events to the calls service (src/conversation-events.ts).
+    "producers": [
+      { "binding": "MEMBERSHIP_E2E", "queue": "zapakid-membership-local" },
+      { "binding": "CONVERSATION_EVENTS", "queue": "zapakid-conversation-events-local" },
+    ],
     "consumers": [
       {
         "queue": "zapakid-membership-local",
@@ -96,7 +100,10 @@
       "r2_buckets": [
         { "binding": "ATTACHMENTS", "bucket_name": "zapakid-chat-attachments-staging", "jurisdiction": "eu" },
       ],
+      // Producer: conversation events for the calls service (the calls deploy creates the queue too, so either
+      // service can be deployed first). Consumer: the account service's membership events.
       "queues": {
+        "producers": [{ "binding": "CONVERSATION_EVENTS", "queue": "zapakid-conversation-events-staging" }],
         "consumers": [
           {
             "queue": "zapakid-membership-staging",
@@ -144,7 +151,10 @@
       "r2_buckets": [
         { "binding": "ATTACHMENTS", "bucket_name": "zapakid-chat-attachments-production", "jurisdiction": "eu" },
       ],
+      // Producer: conversation events for the calls service (the calls deploy creates the queue too, so either
+      // service can be deployed first). Consumer: the account service's membership events.
       "queues": {
+        "producers": [{ "binding": "CONVERSATION_EVENTS", "queue": "zapakid-conversation-events-production" }],
         "consumers": [
           {
             "queue": "zapakid-membership-production",

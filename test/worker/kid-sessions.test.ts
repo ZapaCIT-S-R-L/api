@@ -211,7 +211,7 @@ describe("GET /v1/families/{familyId}/kids/{kidId}/sessions", () => {
     expect((await listSessions(sessionsPath, parent.auth))[0]?.lastSeenAt).toBe(seen?.lastSeenAt);
   });
 
-  // Rollback safety: a session made by the Worker version before migration 0011 has no id and no last_seen_at.
+  // Rollback safety: a session made by the Worker version before migration 0014 has no id and no last_seen_at.
   it("names a session made by the previous Worker version when first listed", async () => {
     const { parent, family, kid, sessionsPath } = await parentWithKid();
     const token = await pairPhone(parent.auth, family.id, kid.id);

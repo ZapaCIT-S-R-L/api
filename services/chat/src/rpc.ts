@@ -11,6 +11,7 @@ import { ACCOUNT_ID, CONVERSATION_ID } from "./body";
 import { devicesOf, membersOf } from "./conversations";
 import type { Env } from "./env";
 import type { Role } from "./graph";
+import { revokedBefore } from "./membership";
 
 export interface CallMember {
   accountId: string;
@@ -53,8 +54,21 @@ export async function membership(env: Env, conversationId: unknown, accountId: u
   };
 }
 
+// Whether a chat token issued at session epoch `sep` for the account is revoked (api #81): the calls service asks
+// on every request, since only the chat service receives the account.sessions_revoked events. An unknown or
+// malformed input counts as revoked.
+export async function revoked(env: Env, accountId: unknown, sep: unknown): Promise<boolean> {
+  if (typeof accountId !== "string" || !ACCOUNT_ID.test(accountId)) return true;
+  if (typeof sep !== "number" || !Number.isInteger(sep) || sep < 0) return true;
+  return sep < (await revokedBefore(env, accountId));
+}
+
 export class ChatMembership extends WorkerEntrypoint<Env> {
   async member(conversationId: string, accountId: string): Promise<Membership | null> {
     return membership(this.env, conversationId, accountId);
+  }
+
+  async revoked(accountId: string, sep: number): Promise<boolean> {
+    return revoked(this.env, accountId, sep);
   }
 }

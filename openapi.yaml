@@ -76,8 +76,9 @@ tags:
       a conversation is in `conv`. Fetch a new token before `expiresAt`, and on any `401` from chat or calls.
 
       Claims: `iss` this API's origin, `aud` [chat host, calls host], `sub` the account id, `dev` the device id
-      registered on the session, `role` (`parent`; kids come with families), `conv` the conversation ids the account
-      is a member of at issue time, `iat`, `exp`, `jti`.
+      registered on the session, `role` (`parent` or `kid`), `conv` the conversation scopes the account is a member
+      of at issue time (`family:<familyId>`, `connection:<connectionId>`; see `Membership events`), `iat`, `exp`,
+      `jti`. Kid phones (`zkk_` session) get tokens the same way, with `sub` the kid's id and `role` `kid`.
   - name: App attestation
     description: |
       iOS registers an Apple App Attest key once (`/v1/attestation/challenge`, `/v1/attestation/apple`), then signs
@@ -102,8 +103,14 @@ tags:
 
       - **Sent today.** `family.member_added`: a family is created (its first parent), a parent joins with an
         invitation, or a kid is added. `family.member_removed`: a parent leaves an empty family to join another one
-        (the empty family is deleted). `connection.created`, `connection.removed`, `connection.kid_shared` and
-        `connection.kid_unshared` for connections.
+        (the empty family is deleted), or a kid is removed. `connection.created`, `connection.removed`,
+        `connection.kid_shared` and `connection.kid_unshared` for connections. `device.upserted`: a parent's or
+        kid's device is registered (`POST /v1/devices`, or `PUT /v1/keys/identity` for device 1; no `push` yet).
+        `device.removed`: a device is removed (`DELETE /v1/devices/{deviceId}`,
+        `POST /v1/auth/logout-all?removeDevices=true` (one per device), an identity change, a kid unpaired or
+        removed, or 90 days without a request). `account.deleted`: a kid is removed. `account.sessions_revoked`:
+        `POST /v1/auth/logout-all`, with the parent's new session epoch; chat tokens whose `sep` claim is lower are
+        refused from then on and their open streams closed.
       - **Delivery.** At least once; dedupe by `id`. Events are written in the same D1 transaction as the change (a
         transactional outbox), so an event exists exactly when the change happened. They are sent right after the
         change in outbox order, and again by the cron if the queue was unavailable. Without the queue binding they
@@ -118,8 +125,11 @@ tags:
     description: Planned. Email invitations, exact search by phone or email, and blocks.
   - name: Devices and keys
     description: |
-      Registering a phone with the key directory (implemented). The account id is the parent's `id` from
-      `GET /v1/me`.
+      The key directory (implemented): registering a phone, removing one, the identity and its history, and prekey
+      bundles. For parents and kids alike: a parent's session (`zks_`) or a paired kid's (`zkk_`) works on every
+      endpoint here. The account id is the parent's `id` from `GET /v1/me`, or the kid's `id` (`Kid`, also in the
+      pairing answer). Accounts may see each other's keys when they share a scope: the same family, or a connection
+      (both families' parents and the kids shared in it).
   - name: "Draft: Devices and keys"
     description: |
       Planned. The key directory for libsignal (X3DH/PQXDH). Each account has one identity key, shared by its
@@ -394,10 +404,26 @@ paths:
       operationId: logoutAll
       summary: Sign out every session of this parent, on every phone.
       description: |
-        For a lost phone, or "sign out everywhere". Every token of the parent stops working, this one included.
-        Registered devices keep their keys; a phone that signs in again registers as a new device.
+        For a lost phone, or "sign out everywhere". Every session token of the parent stops working, this one
+        included. Chat tokens already issued (`POST /v1/chat/token`) stop working at the chat and calls services
+        too, within seconds rather than at their expiry: the parent's session epoch (the token's `sep` claim) is
+        incremented and sent to those services (`account.sessions_revoked`), which refuse older tokens and close
+        the streams opened with them.
+
+        A lost phone keeps its registered device keys, so other phones would keep sealing messages to it. Remove
+        it as well: `removeDevices=true` removes every registered device of the parent in the same request (a
+        `device.removed` event each), which is the right call when you can't tell which device the lost phone is.
+        Every phone registers again (`POST /v1/devices`) at its next sign-in, as it does after a plain logout-all.
+        To remove one known device instead, sign in again and use `DELETE /v1/devices/{deviceId}`.
+      parameters:
+        - name: removeDevices
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+          description: Also remove every registered device of this parent (its keys and queued messages).
       responses:
         "204": { description: "Signed out everywhere." }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /v1/me:
@@ -445,8 +471,10 @@ paths:
       operationId: chatToken
       summary: A short-lived token for the chat and calls services.
       description: |
-        Needs a session with a registered device (`POST /v1/devices`). Membership (`conv`) is what the account
-        belongs to now; ask again after joining a conversation.
+        Needs a parent or kid session with a registered device (`POST /v1/devices`). Membership (`conv`) is what the
+        account belongs to now; ask again after joining a conversation. Claims: `sub` the account id, `dev` the
+        device id, `role` (`parent` or `kid`), `conv`, `sep` the parent's session epoch (parents only;
+        `POST /v1/auth/logout-all` increments it and revokes tokens with a lower one), `iat`, `exp`, `jti`.
       responses:
         "200":
           description: The token.
@@ -557,8 +585,9 @@ paths:
       operationId: registerDevice
       summary: Register this phone and upload its libsignal public keys.
       description: |
-        Needs a session and app attestation (`ZapaKid-Attestation`, same policies as sign-in; the hash covers this
-        body). The first device of an account sets the account's identity key; every later device must send the
+        Needs a parent or kid session and app attestation (`ZapaKid-Attestation`, same policies as sign-in; the
+        hash covers this body). Staging's allowlist policy (no header): a parent needs an allowlisted sign-in
+        identity; a kid needs a parent of its family with one. The first device of an account sets the account's identity key; every later device must send the
         same one (`409 identity_mismatch`; changing it is `PUT /v1/keys/identity`). Each registration gets a new
         device id (1..127; a reinstall is a new device). The session is then bound to that device on the server:
         no device header on later calls. A retry with the same signed prekey on the same session returns the same
@@ -569,7 +598,7 @@ paths:
         verify the signatures with libsignal when they use a bundle; libsignal refuses a bad one.
 
         A device that makes no request for 90 days is removed (hourly purge), with its keys, and its sessions are signed
-        out.
+        out. Emits `device.upserted` (see `Membership events`).
       parameters: [{ $ref: "#/components/parameters/attestation" }]
       requestBody:
         required: true
@@ -611,8 +640,9 @@ paths:
       operationId: removeDevice
       summary: Remove one of the account's devices (an old phone or install) with its keys.
       description: |
-        Only the caller's own devices. Every session bound to that device is signed out (a lost phone loses access;
-        removing the caller's own device signs the caller out too). Its keys are deleted.
+        Only the caller's own account's devices (a kid: the kid's). Every session bound to that device is signed out
+        (a lost phone loses access; removing the caller's own device signs the caller out too). Its keys are
+        deleted. Emits `device.removed`.
       parameters:
         - name: deviceId
           in: path
@@ -634,8 +664,8 @@ paths:
       summary: An account's current identity key and its change history (for safety numbers and warnings).
       description: |
         For the caller's own account (an app checks whether the account already has an identity before it
-        registers), and later for accounts the caller may chat with. `404 not_found` when the account has no
-        identity yet, or isn't one the caller may see.
+        registers), and for accounts the caller may talk to (same family, or a shared connection). `404 not_found`
+        when the account has no identity yet, or isn't one the caller may see.
       parameters: [{ $ref: "#/components/parameters/accountId" }]
       responses:
         "200":
@@ -687,13 +717,15 @@ paths:
 
         Server-side gate: a session, app attestation (same policies as sign-in), and a fresh sign-in: the session
         must be under 10 minutes old (`403 reauthentication_required`: sign in again first), so a stolen old session
-        can't replace the key.
+        can't replace the key. A kid's fresh sign-in is a fresh pairing: a kid session under 10 minutes old (a
+        replaced kid phone: the parent pairs it, then it changes the identity with this endpoint).
 
         Effect, all at once: the change is added to the key history (peers read it from
         `GET /v1/accounts/{accountId}/identity` now, and get an `identity_changed` event on `/v1/stream` once
         messaging exists), every
-        device of the account and its prekeys is removed, every other session of the parent is signed out, and this
-        session is bound to this phone as the account's only device.
+        device of the account and its prekeys is removed, every other session of the account is signed out, and this
+        session is bound to this phone as the account's only device. Emits `device.removed` for the old devices
+        other than 1 and `device.upserted` for device 1.
       parameters: [{ $ref: "#/components/parameters/attestation" }]
       requestBody:
         required: true
@@ -930,6 +962,36 @@ paths:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
 
+    delete:
+      tags: [Kid pairing]
+      operationId: unpairKid
+      summary: Unpair every phone of this kid (lost, stolen or handed down).
+      description: |
+        Signs out every kid session of the kid, removes its devices and their keys, and revokes its open pairing
+        codes. The kid stays in the family with its identity key; pair a new phone with `POST` here, and that phone
+        replaces the identity with `PUT /v1/keys/identity` within 10 minutes of pairing. Any parent of the family.
+        Emits `device.removed` for each device.
+      parameters: [{ $ref: "#/components/parameters/familyId" }, { $ref: "#/components/parameters/kidId" }]
+      responses:
+        "204": { description: "Unpaired." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/families/{familyId}/kids/{kidId}:
+    delete:
+      tags: [Families]
+      operationId: removeKid
+      summary: Remove a kid from the family, with its account and phones.
+      description: |
+        Deletes the kid's account: its kid sessions, devices, keys, identity and key history, pairing codes and
+        connection shares. Any parent of the family; a kid gets `401`. Emits `device.removed` for each device, then
+        `family.member_removed` and `account.deleted`.
+      parameters: [{ $ref: "#/components/parameters/familyId" }, { $ref: "#/components/parameters/kidId" }]
+      responses:
+        "204": { description: "Removed." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /v1/pairing/redeem:
     post:
       tags: [Kid pairing]
@@ -1034,8 +1096,10 @@ paths:
       operationId: revokeKidSession
       summary: "Unpair one phone: revoke a kid session (lost or replaced phone)."
       description: |
-        The session is deleted at once and its token answers `401` everywhere from then on. The kid, the kid's
-        other phones and open pairing codes stay. To pair the phone again, create a new code. A session that
+        The session is deleted at once and its token answers `401` everywhere from then on. The device registered
+        on the session is removed too (a `device.removed` event), so other phones stop sealing messages to it. The
+        kid, the kid's other phones and open pairing codes stay. To unpair every phone at once, use
+        `DELETE /v1/families/{familyId}/kids/{kidId}/pairing`. To pair the phone again, create a new code. A session that
         doesn't exist, or belongs to another kid, gets `404`; so does a non-member. Kid sessions get `401`.
       parameters:
         - { $ref: "#/components/parameters/familyId" }
@@ -1260,14 +1324,15 @@ paths:
 
   /v1/keys/{accountId}/{deviceId}:
     get:
-      tags: ["Draft: Devices and keys"]
+      tags: [Devices and keys]
       operationId: getPreKeyBundle
-      x-status: draft
       summary: Prekey bundles to start a session (`*` = all devices of the account).
       description: |
         Returns what libsignal's `PreKeyBundle` needs: registration id, device id, identity key, signed EC prekey,
-        signed Kyber prekey (one-time if left, else last resort) and one one-time EC prekey if left. Each fetch
-        consumes the one-time keys it returns. Only for accounts the caller may chat with; rate limited.
+        signed Kyber prekey (one-time if left, else the last-resort one) and one one-time EC prekey if left (else no
+        `preKey`). Each fetch uses up the one-time keys it returns. Parents and kids alike, for accounts the caller
+        may talk to: its own account (its other devices), its family, and the connections it is in (a parent: both
+        families' parents and the kids shared in the connection; a kid: only connections it is shared in).
       parameters:
         - { $ref: "#/components/parameters/accountId" }
         - name: deviceId
@@ -1276,7 +1341,7 @@ paths:
           schema: { oneOf: [{ $ref: "#/components/schemas/DeviceId" }, { const: "*" }] }
       responses:
         "200":
-          description: One bundle per device.
+          description: One bundle per device, by device id.
           content:
             application/json:
               schema:
@@ -1284,8 +1349,18 @@ paths:
                 required: [identityKey, devices]
                 properties:
                   identityKey: { $ref: "#/components/schemas/PublicKey" }
-                  devices: { type: array, items: { $ref: "#/components/schemas/PreKeyBundle" } }
-        "404": { description: "No such account or device, or not allowed." }
+                  devices: { type: array, minItems: 1, items: { $ref: "#/components/schemas/PreKeyBundle" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: "`forbidden`: not an account the caller may talk to (also for unknown accounts)."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "404":
+          description: "`not_found`: the account has no identity yet, or no such device."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
 # Outbound messages. Not HTTP: OpenAPI 3.1 webhooks are used to describe the queue messages this API produces.
 webhooks:
@@ -1651,13 +1726,15 @@ components:
 
     MembershipEvent:
       description: |
-        Not an HTTP body: the messages on the Cloudflare Queue `zapakid-membership-<environment>` (staging,
-        production), produced by the account service (families, connections, devices) and consumed by the chat
-        service. JSON, at most 128 KiB. Delivery is at least once and not ordered across batches: `id` makes a
-        repeat a no-op, and each event carries the full state of what it describes (for example the device's
-        current registration id), so applying events again is safe. The account service must send an event after
-        its own write commits. Unknown `type`s are acknowledged and ignored (forward compatible); a malformed
-        event goes to the dead-letter queue `zapakid-membership-<environment>-dlq` after 5 retries.
+        Not an HTTP body: the messages on the Cloudflare Queue `zapakid-membership-<environment>` (staging, production),
+        produced by the account service (families, connections, devices) and consumed by the chat service. JSON, at most
+        128 KiB. Delivery is at least once and not ordered across batches: `id` makes a repeat a no-op, and each event
+        carries the full state of what it describes (for example the device's current registration id), so applying
+        events again is safe. Device events are ordered by `occurredAt`: a `device.upserted` that occurred at or before
+        the device's last `device.removed`, or before the upsert already applied, is ignored (a late or backfilled
+        upsert never brings back a removed device); `device.removed` always applies. The account service must send an
+        event after its own write commits. Unknown `type`s are acknowledged and ignored (forward compatible); a
+        malformed event goes to the dead-letter queue `zapakid-membership-<environment>-dlq` after 5 retries.
       type: object
       required: [v, id, type, occurredAt]
       properties:
@@ -1676,6 +1753,7 @@ components:
             - device.upserted
             - device.removed
             - account.deleted
+            - account.sessions_revoked
       oneOf:
         - title: family.member_added
           description: A parent or kid joined a family (new family, parent invitation accepted, kid added).
@@ -1742,6 +1820,16 @@ components:
           properties:
             type: { const: account.deleted }
             accountId: { $ref: "#/components/schemas/AccountId" }
+        - title: account.sessions_revoked
+          description: |
+            The account signed out everywhere (`POST /v1/auth/logout-all`): its session epoch is now `epoch`. Chat
+            tokens whose `sep` claim is lower (or missing) are refused from then on, and streams opened with them
+            are closed. Epochs only grow; keep the highest seen.
+          required: [type, accountId, epoch]
+          properties:
+            type: { const: account.sessions_revoked }
+            accountId: { $ref: "#/components/schemas/AccountId" }
+            epoch: { type: integer, minimum: 1 }
 
     AccountId:
       type: string
@@ -1819,4 +1907,6 @@ components:
         registrationId: { type: integer }
         signedPreKey: { $ref: "#/components/schemas/SignedPreKey" }
         pqPreKey: { $ref: "#/components/schemas/SignedPreKey" }
-        preKey: { $ref: "#/components/schemas/PreKey" }
+        preKey:
+          allOf: [{ $ref: "#/components/schemas/PreKey" }]
+          description: A one-time EC prekey; absent when the device has none left.

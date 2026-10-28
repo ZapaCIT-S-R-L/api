@@ -35,6 +35,18 @@ test("each deployed environment has its own EU D1 database for the call log", ()
   }
 });
 
+test("each deployed environment consumes its own conversation events queue, with a dead-letter queue", () => {
+  for (const [name, env] of Object.entries(deployed)) {
+    assert.equal(env.queues?.producers, undefined, `${name}: the chat service produces, calls only consumes`);
+    const [consumer, ...more] = env.queues.consumers;
+    assert.equal(more.length, 0);
+    assert.equal(consumer.queue, `zapakid-conversation-events-${name}`);
+    assert.equal(consumer.dead_letter_queue, `zapakid-conversation-events-${name}-dlq`);
+    assert.ok(consumer.max_batch_timeout <= 2, "a removed member is out of the call within seconds");
+    assert.ok(consumer.max_retries >= 3);
+  }
+});
+
 test("no secret is ever a plain var", () => {
   for (const env of [rawConfig, staging, production]) {
     for (const name of Object.keys(env.vars ?? {})) assert.doesNotMatch(name, /SECRET|TOKEN$|API_TOKEN|_KEY$/, name);

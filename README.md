@@ -33,6 +33,11 @@ decrypt a chat. The server has no cryptography of its own beyond verifying sign-
   phone: a parent lists them (`GET /v1/families/{familyId}/kids/{kidId}/sessions`, ids and dates only) and revokes
   one (`DELETE .../sessions/{sessionId}`); the token answers 401 everywhere from the next request. The kid's phone
   signs itself out with `POST /v1/kid/logout`.
+- **A lost phone loses everything at once.** `POST /v1/auth/logout-all` deletes the parent's sessions and bumps
+  their session epoch (`parents.session_epoch`, the chat token's `sep` claim); the `account.sessions_revoked`
+  event makes the chat and calls services refuse the chat tokens already issued and close the streams and calls
+  opened with them, instead of waiting out the token's 10 minutes. `?removeDevices=true` also removes the parent's
+  registered devices (`device.removed` events), so other phones stop sealing messages to the lost one.
 
 ## Services
 

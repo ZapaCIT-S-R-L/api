@@ -93,6 +93,9 @@
           "migrations_dir": "migrations",
         },
       ],
+      // Membership events for the chat and calls services (src/membership-events.ts). Queues are not inherited
+      // by environments: without this the events stay in the outbox and chat knows no families.
+      "queues": { "producers": [{ "binding": "MEMBERSHIP_EVENTS", "queue": "zapakid-membership-staging" }] },
     },
 
     // Production: deployed only by hand (deploy-production.yml, needs approval). No route until the v1 cutover:
@@ -134,6 +137,9 @@
           "migrations_dir": "migrations",
         },
       ],
+      // Membership events for the chat and calls services (src/membership-events.ts). Queues are not inherited
+      // by environments: without this the events stay in the outbox and chat knows no families.
+      "queues": { "producers": [{ "binding": "MEMBERSHIP_EVENTS", "queue": "zapakid-membership-production" }] },
     },
   },
 }

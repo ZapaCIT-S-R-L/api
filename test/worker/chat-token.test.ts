@@ -25,13 +25,13 @@ const AUDIENCES = ["chat.localhost", "calls.localhost"];
 
 let apple: TestIssuer;
 
-// Seeded membership data: the tables behind it (devices, families, conversations) arrive in later PRs.
+// Seeded membership data, so these tests do not depend on devices, families and connections.
 const seeded: { devices: Map<string, number>; conversations: Map<string, string[]> } = {
   devices: new Map(),
   conversations: new Map(),
 };
 const seededSource: MembershipSource = {
-  device: (_env, session) => Promise.resolve(seeded.devices.get(session.parentId) ?? null),
+  device: (_env, account) => Promise.resolve(seeded.devices.get(account.id) ?? null),
   conversations: (_env, accountId) => Promise.resolve(seeded.conversations.get(accountId) ?? []),
 };
 
@@ -119,6 +119,7 @@ describe("POST /v1/chat/token", () => {
     expect(payload.dev).toBe(3);
     expect(payload.role).toBe("parent");
     expect(payload.conv).toEqual(["conv-a", "conv-b"]);
+    expect(payload.sep).toBe(0);
     expect(payload.jti).toMatch(/^[A-Za-z0-9_-]{22,}$/);
     const lifetime = (payload.exp ?? 0) - (payload.iat ?? 0);
     expect(lifetime).toBe(600);
@@ -162,6 +163,45 @@ describe("POST /v1/chat/token", () => {
     const res = await call("/v1/chat/token", { method: "POST" });
     expect(res.status).toBe(401);
     expect(res.headers.get("www-authenticate")).toBe("Bearer");
+  });
+
+  // api #81: the chat and calls services refuse tokens with a `sep` below the parent's current epoch.
+  it("carries the parent's session epoch (sep), which logout-all increments", async () => {
+    const { session, parent } = await signIn();
+    seeded.devices.set(parent.id, 1);
+    await call("/v1/auth/logout-all", { method: "POST", headers: bearer(session.token) });
+    expect((await token(session.token)).status).toBe(401);
+    const again = await signIn();
+    const { token: jwt } = await (await token(again.session.token)).json<{ token: string }>();
+    const { payload } = await jwtVerify(jwt, createLocalJWKSet(await jwks()), { audience: "chat.localhost" });
+    expect(payload.sep).toBe(1);
+  });
+
+  // api #84 review: logout-all completing between authentication and issuance must not yield a token with the new
+  // epoch (the deleted session would escape revocation).
+  it("logout-all between authentication and issuance → 401, no token with the new epoch", async () => {
+    const { session, parent } = await signIn();
+    seeded.devices.set(parent.id, 1);
+    let loggedOut = false;
+    useMembershipSource({
+      ...seededSource,
+      conversations: async (envArg, accountId) => {
+        // Runs after authenticate() and before the epoch is read.
+        const res = await call("/v1/auth/logout-all", { method: "POST", headers: bearer(session.token) });
+        expect(res.status).toBe(204);
+        loggedOut = true;
+        return seededSource.conversations(envArg, accountId);
+      },
+    });
+    const res = await token(session.token);
+    expect(loggedOut).toBe(true);
+    expect(res.status).toBe(401);
+    expect(res.headers.get("www-authenticate")).toBe("Bearer");
+    expect((await res.json<ErrorBody>()).error.code).toBe("unauthorized");
+    const epoch = await env.DB.prepare("SELECT session_epoch FROM parents WHERE id = ?")
+      .bind(parent.id)
+      .first<number>("session_epoch");
+    expect(epoch).toBe(1);
   });
 
   it("after logout → 401", async () => {

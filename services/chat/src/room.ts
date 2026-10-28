@@ -46,9 +46,12 @@ interface SocketInfo {
   deviceId: number;
   // Chat token expiry, seconds since the epoch.
   exp: number;
+  // The chat token's session epoch (`sep`); 0 for tokens without one. Missing on sockets from before api #81.
+  sep?: number;
 }
 
-// Close codes the apps act on: reconnect with a fresh token / stop (left the conversation).
+// Close codes the apps act on: reconnect with a fresh token (expired or revoked: after a logout-all the account
+// service refuses a new one, and the app signs in again) / stop (left the conversation).
 export const CLOSE_TOKEN_EXPIRED = 4401;
 export const CLOSE_NOT_A_MEMBER = 4403;
 
@@ -192,6 +195,15 @@ export class ConversationRoom extends DurableObject<Env> {
     }
   }
 
+  // The account signed out everywhere: streams opened with a token from before `epoch` are closed. Their delivery
+  // copies stay (the account's other phones fetch them once signed in again).
+  revokeSessions(accountId: string, epoch: number): void {
+    for (const ws of this.ctx.getWebSockets(accountTag(accountId))) {
+      const info = ws.deserializeAttachment() as SocketInfo | null;
+      if ((info?.sep ?? 0) < epoch) this.close(ws, CLOSE_TOKEN_EXPIRED, "session revoked");
+    }
+  }
+
   notify(conversationId: string, kind: RoomEventKind, removed: string[]): void {
     for (const account of removed) {
       for (const ws of this.ctx.getWebSockets(accountTag(account))) this.close(ws, CLOSE_NOT_A_MEMBER, "not a member");
@@ -218,11 +230,12 @@ export class ConversationRoom extends DurableObject<Env> {
     const accountId = request.headers.get("x-chat-account") ?? "";
     const deviceId = Number(request.headers.get("x-chat-device"));
     const exp = Number(request.headers.get("x-chat-exp"));
-    if (!conversationId || !accountId || !Number.isInteger(deviceId) || !Number.isFinite(exp))
+    const sep = Number(request.headers.get("x-chat-sep") ?? "0");
+    if (!conversationId || !accountId || !Number.isInteger(deviceId) || !Number.isFinite(exp) || !Number.isInteger(sep))
       return new Response(null, { status: 400 });
     const { 0: client, 1: server } = new WebSocketPair();
     this.ctx.acceptWebSocket(server, [deviceTag(accountId, deviceId), accountTag(accountId)]);
-    const info: SocketInfo = { accountId, deviceId, exp };
+    const info: SocketInfo = { accountId, deviceId, exp, sep };
     server.serializeAttachment(info);
     await this.scheduleExpiry(exp);
     // What is queued for this device, right away (the oldest 1000; the rest via GET .../messages after acking);
@@ -311,6 +324,7 @@ export function durableRooms(env: Env): Rooms {
     notify: (id, kind, removed) => roomOf(env, id).notify(id, kind, removed),
     forgetAccount: (id, account) => roomOf(env, id).forgetAccount(account),
     forgetDevice: (id, account, device) => roomOf(env, id).forgetDevice(account, device),
+    revokeSessions: (id, account, epoch) => roomOf(env, id).revokeSessions(account, epoch),
     purge: (id) => roomOf(env, id).purge(),
   };
 }

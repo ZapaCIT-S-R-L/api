@@ -4,6 +4,8 @@
 import { authenticateKid } from "./accounts";
 import type { Env } from "./env";
 import { empty, error, json } from "./http";
+import { deviceRemovedEvents, flushMembershipEvents } from "./membership-events";
+import { kidInParentsFamily } from "./pairing";
 import { authenticate } from "./sessions";
 
 const SESSION_ID_PATTERN = /^[0-9a-f]{32}$/;
@@ -19,17 +21,6 @@ export interface KidSession {
   createdAt: string;
   expiresAt: string;
   lastSeenAt: string;
-}
-
-// Whether the kid is in this family and the parent is one of its parents (else the kid doesn't exist: 404).
-export async function parentOfKid(env: Env, parentId: string, familyId: string, kidId: string): Promise<boolean> {
-  const row = await env.DB.prepare(
-    `SELECT 1 AS ok FROM kids k JOIN family_parents fp ON fp.family_id = k.family_id
-     WHERE k.id = ? AND k.family_id = ? AND fp.parent_id = ?`,
-  )
-    .bind(kidId, familyId, parentId)
-    .first<{ ok: number }>();
-  return row !== null;
 }
 
 // The kid's phone signs itself out: only this session goes; the kid's other phones stay paired. Parents get 401
@@ -49,10 +40,10 @@ export async function handleListKidSessions(
 ): Promise<Response> {
   const session = await authenticate(request, env);
   if (!session) return unauthorized();
-  if (!(await parentOfKid(env, session.parentId, familyId, kidId))) return noSuchKid();
+  if (!(await kidInParentsFamily(env, session.parentId, familyId, kidId))) return noSuchKid();
   const now = new Date().toISOString();
   const [, , rows] = await env.DB.batch<{ id: string; created_at: string; expires_at: string; last_seen_at: string }>([
-    // Rows written by the Worker version before migration 0011 have no id yet: name them now, once.
+    // Rows written by the Worker version before migration 0014 have no id yet: name them now, once.
     env.DB.prepare("UPDATE kid_sessions SET id = lower(hex(randomblob(16))) WHERE kid_id = ? AND id IS NULL").bind(
       kidId,
     ),
@@ -71,8 +62,8 @@ export async function handleListKidSessions(
   return json({ sessions });
 }
 
-// Unpair one phone: the session is gone at once, so its token answers 401 from the next request on. The kid, the
-// kid's other phones and open pairing codes stay.
+// Unpair one phone: the session and its registered device are gone at once, so its token answers 401 from the next
+// request on. The kid, the kid's other phones and open pairing codes stay.
 export async function handleRevokeKidSession(
   request: Request,
   env: Env,
@@ -82,12 +73,18 @@ export async function handleRevokeKidSession(
 ): Promise<Response> {
   const session = await authenticate(request, env);
   if (!session) return unauthorized();
-  if (!(await parentOfKid(env, session.parentId, familyId, kidId))) return noSuchKid();
+  if (!(await kidInParentsFamily(env, session.parentId, familyId, kidId))) return noSuchKid();
   const notFound = () => error(404, "not_found", "No such session for this kid.");
   if (!SESSION_ID_PATTERN.test(sessionId)) return notFound();
-  const result = await env.DB.prepare("DELETE FROM kid_sessions WHERE id = ? AND kid_id = ?")
-    .bind(sessionId, kidId)
-    .run();
-  if (result.meta.changes !== 1) return notFound();
+  // One transaction, as DELETE .../pairing does for every phone: the device registered on the session goes too (a
+  // device.removed event, prekeys cascade), so other phones stop sealing messages to the lost one.
+  const boundDevice = "account_id = ? AND device_id = (SELECT device_id FROM kid_sessions WHERE id = ? AND kid_id = ?)";
+  const results = await env.DB.batch([
+    deviceRemovedEvents(env, boundDevice, [kidId, sessionId, kidId]),
+    env.DB.prepare(`DELETE FROM devices WHERE ${boundDevice}`).bind(kidId, sessionId, kidId),
+    env.DB.prepare("DELETE FROM kid_sessions WHERE id = ? AND kid_id = ?").bind(sessionId, kidId),
+  ]);
+  if (results[2]?.meta.changes !== 1) return notFound();
+  await flushMembershipEvents(env);
   return empty(204);
 }

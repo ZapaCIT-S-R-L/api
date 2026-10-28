@@ -1,12 +1,15 @@
 // The key directory, part 1: registering a phone (POST /v1/devices), removing one, the prekey count, and the
 // account identity. The server stores libsignal public keys and signatures only, checks their types and sizes,
 // and never sees a private key. Signatures are verified by libsignal in the apps when they use a bundle.
+//
+// Accounts are parents and kids (accounts.ts): a paired kid's phone registers and fetches keys like a parent's.
+import { accountAllowlisted, authenticateAccount, sessionTable, type Account } from "./accounts";
 import { invalid, onlyFields, readJsonBody } from "./body";
 import type { Env } from "./env";
+import { conversationScopes } from "./family-membership";
 import { empty, error, json } from "./http";
-import { isAllowlisted } from "./play-integrity";
+import { deviceRemovedEvents, flushMembershipEvents, membershipEvent } from "./membership-events";
 import { attest } from "./routes";
-import { authenticate, type Session } from "./sessions";
 
 export const MAX_DEVICES = 127;
 export const DEVICE_INACTIVE_DAYS = 90;
@@ -131,19 +134,11 @@ export function parseDeviceKeys(body: Record<string, unknown>): DeviceKeys {
   return keys;
 }
 
-// Staging policy "allowlist": a request without attestation needs one of the parent's sign-in identities listed.
-export async function parentAllowlisted(env: Env, parentId: string): Promise<boolean> {
-  const rows = await env.DB.prepare("SELECT provider, subject FROM parent_identities WHERE parent_id = ?")
-    .bind(parentId)
-    .all<{ provider: string; subject: string }>();
-  return rows.results.some((r) => isAllowlisted(env, r.provider, r.subject));
-}
-
 const attestationFailed = () =>
   error(403, "attestation_failed", "Use the ZapaKid app from Google Play or the App Store on a genuine device.");
 
 export async function handleRegisterDevice(request: Request, env: Env): Promise<Response> {
-  const session = await authenticate(request, env);
+  const session = await authenticateAccount(request, env);
   if (!session) return unauthorized();
   const { body, bytes } = await readJsonBody(request, MAX_KEYS_BODY_BYTES);
   let keys: DeviceKeys;
@@ -155,7 +150,7 @@ export async function handleRegisterDevice(request: Request, env: Env): Promise<
   }
   const attestation = await attest(request, bytes, env);
   if (attestation instanceof Response) return attestation;
-  if (attestation === "allowlist" && !(await parentAllowlisted(env, session.parentId))) {
+  if (attestation === "allowlist" && !(await accountAllowlisted(env, session))) {
     console.log(JSON.stringify({ msg: "attestation failed", reason: "no attestation, not allowlisted" }));
     return attestationFailed();
   }
@@ -167,29 +162,32 @@ export async function handleRegisterDevice(request: Request, env: Env): Promise<
   await env.DB.prepare(
     "INSERT INTO account_identities (account_id, identity_key, created_at) VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
   )
-    .bind(session.parentId, keys.identityKey, now)
+    .bind(session.id, keys.identityKey, now)
     .run();
   const identity = await env.DB.prepare("SELECT identity_key FROM account_identities WHERE account_id = ?")
-    .bind(session.parentId)
+    .bind(session.id)
     .first<string>("identity_key");
   if (identity !== keys.identityKey) {
     return error(409, "identity_mismatch", "This isn't the account's identity key.");
   }
 
   for (let attempt = 0; attempt < 3; attempt++) {
-    const deviceId = await freeDeviceId(env, session.parentId);
+    const deviceId = await freeDeviceId(env, session.id);
     if (deviceId === null) {
       return error(409, "too_many_devices", `This account has ${MAX_DEVICES} devices. Remove one first.`);
     }
     try {
-      if (await storeDevice(env, session, deviceId, keys, now)) return json({ deviceId }, 201);
+      if (await storeDevice(env, session, deviceId, keys, now)) {
+        await flushMembershipEvents(env);
+        return json({ deviceId }, 201);
+      }
     } catch (e) {
       // Another session of this account took this id at the same moment: pick again.
       if (/UNIQUE|PRIMARY KEY/i.test(String(e))) continue;
       throw e;
     }
     // Not stored: the session was signed out, or a parallel request on it registered first.
-    const fresh = await authenticate(request, env);
+    const fresh = await authenticateAccount(request, env);
     if (!fresh) return unauthorized();
     const answer = await answerIfBound(env, fresh, keys);
     if (answer) return answer;
@@ -198,10 +196,10 @@ export async function handleRegisterDevice(request: Request, env: Env): Promise<
 }
 
 // A session that already has a device: the same keys get the same id (the first answer was lost), others 409.
-async function answerIfBound(env: Env, session: Session, keys: DeviceKeys): Promise<Response | null> {
+async function answerIfBound(env: Env, session: Account, keys: DeviceKeys): Promise<Response | null> {
   if (session.deviceId === null) return null;
   const existing = await env.DB.prepare("SELECT signed_prekey FROM devices WHERE account_id = ? AND device_id = ?")
-    .bind(session.parentId, session.deviceId)
+    .bind(session.id, session.deviceId)
     .first<string>("signed_prekey");
   if (existing === keys.signedPreKey.publicKey) return json({ deviceId: session.deviceId }, 201);
   return error(409, "device_already_registered", "This session already registered a device with other keys.");
@@ -221,7 +219,7 @@ async function freeDeviceId(env: Env, accountId: string): Promise<number | null>
 // session in the meantime stores nothing. Returns whether the device was stored; throws on a device id conflict.
 export async function storeDevice(
   env: Env,
-  session: Session,
+  session: DeviceOwner,
   deviceId: number,
   keys: DeviceKeys,
   now: string,
@@ -230,17 +228,22 @@ export async function storeDevice(
   return device?.meta.changes === 1;
 }
 
-// The statements storing a device, its prekeys and the session binding; each requires the session to exist, be
-// unexpired and unbound. The first one inserts the device (its meta.changes says whether it was stored).
+// The account and session a device is stored for.
+export type DeviceOwner = Pick<Account, "role" | "id" | "tokenHash">;
+
+// The statements storing a device, its prekeys, the session binding and its device.upserted event; each requires
+// the session to exist, be unexpired and unbound (the event: to be bound to this device by this batch). The first
+// one inserts the device (its meta.changes says whether it was stored).
 export function deviceStatements(
   env: Env,
-  session: Session,
+  session: DeviceOwner,
   deviceId: number,
   keys: DeviceKeys,
   now: string,
 ): D1PreparedStatement[] {
-  const account = session.parentId;
-  const sessionFree = "EXISTS (SELECT 1 FROM sessions WHERE token_hash = ? AND device_id IS NULL AND expires_at > ?)";
+  const account = session.id;
+  const { table } = sessionTable(session);
+  const sessionFree = `EXISTS (SELECT 1 FROM ${table} WHERE token_hash = ? AND device_id IS NULL AND expires_at > ?)`;
   const free = [session.tokenHash, now] as const;
   return [
     env.DB.prepare(
@@ -274,42 +277,59 @@ export function deviceStatements(
       ).bind(account, deviceId, k.keyId, k.publicKey, k.signature, ...free),
     ),
     env.DB.prepare(
-      "UPDATE sessions SET device_id = ? WHERE token_hash = ? AND device_id IS NULL AND expires_at > ?",
+      `UPDATE ${table} SET device_id = ? WHERE token_hash = ? AND device_id IS NULL AND expires_at > ?`,
     ).bind(deviceId, ...free),
+    membershipEvent(
+      env,
+      { type: "device.upserted", accountId: account, deviceId, registrationId: keys.registrationId },
+      {
+        sql: `EXISTS (SELECT 1 FROM devices WHERE account_id = ? AND device_id = ? AND created_at = ?)
+          AND EXISTS (SELECT 1 FROM ${table} WHERE token_hash = ? AND device_id = ?)`,
+        binds: [account, deviceId, now, session.tokenHash, deviceId],
+      },
+    ),
   ];
 }
 
 export async function handleRemoveDevice(request: Request, env: Env, rawId: string): Promise<Response> {
-  const session = await authenticate(request, env);
+  const session = await authenticateAccount(request, env);
   if (!session) return unauthorized();
-  const deviceId = /^[1-9]\d{0,2}$/.test(rawId) ? Number(rawId) : 0;
+  const deviceId = parseDeviceId(rawId);
   const notFound = () => error(404, "not_found", "No such device on this account.");
-  if (deviceId < 1 || deviceId > MAX_DEVICES) return notFound();
-  const [removed] = await env.DB.batch([
+  if (deviceId === null) return notFound();
+  const { table, owner } = sessionTable(session);
+  const [, removed] = await env.DB.batch([
+    deviceRemovedEvents(env, "account_id = ? AND device_id = ?", [session.id, deviceId]),
     env.DB.prepare("DELETE FROM devices WHERE account_id = ? AND device_id = ? RETURNING device_id").bind(
-      session.parentId,
+      session.id,
       deviceId,
     ),
     // A removed device is signed out (a lost phone must not keep a working session).
-    env.DB.prepare("DELETE FROM sessions WHERE parent_id = ? AND device_id = ?").bind(session.parentId, deviceId),
+    env.DB.prepare(`DELETE FROM ${table} WHERE ${owner} = ? AND device_id = ?`).bind(session.id, deviceId),
   ]);
   if (!removed?.results.length) return notFound();
+  await flushMembershipEvents(env);
   return empty(204);
 }
 
+function parseDeviceId(raw: string): number | null {
+  const id = /^[1-9]\d{0,2}$/.test(raw) ? Number(raw) : 0;
+  return id >= 1 && id <= MAX_DEVICES ? id : null;
+}
+
 export async function handleCountPreKeys(request: Request, env: Env): Promise<Response> {
-  const session = await authenticate(request, env);
+  const session = await authenticateAccount(request, env);
   if (!session) return unauthorized();
   if (session.deviceId === null) {
     return error(409, "device_not_registered", "Register this device first: POST /v1/devices.");
   }
   const [ec, pq] = await env.DB.batch<{ n: number }>([
     env.DB.prepare("SELECT count(*) AS n FROM one_time_prekeys WHERE account_id = ? AND device_id = ?").bind(
-      session.parentId,
+      session.id,
       session.deviceId,
     ),
     env.DB.prepare("SELECT count(*) AS n FROM pq_one_time_prekeys WHERE account_id = ? AND device_id = ?").bind(
-      session.parentId,
+      session.id,
       session.deviceId,
     ),
   ]);
@@ -317,11 +337,10 @@ export async function handleCountPreKeys(request: Request, env: Env): Promise<Re
 }
 
 export async function handleGetIdentity(request: Request, env: Env, accountId: string): Promise<Response> {
-  const session = await authenticate(request, env);
+  const session = await authenticateAccount(request, env);
   if (!session) return unauthorized();
   const notFound = () => error(404, "not_found", "No identity for this account, or not one you may see.");
-  // Only the caller's own account until families and connections exist.
-  if (accountId !== session.parentId) return notFound();
+  if (!(await mayTalk(env, session.id, accountId))) return notFound();
   const identityKey = await env.DB.prepare("SELECT identity_key FROM account_identities WHERE account_id = ?")
     .bind(accountId)
     .first<string>("identity_key");
@@ -333,4 +352,85 @@ export async function handleGetIdentity(request: Request, env: Env, accountId: s
     .bind(accountId)
     .all();
   return json({ identityKey, changes: changes.results });
+}
+
+// Whether two accounts may talk: the same account (its other devices), or both in one scope (a family, or a
+// connection: both families' parents and the kids shared in it). family-membership.ts defines the scopes.
+export async function mayTalk(env: Env, caller: string, accountId: string): Promise<boolean> {
+  if (caller === accountId) return true;
+  const [mine, theirs] = await Promise.all([conversationScopes(env, caller), conversationScopes(env, accountId)]);
+  return mine.some((scope) => theirs.includes(scope));
+}
+
+interface DeviceRow {
+  device_id: number;
+  registration_id: number;
+  signed_prekey_id: number;
+  signed_prekey: string;
+  signed_prekey_signature: string;
+  pq_last_resort_id: number;
+  pq_last_resort_key: string;
+  pq_last_resort_signature: string;
+}
+
+// GET /v1/keys/{accountId}/{deviceId|*}: what libsignal's PreKeyBundle needs, per device. Each bundle uses up one
+// one-time EC prekey and one one-time Kyber prekey when the device has any left (else: no EC one-time key, and the
+// Kyber last-resort key). Only for accounts the caller may talk to: others get 403, whether they exist or not.
+export async function handleGetBundles(
+  request: Request,
+  env: Env,
+  accountId: string,
+  rawDevice: string,
+): Promise<Response> {
+  const session = await authenticateAccount(request, env);
+  if (!session) return unauthorized();
+  if (!(await mayTalk(env, session.id, accountId))) {
+    return error(403, "forbidden", "Not an account you may talk to.");
+  }
+  const notFound = () => error(404, "not_found", "No keys for this account or device.");
+  const deviceId = rawDevice === "*" ? null : parseDeviceId(rawDevice);
+  if (rawDevice !== "*" && deviceId === null) return notFound();
+  const identityKey = await env.DB.prepare("SELECT identity_key FROM account_identities WHERE account_id = ?")
+    .bind(accountId)
+    .first<string>("identity_key");
+  if (!identityKey) return notFound();
+  const columns = `device_id, registration_id, signed_prekey_id, signed_prekey, signed_prekey_signature,
+    pq_last_resort_id, pq_last_resort_key, pq_last_resort_signature`;
+  const { results: devices } = await (
+    deviceId === null
+      ? env.DB.prepare(`SELECT ${columns} FROM devices WHERE account_id = ? ORDER BY device_id`).bind(accountId)
+      : env.DB.prepare(`SELECT ${columns} FROM devices WHERE account_id = ? AND device_id = ?`).bind(
+          accountId,
+          deviceId,
+        )
+  ).all<DeviceRow>();
+  if (devices.length === 0) return notFound();
+
+  // One-time keys: each DELETE ... RETURNING takes the lowest key id left, atomically, so two callers never get the
+  // same one.
+  const take = (table: "one_time_prekeys" | "pq_one_time_prekeys", columns: string, device: number) =>
+    env.DB.prepare(
+      `DELETE FROM ${table} WHERE rowid = (SELECT rowid FROM ${table} WHERE account_id = ? AND device_id = ?
+         ORDER BY key_id LIMIT 1) RETURNING ${columns}`,
+    ).bind(accountId, device);
+  const taken = await env.DB.batch(
+    devices.flatMap((d) => [
+      take("one_time_prekeys", "key_id, public_key", d.device_id),
+      take("pq_one_time_prekeys", "key_id, public_key, signature", d.device_id),
+    ]),
+  );
+  const bundles = devices.map((d, i) => {
+    const ec = taken[2 * i]?.results[0] as { key_id: number; public_key: string } | undefined;
+    const pq = taken[2 * i + 1]?.results[0] as { key_id: number; public_key: string; signature: string } | undefined;
+    return {
+      deviceId: d.device_id,
+      registrationId: d.registration_id,
+      signedPreKey: { keyId: d.signed_prekey_id, publicKey: d.signed_prekey, signature: d.signed_prekey_signature },
+      pqPreKey: pq
+        ? { keyId: pq.key_id, publicKey: pq.public_key, signature: pq.signature }
+        : { keyId: d.pq_last_resort_id, publicKey: d.pq_last_resort_key, signature: d.pq_last_resort_signature },
+      ...(ec ? { preKey: { keyId: ec.key_id, publicKey: ec.public_key } } : {}),
+    };
+  });
+  return json({ identityKey, devices: bundles });
 }

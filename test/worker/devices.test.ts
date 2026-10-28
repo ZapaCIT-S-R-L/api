@@ -6,7 +6,7 @@ import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { parseDeviceKeys as parsedKeys, storeDevice } from "../../src/devices";
 import worker from "../../src/index";
-import { authenticate } from "../../src/sessions";
+import { authenticateAccount } from "../../src/accounts";
 import {
   ADULT,
   appleClaims,
@@ -72,8 +72,21 @@ const register = (token: string, body: unknown, headers: Record<string, string> 
     body: JSON.stringify(body),
   });
 
+async function outboxEvents(): Promise<Record<string, unknown>[]> {
+  const { results } = await env.DB.prepare("SELECT body, sent_at FROM membership_outbox ORDER BY seq").all<{
+    body: string;
+    sent_at: string | null;
+  }>();
+  return results.map((r) => ({ ...(JSON.parse(r.body) as Record<string, unknown>), sent: r.sent_at !== null }));
+}
+
+// The outbox without the device.upserted events that registering writes.
+async function removalEvents(): Promise<Record<string, unknown>[]> {
+  return (await outboxEvents()).filter((e) => e.type !== "device.upserted");
+}
+
 async function authenticateToken(token: string) {
-  const session = await authenticate(workerRequest("https://api.test/", { headers: bearer(token) }), env);
+  const session = await authenticateAccount(workerRequest("https://api.test/", { headers: bearer(token) }), env);
   if (!session) throw new Error("no session");
   return session;
 }
@@ -439,6 +452,93 @@ describe("DELETE /v1/devices/{id}", () => {
     expect(reRegister.status).toBe(401);
     expect((await call("/v1/me", { headers: bearer(other.session.token) })).status).toBe(200);
     expect(await count("sessions")).toBe(1);
+  });
+
+  // api #81: the chat service must stop other phones sealing to a removed (lost) device.
+  it("sends device.removed to the chat service, only when the device existed", async () => {
+    const a = await signIn();
+    await register(a.session.token, deviceKeys());
+    const other = await signIn();
+    expect((await call("/v1/devices/2", { method: "DELETE", headers: bearer(other.session.token) })).status).toBe(404);
+    expect(await removalEvents()).toEqual([]);
+    expect((await call("/v1/devices/1", { method: "DELETE", headers: bearer(other.session.token) })).status).toBe(204);
+    const events = await removalEvents();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ v: 1, type: "device.removed", accountId: a.parent.id, deviceId: 1, sent: true });
+  });
+
+  it("logout-all?removeDevices=true removes every device of the parent and sends device.removed for each", async () => {
+    const identityKey = ec();
+    const lost = await signIn();
+    await register(lost.session.token, deviceKeys(identityKey));
+    const other = await signIn();
+    await register(other.session.token, deviceKeys(identityKey));
+    const stranger = await signIn("parent-s");
+    await register(stranger.session.token, deviceKeys());
+    const res = await call("/v1/auth/logout-all?removeDevices=true", {
+      method: "POST",
+      headers: bearer(other.session.token),
+    });
+    expect(res.status).toBe(204);
+    expect(await count("devices")).toBe(1);
+    expect(await count("one_time_prekeys")).toBe(3);
+    expect((await call("/v1/me", { headers: bearer(lost.session.token) })).status).toBe(401);
+    expect((await call("/v1/me", { headers: bearer(stranger.session.token) })).status).toBe(200);
+    const events = await removalEvents();
+    expect(events.map((e) => [e.type, e.deviceId])).toEqual([
+      ["device.removed", 1],
+      ["device.removed", 2],
+      ["account.sessions_revoked", undefined],
+    ]);
+    expect(events.every((e) => e.accountId === lost.parent.id && e.sent)).toBe(true);
+    // The identity stays: the phones register again with the same keys at their next sign-in.
+    const again = await signIn();
+    expect((await register(again.session.token, deviceKeys(identityKey))).status).toBe(201);
+  });
+
+  // api #84 review: a device registered while logout-all runs (here: at its DB.batch) is removed too, with its event.
+  it("logout-all?removeDevices=true removes a device registered concurrently, with its device.removed", async () => {
+    const identityKey = ec();
+    const first = await signIn();
+    await register(first.session.token, deviceKeys(identityKey));
+    const late = await signIn();
+    const lateSession = await authenticateToken(late.session.token);
+    const caller = await signIn();
+    const batch = env.DB.batch.bind(env.DB);
+    let registered = false;
+    vi.spyOn(env.DB, "batch").mockImplementation(async (statements) => {
+      if (!registered) {
+        registered = true;
+        const now = new Date().toISOString();
+        expect(await storeDevice(env, lateSession, 2, parsedKeys(deviceKeys(identityKey)), now)).toBe(true);
+      }
+      return batch(statements);
+    });
+    const res = await call("/v1/auth/logout-all?removeDevices=true", {
+      method: "POST",
+      headers: bearer(caller.session.token),
+    });
+    expect(registered).toBe(true);
+    expect(res.status).toBe(204);
+    expect(await count("devices")).toBe(0);
+    const events = await removalEvents();
+    expect(events.map((e) => [e.type, e.deviceId])).toEqual([
+      ["device.removed", 1],
+      ["device.removed", 2],
+      ["account.sessions_revoked", undefined],
+    ]);
+    expect(new Set(events.map((e) => e.id)).size).toBe(3);
+    for (const e of events)
+      expect(e.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(events.every((e) => e.accountId === first.parent.id && e.sent)).toBe(true);
+  });
+
+  it("logout-all without removeDevices keeps the devices", async () => {
+    const a = await signIn();
+    await register(a.session.token, deviceKeys());
+    expect((await call("/v1/auth/logout-all", { method: "POST", headers: bearer(a.session.token) })).status).toBe(204);
+    expect(await count("devices")).toBe(1);
+    expect((await removalEvents()).map((e) => e.type)).toEqual(["account.sessions_revoked"]);
   });
 
   it("removing the caller's own device signs the caller out", async () => {

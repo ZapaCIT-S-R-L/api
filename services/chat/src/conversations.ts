@@ -2,6 +2,7 @@
 // phones and, until delivered, as delivery copies in the conversation's Durable Object.
 import type { Caller } from "./auth";
 import { ACCOUNT_ID, CONVERSATION_ID, onlyFields, randomId, readJson } from "./body";
+import { conversationEvent, flushConversationEvents } from "./conversation-events";
 import type { Env } from "./env";
 import { allowedTogether, loadFamilies, missingGuardians, roleOf, type Role } from "./graph";
 import { empty, HttpError, invalid, json, notAllowed, notFound } from "./http";
@@ -173,9 +174,14 @@ export async function handleGet(env: Env, caller: Caller, conversationId: string
 
 export async function handleDelete(env: Env, rooms: Rooms, caller: Caller, conversationId: string): Promise<Response> {
   await requireMembership(env, caller, conversationId);
-  await env.DB.prepare("UPDATE conversation_members SET deleted_at = ?3 WHERE conversation_id = ?1 AND account_id = ?2")
-    .bind(conversationId, caller.accountId, Date.now())
-    .run();
+  // The caller is no longer a member: the calls service drops their devices from a live call (api #77).
+  await env.DB.batch([
+    env.DB.prepare(
+      "UPDATE conversation_members SET deleted_at = ?3 WHERE conversation_id = ?1 AND account_id = ?2",
+    ).bind(conversationId, caller.accountId, Date.now()),
+    conversationEvent(env, { type: "conversation.members_removed", conversationId, accountIds: [caller.accountId] }),
+  ]);
+  await flushConversationEvents(env);
   await rooms.forgetAccount(conversationId, caller.accountId);
   await purgeIfAbandoned(env, rooms, conversationId);
   return empty();
@@ -200,7 +206,8 @@ export async function purgeIfAbandoned(env: Env, rooms: Rooms, conversationId: s
 //   2. guardians who are no longer a parent of a kid in it are removed; missing parents of kids are added;
 //   3. if members from different families are no longer allowed together (connection removed, kid unshared), or
 //      fewer than two members remain, the conversation is closed (read-only).
-// The conversation's devices get an event so they refresh the member list and rotate their sender keys.
+// The conversation's devices get an event so they refresh the member list and rotate their sender keys. The calls
+// service gets a ConversationEvent (src/conversation-events.ts) so a live call drops the removed members, or ends.
 export async function reconcile(env: Env, rooms: Rooms, conversationId: string): Promise<void> {
   const conversation = await env.DB.prepare("SELECT state FROM conversations WHERE id = ?1")
     .bind(conversationId)
@@ -252,7 +259,14 @@ export async function reconcile(env: Env, rooms: Rooms, conversationId: string):
       ),
     );
   }
+  if (removed.length > 0) {
+    statements.push(
+      conversationEvent(env, { type: "conversation.members_removed", conversationId, accountIds: removed }, now),
+    );
+  }
+  if (close) statements.push(conversationEvent(env, { type: "conversation.closed", conversationId }, now));
   if (statements.length > 0) await env.DB.batch(statements);
+  if (removed.length > 0 || close) await flushConversationEvents(env);
   for (const account of removed) await rooms.forgetAccount(conversationId, account);
   if (await purgeIfAbandoned(env, rooms, conversationId)) return;
   if (removed.length > 0 || added.length > 0) await rooms.notify(conversationId, "members_changed", removed);

@@ -3,12 +3,16 @@
 // the session, app attestation and a fresh sign-in (under 10 minutes), so a stolen old session can't do it.
 // Everything happens in one D1 batch: the identity, the history, removing every device (prekeys cascade) and
 // every other session, and storing this phone as the account's only device.
+//
+// Kids too: a kid's "fresh sign-in" is a fresh pairing (a parent's one-time code, under 10 minutes old), the way a
+// replaced kid phone with a new identity key gets back in.
+import { accountAllowlisted, authenticateAccount, sessionTable } from "./accounts";
 import { readJsonBody } from "./body";
-import { deviceStatements, InvalidKeys, parentAllowlisted, parseDeviceKeys } from "./devices";
+import { deviceStatements, InvalidKeys, parseDeviceKeys } from "./devices";
 import type { Env } from "./env";
 import { error, json } from "./http";
+import { deviceRemovedEvents, flushMembershipEvents } from "./membership-events";
 import { attest } from "./routes";
-import { authenticate } from "./sessions";
 
 export const REAUTH_WINDOW_MS = 10 * 60_000;
 const MAX_KEYS_BODY_BYTES = 512 * 1024;
@@ -28,7 +32,7 @@ function endorsementOf(value: unknown): string | null {
 }
 
 export async function handleChangeIdentity(request: Request, env: Env): Promise<Response> {
-  const session = await authenticate(request, env);
+  const session = await authenticateAccount(request, env);
   if (!session) return unauthorized();
   const { body, bytes } = await readJsonBody(request, MAX_KEYS_BODY_BYTES);
   let keys;
@@ -43,7 +47,7 @@ export async function handleChangeIdentity(request: Request, env: Env): Promise<
   }
   const attestation = await attest(request, bytes, env);
   if (attestation instanceof Response) return attestation;
-  if (attestation === "allowlist" && !(await parentAllowlisted(env, session.parentId))) {
+  if (attestation === "allowlist" && !(await accountAllowlisted(env, session))) {
     return error(
       403,
       "attestation_failed",
@@ -54,7 +58,8 @@ export async function handleChangeIdentity(request: Request, env: Env): Promise<
   const now = new Date();
   const nowIso = now.toISOString();
   const freshSince = new Date(now.getTime() - REAUTH_WINDOW_MS).toISOString();
-  const createdAt = await env.DB.prepare("SELECT created_at FROM sessions WHERE token_hash = ?")
+  const { table, owner } = sessionTable(session);
+  const createdAt = await env.DB.prepare(`SELECT created_at FROM ${table} WHERE token_hash = ?`)
     .bind(session.tokenHash)
     .first<string>("created_at");
   if (!createdAt) return unauthorized();
@@ -62,13 +67,13 @@ export async function handleChangeIdentity(request: Request, env: Env): Promise<
     return error(403, "reauthentication_required", "Sign in again (within the last 10 minutes), then retry.");
   }
   const current = await env.DB.prepare("SELECT identity_key FROM account_identities WHERE account_id = ?")
-    .bind(session.parentId)
+    .bind(session.id)
     .first<string>("identity_key");
   if (!current) return error(409, "no_identity", "This account has no identity yet: register with POST /v1/devices.");
   if (current === keys.identityKey)
     return error(409, "identity_unchanged", "This is already the account's identity key.");
 
-  const account = session.parentId;
+  const account = session.id;
   // Every statement after the first runs only if the first one changed the identity (the account's key is the new
   // one now), so a concurrent change, a logout or an expired session leaves everything as it was.
   const changed = "(SELECT identity_key FROM account_identities WHERE account_id = ?) = ?";
@@ -76,19 +81,21 @@ export async function handleChangeIdentity(request: Request, env: Env): Promise<
   const [update] = await env.DB.batch([
     env.DB.prepare(
       `UPDATE account_identities SET identity_key = ? WHERE account_id = ? AND identity_key = ?
-         AND EXISTS (SELECT 1 FROM sessions WHERE token_hash = ? AND expires_at > ? AND created_at > ?)`,
+         AND EXISTS (SELECT 1 FROM ${table} WHERE token_hash = ? AND expires_at > ? AND created_at > ?)`,
     ).bind(keys.identityKey, account, current, session.tokenHash, nowIso, freshSince),
     env.DB.prepare(
       `INSERT INTO identity_key_changes (account_id, previous_key, identity_key, endorsement, changed_at)
          SELECT ?, ?, ?, ?, ? WHERE ${changed}`,
     ).bind(account, current, keys.identityKey, endorsement, nowIso, ...ifChanged),
+    // Device 1 is replaced by this phone (its device.upserted follows); the others are removed.
+    deviceRemovedEvents(env, `account_id = ? AND device_id != 1 AND ${changed}`, [account, ...ifChanged]),
     env.DB.prepare(`DELETE FROM devices WHERE account_id = ? AND ${changed}`).bind(account, ...ifChanged),
-    env.DB.prepare(`DELETE FROM sessions WHERE parent_id = ? AND token_hash != ? AND ${changed}`).bind(
+    env.DB.prepare(`DELETE FROM ${table} WHERE ${owner} = ? AND token_hash != ? AND ${changed}`).bind(
       account,
       session.tokenHash,
       ...ifChanged,
     ),
-    env.DB.prepare(`UPDATE sessions SET device_id = NULL WHERE token_hash = ? AND ${changed}`).bind(
+    env.DB.prepare(`UPDATE ${table} SET device_id = NULL WHERE token_hash = ? AND ${changed}`).bind(
       session.tokenHash,
       ...ifChanged,
     ),
@@ -97,6 +104,7 @@ export async function handleChangeIdentity(request: Request, env: Env): Promise<
   if (update?.meta.changes !== 1) {
     return error(409, "identity_changed_concurrently", "The identity changed meanwhile or you were signed out; retry.");
   }
+  await flushMembershipEvents(env);
   console.log(JSON.stringify({ msg: "identity changed", endorsed: endorsement !== null }));
   return json({ deviceId: 1 });
 }

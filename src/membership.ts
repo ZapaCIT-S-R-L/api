@@ -1,20 +1,20 @@
-// Who the caller is in chat terms: the device registered on their session and the conversations they belong to.
-// The tables behind this (devices: api #20; families and conversations: api #40, #42, #43) are not on main yet, so
-// the default source returns only what exists: no device, no conversations. Without a device no chat token is
-// issued (409 device_required). Each of those PRs replaces the default with a source that reads its tables.
+// Who the caller is in chat terms: the device registered on their session and the conversation scopes they belong
+// to (family-membership.ts: their family, and the connections they are in). Without a device no chat token is
+// issued (409 device_required).
+import type { Account } from "./accounts";
 import type { Env } from "./env";
-import type { Session } from "./sessions";
+import { conversationScopes } from "./family-membership";
 
 export interface MembershipSource {
   // The libsignal device id registered on this session, or null.
-  device(env: Env, session: Session): Promise<number | null>;
-  // The conversation ids the account is a member of.
+  device(env: Env, account: Account): Promise<number | null>;
+  // The conversation scopes the account is a member of.
   conversations(env: Env, accountId: string): Promise<string[]>;
 }
 
 const existingData: MembershipSource = {
-  device: () => Promise.resolve(null),
-  conversations: () => Promise.resolve([]),
+  device: (_env, account) => Promise.resolve(account.deviceId),
+  conversations: conversationScopes,
 };
 
 let source: MembershipSource = existingData;
