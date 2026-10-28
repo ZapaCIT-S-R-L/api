@@ -105,6 +105,13 @@ paths:
                 properties:
                   status: { type: string, const: ok }
                   version: { type: string, examples: [chat-v1.0.0] }
+                  rpc:
+                    description: >-
+                      The ChatMembership RPC methods this Worker serves over service bindings. The calls deploy waits
+                      until the chat Worker in its environment lists every method calls uses.
+                    type: array
+                    items: { type: string }
+                    examples: [[member, revoked]]
         "503":
           description: Misconfigured; `problems` names the missing binding or variable, never a value.
           content:

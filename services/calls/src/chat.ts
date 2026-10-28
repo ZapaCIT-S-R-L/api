@@ -28,6 +28,15 @@ export interface ChatMembershipRpc {
 // The chat service failed or answered something unexpected: refuse (503), never allow.
 export class ChatUnavailable extends Error {}
 
+// The chat Worker behind the CHAT binding predates an RPC method calls needs (it was deployed after calls, against
+// the order in deploy-calls.yml). Refused like an outage, but retryable: answered 503 with Retry-After until the
+// newer chat Worker is live. Never treated as "not revoked".
+export class ChatOutdated extends ChatUnavailable {}
+
+// How workerd rejects a call to a method the RPC receiver doesn't have (TypeError: The RPC receiver does not
+// implement the method "revoked".).
+const MISSING_METHOD = /does not implement the method/;
+
 const NOT_A_MEMBER: Membership = { member: false, members: [] };
 
 const isDevice = (d: unknown): d is number => typeof d === "number" && Number.isInteger(d) && d >= 1 && d <= 127;
@@ -75,6 +84,9 @@ export async function revoked(env: Env, who: { accountId: string; sep: number })
   try {
     answer = await env.CHAT.revoked(who.accountId, who.sep);
   } catch (e) {
+    if (e instanceof TypeError && MISSING_METHOD.test(e.message)) {
+      throw new ChatOutdated("the chat Worker has no ChatMembership.revoked (deploy chat before calls)");
+    }
     throw new ChatUnavailable(String(e));
   }
   if (typeof answer !== "boolean") throw new ChatUnavailable("unexpected answer from ChatMembership.revoked");

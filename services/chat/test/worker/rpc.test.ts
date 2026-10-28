@@ -2,7 +2,9 @@
 // whether an account is a current member of a conversation, and which members and devices to ring.
 import { exports } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
+import { RPC_METHODS } from "../../src/health";
 import { noRooms } from "../../src/rooms";
+import { ChatMembership } from "../../src/rpc";
 import {
   ALEX,
   ANA,
@@ -138,5 +140,13 @@ describe("ChatMembership.member", () => {
   it("is not reachable over HTTP", async () => {
     const res = await as(await tokenFor(issuer, MUM), "/ChatMembership/member", { method: "POST", body: "{}" });
     expect(res.status).toBe(404);
+  });
+});
+
+// deploy-calls.yml deploys calls only once /health lists every method calls uses, so the list must be the truth.
+describe("GET /health rpc", () => {
+  it("lists exactly the ChatMembership methods", () => {
+    const methods = Object.getOwnPropertyNames(ChatMembership.prototype).filter((m) => m !== "constructor");
+    expect([...RPC_METHODS].sort()).toEqual(methods.sort());
   });
 });

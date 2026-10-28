@@ -30,7 +30,13 @@ on failure), then the same for production once @stefan-zpc approves the `product
 own workflows ignore `services/`. The token needs `Queues: Edit` (root README) for the conversation events queues.
 
 The `CHAT` binding needs the chat Worker of the same environment (`zapakid-chat-staging`, `zapakid-chat-production`)
-deployed with its `ChatMembership` entrypoint first; otherwise the calls deploy fails. The conversation events
+deployed with its `ChatMembership` entrypoint first; otherwise the calls deploy fails. Deploy order: chat before
+calls, enforced. Each calls stage first waits (up to 30 minutes, before migrations or the deploy) until the chat
+Worker of that environment lists every method calls uses (`CHAT_RPC` in the workflow: `member`, `revoked`) in the
+`rpc` field of its `/health` (`scripts/wait-for-rpc.js`); if it doesn't, the stage fails without changing anything:
+deploy chat, then re-run. Should calls still meet a chat Worker without `revoked` (a chat rollback), every request
+gets a retryable 503 `chat_unavailable` with `Retry-After: 30`, logged as `chat outdated`; a token is never let
+through unchecked. The conversation events
 queues (`zapakid-conversation-events-<env>` and `…-dlq`) are created by `scripts/resources.js` if missing, as the
 chat deploy does, so the queue never blocks either deploy.
 

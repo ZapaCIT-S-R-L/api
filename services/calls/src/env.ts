@@ -46,6 +46,8 @@ declare global {
       TEST_MIGRATIONS: import("cloudflare:test").D1Migration[];
       // The chat stub's test controls (test/chat-stub/index.js).
       CHAT_STUB: Fetcher;
+      // A chat Worker from before ChatMembership.revoked (test/chat-stub/index.js, OldChatMembership).
+      OLD_CHAT: AppEnv["CHAT"];
     }
     // Types `exports` from cloudflare:workers (tests call exports.default.fetch).
     interface GlobalProps {

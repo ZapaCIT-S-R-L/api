@@ -4,7 +4,7 @@
 import { authenticate, InvalidToken, type Caller } from "./auth";
 import { BadRequest, id, invalid, onlyFields, readJson } from "./body";
 import type { CallView, Result } from "./call-room";
-import { ChatUnavailable, membership, revoked, ringTargets } from "./chat";
+import { ChatOutdated, ChatUnavailable, membership, revoked, ringTargets } from "./chat";
 import type { Env } from "./env";
 import { empty, error, json } from "./http";
 import { KeysUnavailable } from "./jwks";
@@ -122,6 +122,10 @@ async function answer<T>(pending: Promise<Result<T>>, status = 200): Promise<Res
 const rateLimited = () => error(429, "rate_limited", "Too many calls. Try again in a minute.", { "retry-after": "60" });
 
 export function chatUnavailable(e: Error): Response {
+  if (e instanceof ChatOutdated) {
+    console.error(JSON.stringify({ msg: "chat outdated", err: e.message }));
+    return error(503, "chat_unavailable", "Calls are unavailable right now. Try again later.", { "retry-after": "30" });
+  }
   console.error(JSON.stringify({ msg: "chat unavailable", err: e.message }));
   return error(503, "chat_unavailable", "Calls are unavailable right now. Try again later.");
 }

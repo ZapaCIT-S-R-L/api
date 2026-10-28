@@ -5,9 +5,12 @@ import { runDurableObjectAlarm } from "cloudflare:test";
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { REVALIDATE_MS } from "../../src/call-room";
+import { ChatOutdated, revoked } from "../../src/chat";
+import worker from "../../src/index";
 import { resetJwksCache } from "../../src/jwks";
 import { chatDownForAccount, errorCode, phone, revokeSessions } from "./calls-helpers";
 import {
+  bearer,
   fakeRealtime,
   makeIssuer,
   stubFetch,
@@ -84,6 +87,37 @@ describe("revoked chat tokens", () => {
     const res = await dad.request("GET", `/v1/calls/${call.callId}`);
     expect(res.status).toBe(503);
     expect(await errorCode(res)).toBe("chat_unavailable");
+  });
+
+  it("calls deployed before chat (no ChatMembership.revoked yet) → retryable 503, never allowed", async () => {
+    const conv = conversation();
+    const dad = await phone(issuer, uniqueAccount(), 1, [conv], "parent", { sep: 1 });
+    const { call } = await dad.create(conv);
+    // Revoked as far as the new chat Worker knows; the old one can't say, so calls must not let it through.
+    await revokeSessions(dad.accountId, 2);
+    const oldChat = { ...env, CHAT: env.OLD_CHAT };
+    await expect(revoked(oldChat, { accountId: dad.accountId, sep: 1 })).rejects.toBeInstanceOf(ChatOutdated);
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    for (const [method, path, body] of [
+      ["GET", `/v1/calls/${call.callId}`, undefined],
+      ["POST", "/v1/calls", { conversationId: conv }],
+    ] as const) {
+      const res = await worker.fetch(
+        new Request(`https://calls.test${path}`, {
+          method,
+          headers: { ...bearer(dad.token), ...(body ? { "content-type": "application/json" } : {}) },
+          ...(body ? { body: JSON.stringify(body) } : {}),
+        }),
+        oldChat,
+      );
+      expect(res.status, `${method} ${path}`).toBe(503);
+      expect(res.headers.get("retry-after")).toBe("30");
+      expect(await errorCode(res)).toBe("chat_unavailable");
+    }
+    expect(errors.mock.calls.some(([line]) => String(line).includes("chat outdated"))).toBe(true);
+    // An ordinary chat failure is not mistaken for an outdated chat Worker.
+    await chatDownForAccount(dad.accountId);
+    await expect(revoked(env, { accountId: dad.accountId, sep: 1 })).rejects.not.toBeInstanceOf(ChatOutdated);
   });
 
   it("a revoked phone that relays a key is dropped from the call and its socket closed (4401)", async () => {
