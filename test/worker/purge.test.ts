@@ -135,6 +135,54 @@ describe("daily purge", () => {
     expect(rows.results.map((r) => r.code_hash)).toEqual([hex("4")]);
   });
 
+  it("deletes expired kid pairing codes and kid sessions, keeps live ones", async () => {
+    const now = new Date().toISOString();
+    await env.DB.batch([
+      env.DB.prepare(
+        `INSERT INTO parents (id, age_category, age_source, age_checked_at, created_at, updated_at)
+         VALUES ('p1', 'adult', 'apple_declared_age_range', ?, ?, ?)`,
+      ).bind(now, now, now),
+      env.DB.prepare("INSERT INTO families (id, name, created_at) VALUES ('f1', NULL, ?)").bind(now),
+      env.DB.prepare(
+        "INSERT INTO kids (id, family_id, nickname, avatar, created_at, updated_at) VALUES ('k1', 'f1', 'M', 'r', ?, ?)",
+      ).bind(now, now),
+      ...[
+        [hex("5"), past()],
+        [hex("6"), future()],
+      ].flatMap(([h, exp]) => [
+        env.DB.prepare(
+          "INSERT INTO kid_pairings (code_hash, kid_id, family_id, created_by, created_at, expires_at) VALUES (?, 'k1', 'f1', 'p1', ?, ?)",
+        ).bind(h, now, exp),
+        env.DB.prepare(
+          "INSERT INTO kid_sessions (token_hash, kid_id, created_at, expires_at) VALUES (?, 'k1', ?, ?)",
+        ).bind(h, now, exp),
+      ]),
+    ]);
+    await runCron();
+    const codes = await env.DB.prepare("SELECT code_hash FROM kid_pairings").all<{ code_hash: string }>();
+    expect(codes.results.map((r) => r.code_hash)).toEqual([hex("6")]);
+    const sessions = await env.DB.prepare("SELECT token_hash FROM kid_sessions").all<{ token_hash: string }>();
+    expect(sessions.results.map((r) => r.token_hash)).toEqual([hex("6")]);
+  });
+
+  // Regression (security review 2026-10-27, L7): a flood of live one-time rows (nonces, web flows, attestation
+  // challenges) between purges is reported, so it can be alerted on.
+  it("logs an alert when a one-time table holds more than ONE_TIME_ROW_ALERT live rows", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await env.DB.prepare(
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i <= ?)
+       INSERT INTO sign_in_nonces (nonce_hash, created_at, expires_at)
+       SELECT printf('%064x', i), ?, ? FROM n`,
+    )
+      .bind(ONE_TIME_ROW_ALERT, new Date().toISOString(), future())
+      .run();
+    await runCron();
+    const alerts = error.mock.calls.map((c) => String(c[0])).filter((m) => m.includes("one-time rows over the alert"));
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toContain("sign_in_nonces");
+    error.mockRestore();
+  });
+
   it("does nothing on an empty database", async () => {
     await env.DB.prepare("DELETE FROM sign_in_nonces").run();
     await runCron();

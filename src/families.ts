@@ -1,10 +1,12 @@
 // Families: parents and the kids they add. A parent belongs to one family (v1). The app calls POST /v1/families
 // right after sign-in (idempotent), so a family exists from the first sign-in on; a second parent joins with a
 // one-time invitation code instead. Only members see a family; for everyone else it doesn't exist (404).
+import { authenticateAccount } from "./accounts";
 import { invalid, onlyFields, readJson } from "./body";
 import { randomBase64Url, sha256Hex } from "./crypto";
 import type { Env } from "./env";
 import { error, json } from "./http";
+import { handleCreatePairing } from "./pairing";
 import { authenticate } from "./sessions";
 
 export const INVITATION_TTL_SECONDS = 72 * 3600;
@@ -50,6 +52,11 @@ export async function routeFamilies(request: Request, env: Env, path: string): P
   }
   if ((match = /^\/v1\/families\/([^/]+)\/parents\/invitations$/.exec(path))) {
     return request.method === "POST" ? handleInvite(request, env, match[1] ?? "") : methodNotAllowed();
+  }
+  if ((match = /^\/v1\/families\/([^/]+)\/kids\/([^/]+)\/pairing$/.exec(path))) {
+    return request.method === "POST"
+      ? handleCreatePairing(request, env, match[1] ?? "", match[2] ?? "")
+      : methodNotAllowed();
   }
   if ((match = /^\/v1\/families\/([^/]+)\/kids$/.exec(path))) {
     return request.method === "POST" ? handleAddKid(request, env, match[1] ?? "") : methodNotAllowed();
@@ -117,6 +124,13 @@ interface KidRow {
   created_at: string;
 }
 
+export async function loadKid(env: Env, kidId: string): Promise<Kid | null> {
+  const row = await env.DB.prepare("SELECT id, nickname, avatar, grade, created_at FROM kids WHERE id = ?")
+    .bind(kidId)
+    .first<KidRow>();
+  return row ? toKid(row) : null;
+}
+
 function toKid(row: KidRow): Kid {
   return { id: row.id, nickname: row.nickname, avatar: row.avatar, grade: row.grade, createdAt: row.created_at };
 }
@@ -129,10 +143,11 @@ async function memberFamily(env: Env, parentId: string, familyId: string): Promi
   return row?.family_id ?? null;
 }
 
+// Parents and kids: a kid sees their own family.
 async function handleListFamilies(request: Request, env: Env): Promise<Response> {
-  const session = await authenticate(request, env);
-  if (!session) return unauthorized();
-  const familyId = await familyIdOf(env, session.parentId);
+  const account = await authenticateAccount(request, env);
+  if (!account) return unauthorized();
+  const familyId = account.role === "kid" ? account.familyId : await familyIdOf(env, account.id);
   const family = familyId ? await loadFamily(env, familyId) : null;
   return json({ families: family ? [family] : [] });
 }
