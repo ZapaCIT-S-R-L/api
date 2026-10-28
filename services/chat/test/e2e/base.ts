@@ -1,15 +1,14 @@
 // Shared helpers for the end-to-end tests against a running chat Worker. LIVE=1 means a deployed environment: only
 // checks that need no valid token or test hook run there.
 // Locally (wrangler dev, top-level vars of wrangler.jsonc), the tests play the account service: they serve an ES256
-// key set on 127.0.0.1:8789 and sign chat tokens with it, and they feed membership events through the local-only
+// key set on 127.0.0.1:8789 (global-setup.ts) and sign chat tokens with it, and they feed membership events through the local-only
 // POST /__e2e/membership hook into the real queue consumer.
-import { createServer, type Server } from "node:http";
-import { exportJWK, generateKeyPair, SignJWT, type JWK, type JWTPayload } from "jose";
+import { importJWK, SignJWT, type JWTPayload } from "jose";
+import { inject } from "vitest";
 
 export const CHAT_URL = (process.env.CHAT_URL ?? "http://127.0.0.1:8790").replace(/\/$/, "");
 if (!/^https?:\/\/[^/]+$/.test(CHAT_URL)) throw new Error(`CHAT_URL must be an http(s) origin, got "${CHAT_URL}"`);
 export const LIVE = process.env.LIVE === "1";
-export const JWKS_PORT = Number(process.env.JWKS_PORT ?? 8789);
 
 export function chat(path: string, init?: RequestInit): Promise<Response> {
   return fetch(`${CHAT_URL}${path}`, { redirect: "manual", ...init });
@@ -20,20 +19,10 @@ export interface AccountService {
   close(): Promise<void>;
 }
 
-// A fake account service key set on loopback (not started when LIVE).
+// Signs chat tokens with the run's fake account service key (test/e2e/global-setup.ts serves its public half).
 export async function fakeAccountService(): Promise<AccountService> {
-  const kid = `e2e-${Date.now().toString(36)}`;
-  const { publicKey, privateKey } = await generateKeyPair("ES256", { extractable: true });
-  const jwk: JWK = { ...(await exportJWK(publicKey)), kid, alg: "ES256", use: "sig" };
-  let server: Server | undefined;
-  if (!LIVE) {
-    server = createServer((req, res) => {
-      const ok = req.url === "/.well-known/jwks.json";
-      res.writeHead(ok ? 200 : 404, { "content-type": "application/json" });
-      res.end(JSON.stringify(ok ? { keys: [jwk] } : {}));
-    });
-    await new Promise<void>((resolve) => server?.listen(JWKS_PORT, "127.0.0.1", resolve));
-  }
+  const jwk = inject("accountKey");
+  const key = await importJWK(jwk, "ES256");
   return {
     sign: (claims, lifetime = 600) => {
       const iat = Math.floor(Date.now() / 1000);
@@ -44,19 +33,12 @@ export async function fakeAccountService(): Promise<AccountService> {
         role: "parent",
         ...claims,
       })
-        .setProtectedHeader({ alg: "ES256", kid })
+        .setProtectedHeader({ alg: "ES256", kid: jwk.kid ?? "" })
         .setIssuedAt(iat)
         .setExpirationTime(iat + lifetime)
-        .sign(privateKey);
+        .sign(key);
     },
-    close: () =>
-      new Promise<void>((resolve) => {
-        if (server)
-          server.close(() => {
-            resolve();
-          });
-        else resolve();
-      }),
+    close: () => Promise.resolve(),
   };
 }
 

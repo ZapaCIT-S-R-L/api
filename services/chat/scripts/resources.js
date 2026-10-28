@@ -1,6 +1,7 @@
 // Finds or creates the Cloudflare resources of a deployed chat environment, then writes the D1 database id into
 // wrangler.jsonc in place of that environment's placeholder (the real id is never committed):
 //   D1 database zapakid-chat-<env> (EU jurisdiction)
+//   R2 bucket zapakid-chat-attachments-<env> (EU jurisdiction)
 //   Queues zapakid-membership-<env> and zapakid-membership-<env>-dlq (the account service produces into the first)
 // Runs in the deploy workflows only, before the D1 migrations and the deploy, with the environment's token.
 // CLI: node scripts/resources.js staging|production
@@ -17,6 +18,7 @@ export function names(env) {
   if (!Object.hasOwn(PLACEHOLDERS, env)) throw new Error(`unknown environment "${env}"`);
   return {
     database: `zapakid-chat-${env}`,
+    bucket: `zapakid-chat-attachments-${env}`,
     queues: [`zapakid-membership-${env}`, `zapakid-membership-${env}-dlq`],
   };
 }
@@ -60,7 +62,7 @@ function exists(args) {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const env = process.argv[2];
-  const { database, queues } = names(env);
+  const { database, bucket, queues } = names(env);
 
   const list = () => JSON.parse(wrangler(["d1", "list", "--json"]));
   let db = findDatabase(list(), database);
@@ -74,6 +76,11 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const path = new URL("../wrangler.jsonc", import.meta.url);
   writeFileSync(path, patchConfig(readFileSync(path, "utf8"), env, db.uuid));
   console.log(`D1 ${database}: ${db.uuid}`);
+
+  if (!exists(["r2", "bucket", "info", bucket, "--jurisdiction", "eu"])) {
+    console.log(`Creating R2 bucket ${bucket} in the EU jurisdiction`);
+    wrangler(["r2", "bucket", "create", bucket, "--jurisdiction", "eu"]);
+  }
 
   for (const queue of queues) {
     if (exists(["queues", "info", queue])) continue;
