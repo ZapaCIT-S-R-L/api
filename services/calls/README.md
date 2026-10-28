@@ -49,7 +49,7 @@ DNS records on the first deploy.
 - `src/calls.ts`: the HTTP API (start, join, leave, decline, call log, events, Realtime proxy).
 - `src/call-room.ts`: one Durable Object per call. It holds the roster and the key epoch, which goes up on every
   join and leave. It runs the hibernating events WebSocket and relays the libsignal-sealed key envelopes to the one
-  device each is for, queuing them for a device that isn't connected yet. It also runs the timers: 45 s ring
+  device each is for, queuing them for a device that isn't connected yet. It also runs the timers: 30 s ring
   timeout, 2 h maximum, 30 s reconnect grace, and cleanup an hour after the end.
 - `src/conversation-events.ts`: the consumer of the chat service's `ConversationEvent` queue
   (`zapakid-conversation-events-<env>`, dead letters in `…-dlq`). When chat removes members from a conversation
