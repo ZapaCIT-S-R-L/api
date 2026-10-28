@@ -230,9 +230,11 @@ export async function purgeIfAbandoned(env: Env, rooms: Rooms, conversationId: s
 // Re-applies the family rules to a conversation after the family graph changed:
 //   1. members who are in no family any more (left, deleted) are removed;
 //   2. observers who no longer observe a kid in it (not its parent any more, or oversight turned off) are removed;
-//      the missing observers of the kids in it are added (new parent, oversight turned back on);
-//   3. if members from different families are no longer allowed together (connection removed, kid unshared), or
-//      fewer than two writers remain, the conversation is closed (read-only).
+//      the missing observers of the kids in it are added (new parent, oversight turned back on), up to
+//      MAX_OBSERVERS;
+//   3. if members from different families are no longer allowed together (connection removed, kid unshared),
+//      fewer than two writers remain, or the observers would be more than MAX_OBSERVERS, the conversation is
+//      closed (read-only).
 // The conversation's devices get an event so they refresh the member list and rotate their sender keys. When
 // observers are added, the kid's own device re-seals the history to them: the server has nothing it could send.
 // The calls service gets a ConversationEvent (src/conversation-events.ts) so a live call drops the removed members,
@@ -258,7 +260,12 @@ export async function reconcile(env: Env, rooms: Rooms, conversationId: string):
     if (!observers.has(m.account_id)) removed.push(m.account_id);
   }
   const current = members.map((m) => m.account_id).filter((a) => !removed.includes(a));
-  const added = conversation.state === "open" ? missingObservers(graph, current) : [];
+  let added = conversation.state === "open" ? missingObservers(graph, current) : [];
+  // MAX_OBSERVERS holds here too, not only at creation. Over it, nobody is added and the conversation is closed:
+  // a kid's chat never goes on with a parent who should observe it left out.
+  const keptObservers = members.filter((m) => isObserver(m) && !removed.includes(m.account_id)).length;
+  const tooManyObservers = keptObservers + added.length > MAX_OBSERVERS;
+  if (tooManyObservers) added = [];
 
   const now = Date.now();
   const statements = [
@@ -275,7 +282,8 @@ export async function reconcile(env: Env, rooms: Rooms, conversationId: string):
     ),
   ];
   const after = [...current, ...added];
-  const close = conversation.state === "open" && (writers.length < 2 || !allowedTogether(graph, after));
+  const close =
+    conversation.state === "open" && (tooManyObservers || writers.length < 2 || !allowedTogether(graph, after));
   if (close) {
     statements.push(
       env.DB.prepare("UPDATE conversations SET state = 'closed', closed_at = ?2 WHERE id = ?1").bind(

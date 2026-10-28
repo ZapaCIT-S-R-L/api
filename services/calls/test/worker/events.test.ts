@@ -151,6 +151,30 @@ describe("events WebSocket", () => {
     b.close();
   });
 
+  // api #73: a kid's parents observe the chat, never the call; the call key never reaches them.
+  it("refuses an observer's WebSocket (404) and key envelopes addressed to an observer", async () => {
+    const alex = await phone(issuer, uniqueAccount(), 1, ["conv-obs-ws"], "kid");
+    const maria = await phone(issuer, uniqueAccount(), 2, ["conv-obs-ws"], "kid");
+    const mum = await phone(issuer, uniqueAccount(), 3, ["conv-obs-ws"], "observer");
+    const { call } = await alex.create("conv-obs-ws");
+    expect((await maria.join(call.callId)).status).toBe(200);
+
+    const refused = await exports.default.fetch(
+      new Request(`https://calls.test/v1/calls/${call.callId}/events`, {
+        headers: { ...bearer(mum.token), upgrade: "websocket" },
+      }),
+    );
+    expect(refused.status).toBe(404);
+    expect(refused.webSocket).toBeNull();
+    expect((await mum.join(call.callId)).status).toBe(404);
+
+    const a = await alex.events(call.callId);
+    await a.next("roster");
+    a.send({ type: "keys", epoch: 2, envelopes: [{ toAccount: mum.accountId, toDevice: 3, blob: blob(10) }] });
+    expect(await a.next("error")).toMatchObject({ code: "not_participant" });
+    a.close();
+  });
+
   it("answers ping with pong", async () => {
     const dad = await phone(issuer, uniqueAccount());
     const { call } = await dad.create();

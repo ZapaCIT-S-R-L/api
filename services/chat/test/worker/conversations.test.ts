@@ -2,6 +2,7 @@
 // oversight is off for that kid), other families' kids only when shared through a connection.
 import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
+import { MAX_MEMBERS, MAX_OBSERVERS, MAX_REQUESTED_MEMBERS } from "../../src/conversations";
 import { noRooms } from "../../src/rooms";
 import {
   ALEX,
@@ -172,6 +173,54 @@ describe("POST /v1/conversations", () => {
       body: "x",
     });
     expect(notJson.status).toBe(415);
+  });
+});
+
+// One family with many parents and kids (accounts `<prefix>-p<i>`, `<prefix>-k<i>`, one device each).
+async function bigFamily(prefix: string, parents: number, kids: number) {
+  const ids = (role: string, n: number) => Array.from({ length: n }, (_, i) => `${prefix}-${role}${i}`);
+  const family = { parents: ids("p", parents), kids: ids("k", kids) };
+  for (const [role, accounts] of [
+    ["parent", family.parents],
+    ["kid", family.kids],
+  ] as const) {
+    for (const accountId of accounts) {
+      await apply(
+        noRooms,
+        { type: "family.member_added", familyId: prefix, accountId, role },
+        { type: "device.upserted", accountId, deviceId: 1, registrationId: 1 },
+      );
+    }
+  }
+  return family;
+}
+
+describe("POST /v1/conversations limits", () => {
+  // Writers are at most MAX_REQUESTED_MEMBERS + 1 (the caller), so MAX_MEMBERS can't be the limit observers hit.
+  it("observers don't count toward MAX_MEMBERS", async () => {
+    expect(MAX_REQUESTED_MEMBERS + 1).toBeLessThanOrEqual(MAX_MEMBERS);
+    const observers = MAX_MEMBERS - MAX_REQUESTED_MEMBERS;
+    const { parents, kids } = await bigFamily("big", observers, MAX_REQUESTED_MEMBERS + 1);
+    const [first = "", ...others] = kids;
+    const res = await create(first, others);
+    expect(res.status).toBe(201);
+    const body = await res.json<ConversationBody>();
+    expect(body.members).toHaveLength(kids.length + parents.length);
+    expect(body.members.length).toBeGreaterThan(MAX_MEMBERS);
+    expect(body.members.filter((m) => m.role === "observer")).toHaveLength(parents.length);
+  });
+
+  it("more than MAX_OBSERVERS observing parents → 400, nothing created", async () => {
+    const { kids } = await bigFamily("huge", MAX_OBSERVERS + 1, 2);
+    const res = await create(kids[0] ?? "", [kids[1] ?? ""]);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ error: { code: "invalid_request" } });
+    expect(await env.DB.prepare("SELECT count(*) AS n FROM conversations").first<{ n: number }>()).toEqual({ n: 0 });
+  });
+
+  it("exactly MAX_OBSERVERS observing parents is allowed", async () => {
+    const { kids } = await bigFamily("full", MAX_OBSERVERS, 2);
+    expect((await create(kids[0] ?? "", [kids[1] ?? ""])).status).toBe(201);
   });
 });
 
