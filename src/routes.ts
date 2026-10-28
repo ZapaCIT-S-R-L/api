@@ -125,6 +125,14 @@ export async function handleMe(request: Request, env: Env): Promise<Response> {
   return json(parent);
 }
 
+// Signs out every session of the signed-in parent (a lost phone, or "sign out everywhere").
+export async function handleLogoutAll(request: Request, env: Env): Promise<Response> {
+  const session = await authenticate(request, env);
+  if (!session) return unauthorized();
+  await env.DB.prepare("DELETE FROM sessions WHERE parent_id = ?").bind(session.parentId).run();
+  return empty(204);
+}
+
 export async function handleLogout(request: Request, env: Env): Promise<Response> {
   const session = await authenticate(request, env);
   if (!session) return unauthorized();
