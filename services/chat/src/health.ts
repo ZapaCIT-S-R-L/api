@@ -7,7 +7,16 @@ function problems(env: Env): string[] {
   const present: Partial<Env> = env;
   const found: string[] = [];
   if (!present.DB) found.push("DB binding missing");
-  if (!present.CREATE_LIMITER) found.push("CREATE_LIMITER binding missing");
+  for (const name of [
+    "ROOMS",
+    "ATTACHMENTS",
+    "CREATE_LIMITER",
+    "SEND_LIMITER",
+    "CONNECT_LIMITER",
+    "ATTACH_LIMITER",
+  ] as const) {
+    if (!present[name]) found.push(`${name} binding missing`);
+  }
   if (!present.TOKEN_ISSUER) found.push("TOKEN_ISSUER empty");
   if (!present.TOKEN_AUDIENCE) found.push("TOKEN_AUDIENCE empty");
   if (!allowedJwksUrl(present.ACCOUNT_JWKS_URL ?? "")) found.push("ACCOUNT_JWKS_URL not an https URL");
