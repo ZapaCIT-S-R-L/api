@@ -5,6 +5,7 @@ import { BadRequest } from "./body";
 import { handleChatToken, handleJwks } from "./chat-token";
 import { handleCountPreKeys, handleGetIdentity, handleRegisterDevice, handleRemoveDevice } from "./devices";
 import { handleHealth } from "./health";
+import { handleChangeIdentity } from "./identity";
 import type { Env } from "./env";
 import { routeConnections } from "./connections";
 import { routeFamilies } from "./families";
@@ -34,9 +35,10 @@ const ROUTES: Record<string, { method: string; handler: Handler; limited?: true 
   },
   "/v1/auth/logout": { method: "POST", handler: handleLogout },
   "/v1/auth/logout-all": { method: "POST", handler: handleLogoutAll },
-  "/v1/me": { method: "GET", handler: handleMe },
+  "/v1/me": { method: "GET, PATCH", handler: handleMe },
   "/v1/devices": { method: "POST", handler: handleRegisterDevice, limited: true },
   "/v1/keys/prekeys": { method: "GET", handler: handleCountPreKeys },
+  "/v1/keys/identity": { method: "PUT", handler: handleChangeIdentity, limited: true },
   "/v1/pairing/redeem": { method: "POST", handler: handleRedeemPairing, limited: true },
   "/v1/chat/token": { method: "POST", handler: handleChatToken },
   "/.well-known/jwks.json": { method: "GET", handler: handleJwks },
@@ -72,7 +74,7 @@ export default {
           error(404, "not_found", "No such endpoint.")
         );
       }
-      if (request.method !== route.method) {
+      if (!route.method.split(", ").includes(request.method)) {
         return error(405, "method_not_allowed", `Use ${route.method}.`, { allow: route.method });
       }
       if (route.limited) {
