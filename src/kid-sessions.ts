@@ -52,7 +52,7 @@ export async function handleListKidSessions(
   if (!(await parentOfKid(env, session.parentId, familyId, kidId))) return noSuchKid();
   const now = new Date().toISOString();
   const [, , rows] = await env.DB.batch<{ id: string; created_at: string; expires_at: string; last_seen_at: string }>([
-    // Rows written by the Worker version before migration 0010 have no id yet: name them now, once.
+    // Rows written by the Worker version before migration 0011 have no id yet: name them now, once.
     env.DB.prepare("UPDATE kid_sessions SET id = lower(hex(randomblob(16))) WHERE kid_id = ? AND id IS NULL").bind(
       kidId,
     ),

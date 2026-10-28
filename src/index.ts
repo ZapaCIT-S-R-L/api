@@ -8,6 +8,7 @@ import { handleHealth } from "./health";
 import { handleChangeIdentity } from "./identity";
 import { handleKidLogout } from "./kid-sessions";
 import type { Env } from "./env";
+import { routeConnections } from "./connections";
 import { routeFamilies } from "./families";
 import { error } from "./http";
 import { flushMembershipEvents } from "./membership-events";
@@ -69,7 +70,11 @@ export default {
           }
           return await p.handler(request, env, decodeURIComponent(match[1] ?? ""));
         }
-        return (await routeFamilies(request, env, url.pathname)) ?? error(404, "not_found", "No such endpoint.");
+        return (
+          (await routeFamilies(request, env, url.pathname)) ??
+          (await routeConnections(request, env, url.pathname)) ??
+          error(404, "not_found", "No such endpoint.")
+        );
       }
       if (!route.method.split(", ").includes(request.method)) {
         return error(405, "method_not_allowed", `Use ${route.method}.`, { allow: route.method });
