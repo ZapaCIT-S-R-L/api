@@ -4,5 +4,5 @@ dist/
 .wrangler/
 LICENSE
 worker-configuration.d.ts
-# Each service lints itself (services/*/package.json).
+# Each service lints itself (services/<name>/package.json).
 services/
