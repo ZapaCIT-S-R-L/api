@@ -119,6 +119,69 @@ describe("POST /v1/auth/logout", () => {
   });
 });
 
+// Stefan (2026-10-28): "father can't change name". A parent sets their own display name; family lists read it live.
+describe("PATCH /v1/me", () => {
+  function patch(token: string | null, body: unknown, type = "application/json"): Promise<Response> {
+    return call("/v1/me", {
+      method: "PATCH",
+      headers: { ...(token ? bearer(token) : {}), "content-type": type },
+      body: typeof body === "string" ? body : JSON.stringify(body),
+    });
+  }
+
+  it("changes the display name (trimmed) and returns the parent", async () => {
+    const { session, parent } = await signIn();
+    const res = await patch(session.token, { displayName: "  Tata Stefan  " });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ...parent, displayName: "Tata Stefan" });
+    const me = await (await call("/v1/me", { headers: bearer(session.token) })).json<{ displayName: string }>();
+    expect(me.displayName).toBe("Tata Stefan");
+  });
+
+  it("the family's parent list shows the new name", async () => {
+    const { session } = await signIn();
+    await patch(session.token, { displayName: "Tata" });
+    const res = await call("/v1/families", {
+      method: "POST",
+      headers: { ...bearer(session.token), "content-type": "application/json" },
+      body: JSON.stringify({ name: "Familia" }),
+    });
+    const family = await res.json<{ parents: { displayName: string | null }[] }>();
+    expect(family.parents.map((p) => p.displayName)).toEqual(["Tata"]);
+  });
+
+  it.each([
+    ["empty after trimming", { displayName: "   " }],
+    ["longer than 40 characters", { displayName: "x".repeat(41) }],
+    ["control characters", { displayName: "Ta\u0000ta" }],
+    ["a newline", { displayName: "Ta\nta" }],
+    ["not a string", { displayName: 7 }],
+    ["missing", {}],
+    ["an unknown field", { displayName: "Tata", email: "x@y.ro" }],
+  ])("refuses a name that is %s → 400", async (_what, body) => {
+    const { session } = await signIn();
+    const res = await patch(session.token, body);
+    expect(res.status).toBe(400);
+    expect((await res.json<ErrorBody>()).error.code).toBe("invalid_request");
+  });
+
+  it("40 characters is fine", async () => {
+    const { session } = await signIn();
+    expect((await patch(session.token, { displayName: "x".repeat(40) })).status).toBe(200);
+  });
+
+  it("without a session, or with a kid session → 401", async () => {
+    await expectUnauthorized(await patch(null, { displayName: "Tata" }));
+    await expectUnauthorized(await patch(`zkk_${"A".repeat(43)}`, { displayName: "Tata" }));
+  });
+
+  it("GET still works and other methods → 405", async () => {
+    const { session } = await signIn();
+    expect((await call("/v1/me", { headers: bearer(session.token) })).status).toBe(200);
+    expect((await call("/v1/me", { method: "DELETE", headers: bearer(session.token) })).status).toBe(405);
+  });
+});
+
 // Regression (security review 2026-10-27, L8): sessions are capped per parent, and a parent can sign out everywhere.
 describe("session limits", () => {
   it("keeps the newest MAX_SESSIONS_PER_PARENT sessions; the oldest is signed out", async () => {
