@@ -14,6 +14,8 @@ beforeEach(async () => {
       "pq_one_time_prekeys",
       "devices",
       "account_identities",
+      "kid_sessions",
+      "kid_pairings",
       "family_invitations",
       "kids",
       "family_parents",

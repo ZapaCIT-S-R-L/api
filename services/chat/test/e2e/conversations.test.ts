@@ -61,7 +61,10 @@ describe.skipIf(LIVE)("conversations", () => {
       conversations: { id: string }[];
     };
     expect(list.conversations.map((c) => c.id)).toContain(conversation.id);
-    expect((await post(kid, "/v1/conversations", { members: [f.mum] })).status).toBe(403);
+    // Kids start chats too; the kid and Mum share one direct conversation, whoever starts it.
+    const byKid = await post(kid, "/v1/conversations", { members: [f.mum] });
+    expect(byKid.status).toBe(200);
+    expect(((await byKid.json()) as { id: string }).id).toBe(conversation.id);
   });
 
   it("a group with the connected family's shared kid includes that kid's parent", async () => {
