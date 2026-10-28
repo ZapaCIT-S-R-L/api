@@ -1,0 +1,135 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "zapakid-calls",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-12",
+
+  // The top level is for local development and tests only. Deploys always name an environment
+  // (deploy-calls.yml: --env staging, then --env production).
+  "workers_dev": false,
+  "preview_urls": false,
+  "observability": { "enabled": true },
+
+  // Local development and tests: chat tokens from the account API on wrangler dev (port 8787). The e2e tests point
+  // ACCOUNT_JWKS_URL at their own fake on 127.0.0.1:8798 (scripts/check.sh). Plain http only works on loopback.
+  "vars": {
+    "VERSION": "dev",
+    "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/zapakid-api",
+    "ACCOUNT_JWKS_URL": "http://127.0.0.1:8787/.well-known/jwks.json",
+    "TOKEN_ISSUER": "http://localhost:8787",
+    "TOKEN_AUDIENCE": "calls.localhost",
+    // Cloudflare Realtime (SFU and TURN). The e2e run points it at its fake on 127.0.0.1:8798.
+    "REALTIME_API_URL": "https://rtc.live.cloudflare.com/v1",
+    "MAX_PARTICIPANTS": "8",
+    "RING_TIMEOUT_SECONDS": "45",
+    "MAX_CALL_SECONDS": "7200",
+    "TURN_TTL_SECONDS": "3600",
+    "RECONNECT_GRACE_SECONDS": "30",
+    "CALL_LOG_RETENTION_DAYS": "365",
+  },
+  // Secrets (the bootstrap-secrets workflow, never vars): REALTIME_APP_ID, REALTIME_APP_SECRET, TURN_KEY_ID,
+  // TURN_KEY_API_TOKEN. Locally: --var on wrangler dev with fake values (scripts/check.sh), or .dev.vars.
+  "durable_objects": { "bindings": [{ "name": "CALL", "class_name": "CallRoom" }] },
+  // Conversation membership: the chat Worker of the same environment, over Workers RPC (never public HTTP). Locally
+  // the tests play it (test/chat-stub). Bindings are not inherited: each environment names its own chat Worker.
+  "services": [{ "binding": "CHAT", "service": "zapakid-chat", "entrypoint": "ChatMembership" }],
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["CallRoom"] }],
+  // Calls started and joins per account per minute; each environment has its own namespace_id (separate counters).
+  "ratelimits": [
+    { "name": "CREATE_LIMITER", "namespace_id": "1101", "simple": { "limit": 100, "period": 60 } },
+    { "name": "JOIN_LIMITER", "namespace_id": "1102", "simple": { "limit": 300, "period": 60 } },
+  ],
+  // Local only (wrangler dev, tests): Miniflare keeps it on disk under .wrangler/.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "zapakid-calls-local",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations",
+    },
+  ],
+
+  "env": {
+    "staging": {
+      // The Worker owns this hostname and its DNS record. No workers.dev URL.
+      "routes": [{ "pattern": "calls-staging.zapakid.ro", "custom_domain": true }],
+      "workers_dev": false,
+      "preview_urls": false,
+      "observability": { "enabled": true },
+      // VERSION and VERSION_URL are overridden on every deploy (deploy-calls.yml: wrangler deploy --var).
+      "vars": {
+        "VERSION": "dev",
+        "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/zapakid-api",
+        "ACCOUNT_JWKS_URL": "https://api-staging.zapakid.ro/.well-known/jwks.json",
+        "TOKEN_ISSUER": "https://api-staging.zapakid.ro",
+        "TOKEN_AUDIENCE": "calls-staging.zapakid.ro",
+        "REALTIME_API_URL": "https://rtc.live.cloudflare.com/v1",
+        "MAX_PARTICIPANTS": "8",
+        "RING_TIMEOUT_SECONDS": "45",
+        "MAX_CALL_SECONDS": "7200",
+        "TURN_TTL_SECONDS": "3600",
+        "RECONNECT_GRACE_SECONDS": "30",
+        "CALL_LOG_RETENTION_DAYS": "365",
+      },
+      "durable_objects": { "bindings": [{ "name": "CALL", "class_name": "CallRoom" }] },
+      // zapakid-chat-staging must be deployed (with ChatMembership) before this binding can be.
+      "services": [{ "binding": "CHAT", "service": "zapakid-chat-staging", "entrypoint": "ChatMembership" }],
+      "ratelimits": [
+        { "name": "CREATE_LIMITER", "namespace_id": "2101", "simple": { "limit": 10, "period": 60 } },
+        { "name": "JOIN_LIMITER", "namespace_id": "2102", "simple": { "limit": 30, "period": 60 } },
+      ],
+      // Daily purge of call log rows older than CALL_LOG_RETENTION_DAYS (src/purge.ts), at 03:23 UTC.
+      "triggers": { "crons": ["23 3 * * *"] },
+      // EU jurisdiction. scripts/d1-database.js creates it if needed and puts its id in place of this placeholder
+      // at deploy time (deploy-calls.yml); the real id is never committed.
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "zapakid-calls-staging",
+          "database_id": "00000000-0000-0000-0000-000000000001",
+          "migrations_dir": "migrations",
+        },
+      ],
+    },
+
+    // Production: deployed after staging, once @stefan-zpc approves the `production` environment.
+    // Chat tokens come from api.zapakid.ro, which serves them from the v1 cutover on.
+    "production": {
+      "routes": [{ "pattern": "calls.zapakid.ro", "custom_domain": true }],
+      "workers_dev": false,
+      "preview_urls": false,
+      "observability": { "enabled": true },
+      "vars": {
+        "VERSION": "dev",
+        "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/zapakid-api",
+        "ACCOUNT_JWKS_URL": "https://api.zapakid.ro/.well-known/jwks.json",
+        "TOKEN_ISSUER": "https://api.zapakid.ro",
+        "TOKEN_AUDIENCE": "calls.zapakid.ro",
+        "REALTIME_API_URL": "https://rtc.live.cloudflare.com/v1",
+        "MAX_PARTICIPANTS": "8",
+        "RING_TIMEOUT_SECONDS": "45",
+        "MAX_CALL_SECONDS": "7200",
+        "TURN_TTL_SECONDS": "3600",
+        "RECONNECT_GRACE_SECONDS": "30",
+        "CALL_LOG_RETENTION_DAYS": "365",
+      },
+      "durable_objects": { "bindings": [{ "name": "CALL", "class_name": "CallRoom" }] },
+      // zapakid-chat-production must be deployed (with ChatMembership) before this binding can be.
+      "services": [{ "binding": "CHAT", "service": "zapakid-chat-production", "entrypoint": "ChatMembership" }],
+      "ratelimits": [
+        { "name": "CREATE_LIMITER", "namespace_id": "3101", "simple": { "limit": 10, "period": 60 } },
+        { "name": "JOIN_LIMITER", "namespace_id": "3102", "simple": { "limit": 30, "period": 60 } },
+      ],
+      // Daily purge of call log rows older than CALL_LOG_RETENTION_DAYS (src/purge.ts), at 03:23 UTC.
+      "triggers": { "crons": ["23 3 * * *"] },
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "zapakid-calls-production",
+          "database_id": "00000000-0000-0000-0000-000000000002",
+          "migrations_dir": "migrations",
+        },
+      ],
+    },
+  },
+}

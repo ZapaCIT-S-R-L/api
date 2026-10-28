@@ -26,7 +26,10 @@ for (const { file, doc } of workflows) {
       for (const step of job.steps ?? []) {
         if (!usesSecret(step.env)) continue;
         const run = String(step.run ?? "");
-        assert.ok(/wrangler|d1-database\.js/.test(run), `step "${step.name ?? run.slice(0, 40)}" gets the token`);
+        assert.ok(
+          /wrangler|d1-database\.js|bootstrap-secrets\.js/.test(run),
+          `step "${step.name ?? run.slice(0, 40)}" gets the token`,
+        );
         assert.ok(
           !/npm (ci|install|test)|npm run test/.test(run),
           `step "${step.name}" installs or tests with the token`,
