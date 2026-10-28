@@ -182,7 +182,11 @@ export async function count(
     | "account_identities"
     | "devices"
     | "one_time_prekeys"
-    | "pq_one_time_prekeys",
+    | "pq_one_time_prekeys"
+    | "families"
+    | "family_parents"
+    | "family_invitations"
+    | "kids",
 ): Promise<number> {
   const row = await env.DB.prepare(`SELECT count(*) AS n FROM ${table}`).first<{ n: number }>();
   return row?.n ?? 0;
@@ -209,4 +213,20 @@ export interface SignInBody {
 
 export interface ErrorBody {
   error: { code: string; message: string };
+}
+
+// Signs a parent in with Apple (the given test issuer) and returns the session token and parent id.
+export async function signInParent(
+  apple: TestIssuer,
+  sub: string,
+  displayName = "Ana",
+): Promise<{ token: string; id: string; auth: Record<string, string> }> {
+  const res = await postJson("/v1/auth/apple", {
+    identityToken: await apple.sign(appleClaims({ sub })),
+    ageRange: ADULT,
+    displayName,
+  });
+  if (res.status !== 200) throw new Error(`sign-in answered ${res.status}`);
+  const body = await res.json<SignInBody>();
+  return { token: body.session.token, id: body.parent.id, auth: bearer(body.session.token) };
 }
