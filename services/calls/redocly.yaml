@@ -1,0 +1,10 @@
+# Lint rules for openapi.yaml (npm run lint:api).
+extends:
+  - recommended
+rules:
+  # GET /v1/stream answers 101 (WebSocket upgrade) and the Apple callback 303 (redirect), not 2xx.
+  operation-2xx-response: warn
+  # Draft endpoints describe their responses in words until they are designed.
+  operation-4xx-response: off
+  # Auth endpoints are public by design (security: []).
+  security-defined: error
