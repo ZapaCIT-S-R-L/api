@@ -31,20 +31,33 @@ export function bearerToken(request: Request): string | null {
 export interface Session {
   tokenHash: string;
   parentId: string;
+  // The device registered on this session (POST /v1/devices), or null.
+  deviceId: number | null;
 }
+
+const DAY_MS = 86_400_000;
 
 // The live session for this request, or null. Expired sessions are deleted when seen.
 export async function authenticate(request: Request, env: Env): Promise<Session | null> {
   const token = bearerToken(request);
   if (!token) return null;
   const tokenHash = await hashToken(token);
-  const row = await env.DB.prepare("SELECT parent_id, expires_at FROM sessions WHERE token_hash = ?")
+  const row = await env.DB.prepare("SELECT parent_id, expires_at, device_id FROM sessions WHERE token_hash = ?")
     .bind(tokenHash)
-    .first<{ parent_id: string; expires_at: string }>();
+    .first<{ parent_id: string; expires_at: string; device_id: number | null }>();
   if (!row) return null;
   if (Date.parse(row.expires_at) <= Date.now()) {
     await env.DB.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(tokenHash).run();
     return null;
   }
-  return { tokenHash, parentId: row.parent_id };
+  if (row.device_id !== null) {
+    // Device activity for the 90-day expiry; written at most once a day per device.
+    const now = Date.now();
+    await env.DB.prepare(
+      "UPDATE devices SET last_seen_at = ? WHERE account_id = ? AND device_id = ? AND last_seen_at < ?",
+    )
+      .bind(new Date(now).toISOString(), row.parent_id, row.device_id, new Date(now - DAY_MS).toISOString())
+      .run();
+  }
+  return { tokenHash, parentId: row.parent_id, deviceId: row.device_id };
 }

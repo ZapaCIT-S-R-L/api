@@ -22,14 +22,18 @@ export async function readJson(request: Request): Promise<Record<string, unknown
 }
 
 // The parsed object and the exact bytes received (Play Integrity binds its token to their SHA-256).
-export async function readJsonBody(request: Request): Promise<{ body: Record<string, unknown>; bytes: Uint8Array }> {
+// `maxBytes`: 16 KiB by default; key uploads (Kyber keys are 1.5 KiB each) allow more.
+export async function readJsonBody(
+  request: Request,
+  maxBytes = MAX_BODY_BYTES,
+): Promise<{ body: Record<string, unknown>; bytes: Uint8Array }> {
   const type = request.headers.get("content-type") ?? "";
   if (!/^application\/json\s*(;|$)/i.test(type)) {
     throw new BadRequest(415, "unsupported_media_type", "Send Content-Type: application/json.");
   }
   const declared = Number(request.headers.get("content-length") ?? "0");
-  if (declared > MAX_BODY_BYTES) throw new BadRequest(413, "payload_too_large", "The body is over 16 KiB.");
-  const bytes = await readCapped(request);
+  if (declared > maxBytes) throw tooLarge(maxBytes);
+  const bytes = await readCapped(request, maxBytes);
   let value: unknown;
   try {
     value = JSON.parse(new TextDecoder().decode(bytes));
@@ -41,8 +45,10 @@ export async function readJsonBody(request: Request): Promise<{ body: Record<str
 }
 
 // Reads the body but stops as soon as it passes the limit (chunked bodies have no Content-Length).
-async function readCapped(request: Request): Promise<Uint8Array> {
-  const tooLarge = () => new BadRequest(413, "payload_too_large", "The body is over 16 KiB.");
+const tooLarge = (maxBytes: number) =>
+  new BadRequest(413, "payload_too_large", `The body is over ${Math.round(maxBytes / 1024)} KiB.`);
+
+async function readCapped(request: Request, maxBytes = MAX_BODY_BYTES): Promise<Uint8Array> {
   if (!request.body) return new Uint8Array();
   const reader = request.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -51,9 +57,9 @@ async function readCapped(request: Request): Promise<Uint8Array> {
     const { done, value } = (await reader.read()) as ReadableStreamReadResult<Uint8Array>;
     if (done) break;
     size += value.byteLength;
-    if (size > MAX_BODY_BYTES) {
+    if (size > maxBytes) {
       await reader.cancel();
-      throw tooLarge();
+      throw tooLarge(maxBytes);
     }
     chunks.push(value);
   }
