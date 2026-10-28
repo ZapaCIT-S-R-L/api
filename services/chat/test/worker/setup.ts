@@ -7,6 +7,8 @@ import { resetJwksCache } from "../../src/jwks";
 await applyD1Migrations(env.DB, env.TEST_MIGRATIONS);
 
 const TABLES = [
+  "attachments",
+  "attachment_downloads",
   "conversation_members",
   "conversations",
   "family_members",

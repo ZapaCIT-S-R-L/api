@@ -21,8 +21,12 @@ describe("daily purge", () => {
         `INSERT INTO parents (id, age_category, age_source, age_checked_at, created_at, updated_at)
          VALUES ('p1', 'adult', 'apple_declared_age_range', ?, ?, ?)`,
       ).bind(now, now, now),
-      env.DB.prepare("INSERT INTO sessions VALUES (?, 'p1', ?, ?)").bind(hex("a"), now, past()),
-      env.DB.prepare("INSERT INTO sessions VALUES (?, 'p1', ?, ?)").bind(hex("b"), now, future()),
+      env.DB.prepare(
+        "INSERT INTO sessions (token_hash, parent_id, created_at, expires_at) VALUES (?, 'p1', ?, ?)",
+      ).bind(hex("a"), now, past()),
+      env.DB.prepare(
+        "INSERT INTO sessions (token_hash, parent_id, created_at, expires_at) VALUES (?, 'p1', ?, ?)",
+      ).bind(hex("b"), now, future()),
     ]);
     await runCron();
     const rows = await env.DB.prepare("SELECT token_hash FROM sessions").all<{ token_hash: string }>();
