@@ -8,6 +8,7 @@ const UUID = "0123abcd-0000-4000-8000-0123456789ab";
 test("resource names per environment", () => {
   assert.deepEqual(names("staging"), {
     database: "zapakid-chat-staging",
+    bucket: "zapakid-chat-attachments-staging",
     queues: ["zapakid-membership-staging", "zapakid-membership-staging-dlq"],
   });
   assert.throws(() => names("dev"));

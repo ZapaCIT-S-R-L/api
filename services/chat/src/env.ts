@@ -1,8 +1,18 @@
 // Bindings and variables from wrangler.jsonc.
 export interface Env {
   DB: D1Database;
-  // Conversations started per account per minute.
+  // One Durable Object per conversation: delivery copies and the stream (src/room.ts).
+  ROOMS: DurableObjectNamespace<import("./room").ConversationRoom>;
+  // "eu" when deployed: the conversation objects live in the EU jurisdiction.
+  ROOMS_JURISDICTION?: string;
+  // Per account per minute: conversations started. Per device per minute: sends, stream connects.
   CREATE_LIMITER: RateLimit;
+  SEND_LIMITER: RateLimit;
+  CONNECT_LIMITER: RateLimit;
+  // Per device per minute: attachment reservations and download URLs.
+  ATTACH_LIMITER: RateLimit;
+  // Encrypted attachments (EU jurisdiction when deployed), keyed by attachment id.
+  ATTACHMENTS: R2Bucket;
   VERSION: string;
   VERSION_URL: string;
   // Chat tokens: the account service's host (`iss`), this service's host (in `aud`) and the account JWKS.
