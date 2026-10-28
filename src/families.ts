@@ -6,6 +6,7 @@ import { invalid, onlyFields, readJson } from "./body";
 import { randomBase64Url, sha256Hex } from "./crypto";
 import type { Env } from "./env";
 import { error, json } from "./http";
+import { handleListKidSessions, handleRevokeKidSession } from "./kid-sessions";
 import { flushMembershipEvents, membershipEvent } from "./membership-events";
 import { handleCreatePairing } from "./pairing";
 import { authenticate } from "./sessions";
@@ -58,6 +59,16 @@ export async function routeFamilies(request: Request, env: Env, path: string): P
     return request.method === "POST"
       ? handleCreatePairing(request, env, match[1] ?? "", match[2] ?? "")
       : methodNotAllowed();
+  }
+  if ((match = /^\/v1\/families\/([^/]+)\/kids\/([^/]+)\/sessions$/.exec(path))) {
+    return request.method === "GET"
+      ? handleListKidSessions(request, env, match[1] ?? "", match[2] ?? "")
+      : error(405, "method_not_allowed", "Use GET.", { allow: "GET" });
+  }
+  if ((match = /^\/v1\/families\/([^/]+)\/kids\/([^/]+)\/sessions\/([^/]+)$/.exec(path))) {
+    return request.method === "DELETE"
+      ? handleRevokeKidSession(request, env, match[1] ?? "", match[2] ?? "", match[3] ?? "")
+      : error(405, "method_not_allowed", "Use DELETE.", { allow: "DELETE" });
   }
   if ((match = /^\/v1\/families\/([^/]+)\/kids$/.exec(path))) {
     return request.method === "POST" ? handleAddKid(request, env, match[1] ?? "") : methodNotAllowed();

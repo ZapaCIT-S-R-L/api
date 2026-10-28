@@ -161,11 +161,14 @@ describe("POST /v1/pairing/redeem", () => {
     expect(days).toBeLessThanOrEqual(30);
     expect(body.kid).toEqual(kid);
     expect(body.family).toEqual({ id: family.id, name: "Pop" });
-    const row = await env.DB.prepare("SELECT token_hash, kid_id FROM kid_sessions").first<{
-      token_hash: string;
-      kid_id: string;
-    }>();
-    expect(row).toEqual({ token_hash: await sha256Hex(body.session.token), kid_id: kid.id });
+    const row = await env.DB.prepare(
+      "SELECT token_hash, kid_id, id, created_at, last_seen_at FROM kid_sessions",
+    ).first<{ token_hash: string; kid_id: string; id: string; created_at: string; last_seen_at: string }>();
+    expect(row?.token_hash).toBe(await sha256Hex(body.session.token));
+    expect(row?.kid_id).toBe(kid.id);
+    // api #78: a random id names the session to parents (never the hash), and activity starts at pairing.
+    expect(row?.id).toMatch(/^[0-9a-f]{32}$/);
+    expect(row?.last_seen_at).toBe(row?.created_at);
   });
 
   it("the kid session reads the kid's family", async () => {

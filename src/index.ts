@@ -6,6 +6,7 @@ import { handleChatToken, handleJwks } from "./chat-token";
 import { handleCountPreKeys, handleGetIdentity, handleRegisterDevice, handleRemoveDevice } from "./devices";
 import { handleHealth } from "./health";
 import { handleChangeIdentity } from "./identity";
+import { handleKidLogout } from "./kid-sessions";
 import type { Env } from "./env";
 import { routeFamilies } from "./families";
 import { error } from "./http";
@@ -39,6 +40,7 @@ const ROUTES: Record<string, { method: string; handler: Handler; limited?: true 
   "/v1/keys/prekeys": { method: "GET", handler: handleCountPreKeys },
   "/v1/keys/identity": { method: "PUT", handler: handleChangeIdentity, limited: true },
   "/v1/pairing/redeem": { method: "POST", handler: handleRedeemPairing, limited: true },
+  "/v1/kid/logout": { method: "POST", handler: handleKidLogout },
   "/v1/chat/token": { method: "POST", handler: handleChatToken },
   "/.well-known/jwks.json": { method: "GET", handler: handleJwks },
 };

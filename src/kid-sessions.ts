@@ -1,0 +1,93 @@
+// Kid sessions after pairing (api #78): the kid's phone signs itself out (POST /v1/kid/logout), and a parent lists a
+// kid's paired phones (one live session each) and revokes a lost or replaced one. A revoked token answers 401
+// everywhere at once. The server keeps only the token's SHA-256; sessions are named by a random id.
+import { authenticateKid } from "./accounts";
+import type { Env } from "./env";
+import { empty, error, json } from "./http";
+import { authenticate } from "./sessions";
+
+const SESSION_ID_PATTERN = /^[0-9a-f]{32}$/;
+
+const unauthorized = () =>
+  error(401, "unauthorized", "Sign in first: send Authorization: Bearer <session token>.", {
+    "www-authenticate": "Bearer",
+  });
+const noSuchKid = () => error(404, "not_found", "No such kid.");
+
+export interface KidSession {
+  id: string;
+  createdAt: string;
+  expiresAt: string;
+  lastSeenAt: string;
+}
+
+// Whether the kid is in this family and the parent is one of its parents (else the kid doesn't exist: 404).
+export async function parentOfKid(env: Env, parentId: string, familyId: string, kidId: string): Promise<boolean> {
+  const row = await env.DB.prepare(
+    `SELECT 1 AS ok FROM kids k JOIN family_parents fp ON fp.family_id = k.family_id
+     WHERE k.id = ? AND k.family_id = ? AND fp.parent_id = ?`,
+  )
+    .bind(kidId, familyId, parentId)
+    .first<{ ok: number }>();
+  return row !== null;
+}
+
+// The kid's phone signs itself out: only this session goes; the kid's other phones stay paired. Parents get 401
+// (they use POST /v1/auth/logout).
+export async function handleKidLogout(request: Request, env: Env): Promise<Response> {
+  const kid = await authenticateKid(request, env);
+  if (!kid) return unauthorized();
+  await env.DB.prepare("DELETE FROM kid_sessions WHERE token_hash = ?").bind(kid.tokenHash).run();
+  return empty(204);
+}
+
+export async function handleListKidSessions(
+  request: Request,
+  env: Env,
+  familyId: string,
+  kidId: string,
+): Promise<Response> {
+  const session = await authenticate(request, env);
+  if (!session) return unauthorized();
+  if (!(await parentOfKid(env, session.parentId, familyId, kidId))) return noSuchKid();
+  const now = new Date().toISOString();
+  const [, , rows] = await env.DB.batch<{ id: string; created_at: string; expires_at: string; last_seen_at: string }>([
+    // Rows written by the Worker version before migration 0010 have no id yet: name them now, once.
+    env.DB.prepare("UPDATE kid_sessions SET id = lower(hex(randomblob(16))) WHERE kid_id = ? AND id IS NULL").bind(
+      kidId,
+    ),
+    env.DB.prepare("DELETE FROM kid_sessions WHERE kid_id = ? AND expires_at <= ?").bind(kidId, now),
+    env.DB.prepare(
+      `SELECT id, created_at, expires_at, coalesce(last_seen_at, created_at) AS last_seen_at FROM kid_sessions
+       WHERE kid_id = ? ORDER BY created_at, rowid`,
+    ).bind(kidId),
+  ]);
+  const sessions: KidSession[] = (rows?.results ?? []).map((r) => ({
+    id: r.id,
+    createdAt: r.created_at,
+    expiresAt: r.expires_at,
+    lastSeenAt: r.last_seen_at,
+  }));
+  return json({ sessions });
+}
+
+// Unpair one phone: the session is gone at once, so its token answers 401 from the next request on. The kid, the
+// kid's other phones and open pairing codes stay.
+export async function handleRevokeKidSession(
+  request: Request,
+  env: Env,
+  familyId: string,
+  kidId: string,
+  sessionId: string,
+): Promise<Response> {
+  const session = await authenticate(request, env);
+  if (!session) return unauthorized();
+  if (!(await parentOfKid(env, session.parentId, familyId, kidId))) return noSuchKid();
+  const notFound = () => error(404, "not_found", "No such session for this kid.");
+  if (!SESSION_ID_PATTERN.test(sessionId)) return notFound();
+  const result = await env.DB.prepare("DELETE FROM kid_sessions WHERE id = ? AND kid_id = ?")
+    .bind(sessionId, kidId)
+    .run();
+  if (result.meta.changes !== 1) return notFound();
+  return empty(204);
+}

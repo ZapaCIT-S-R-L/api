@@ -6,14 +6,15 @@ import { randomBase64Url, sha256Hex } from "./crypto";
 import type { Env } from "./env";
 import { loadKid, type Kid } from "./families";
 import { error, json } from "./http";
+import { parentOfKid } from "./kid-sessions";
 import { isAllowlisted } from "./play-integrity";
 import { attest } from "./routes";
 import { authenticate, hashToken } from "./sessions";
 
 export const PAIRING_TTL_SECONDS = 5 * 60;
 export const MAX_OPEN_PAIRINGS = 5;
-// A kid can't sign in again on their own; pairing again gives a new session. 30 days until kid unpair/logout
-// exists: today deleting the kid is the only way to revoke a lost kid phone.
+// A kid can't sign in again on their own; pairing again gives a new session. 30 days: a lost phone is revoked
+// before that by a parent (DELETE .../kids/{kidId}/sessions/{sessionId}) or the kid (POST /v1/kid/logout).
 export const KID_SESSION_TTL_SECONDS = 30 * 86_400;
 const PAIRING_PATTERN = /^zkp_[A-Za-z0-9_-]{43}$/;
 
@@ -31,13 +32,7 @@ export async function handleCreatePairing(
   const session = await authenticate(request, env);
   if (!session) return unauthorized();
   // The kid must belong to a family the caller is a parent of.
-  const member = await env.DB.prepare(
-    `SELECT 1 AS ok FROM kids k JOIN family_parents fp ON fp.family_id = k.family_id
-     WHERE k.id = ? AND k.family_id = ? AND fp.parent_id = ?`,
-  )
-    .bind(kidId, familyId, session.parentId)
-    .first<{ ok: number }>();
-  if (!member) return error(404, "not_found", "No such kid.");
+  if (!(await parentOfKid(env, session.parentId, familyId, kidId))) return error(404, "not_found", "No such kid.");
   // No body is fine, and so is an empty one: the iOS app sends Content-Length: 0 without a Content-Type.
   if (request.body && request.headers.get("content-length") !== "0")
     onlyFields(await readJson(request), [], "the body");
@@ -106,10 +101,11 @@ export async function handleRedeemPairing(request: Request, env: Env): Promise<R
       `UPDATE kid_pairings SET used_at = ?, session_hash = ?
        WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?`,
     ).bind(nowIso, tokenHash, codeHash, nowIso),
+    // `id` names the session to parents (GET .../kids/{kidId}/sessions) without exposing the token hash.
     env.DB.prepare(
-      `INSERT INTO kid_sessions (token_hash, kid_id, created_at, expires_at)
-       SELECT ?, kid_id, ?, ? FROM kid_pairings WHERE code_hash = ? AND session_hash = ?`,
-    ).bind(tokenHash, nowIso, expiresAt, codeHash, tokenHash),
+      `INSERT INTO kid_sessions (token_hash, kid_id, created_at, expires_at, id, last_seen_at)
+       SELECT ?, kid_id, ?, ?, lower(hex(randomblob(16))), ? FROM kid_pairings WHERE code_hash = ? AND session_hash = ?`,
+    ).bind(tokenHash, nowIso, expiresAt, nowIso, codeHash, tokenHash),
   ]);
   if ((claim?.meta.changes ?? 0) !== 1) return gone();
 

@@ -90,7 +90,9 @@ tags:
   - name: Kid pairing
     description: |
       A parent pairs a kid's phone by showing a QR code. Kids never sign in with Apple or Google. A kid session
-      (`zkk_` token) comes only from a parent's pairing code.
+      (`zkk_` token) comes only from a parent's pairing code. One session per paired phone: the kid's phone signs
+      itself out with `POST /v1/kid/logout`, and a parent lists the kid's sessions and revokes a lost or replaced
+      phone's (`GET` / `DELETE /v1/families/{familyId}/kids/{kidId}/sessions`).
   - name: Membership events
     description: |
       Not an HTTP endpoint: the contract between this API (producer) and the chat and calls services (consumers).
@@ -930,7 +932,9 @@ paths:
       description: |
         No session is needed: the code is the credential. The response is a kid session (`zkk_` token), valid for
         30 days. Store it like a parent session (keychain / Keystore). A kid session can read the kid's family
-        (`GET /v1/families`), but it can't do anything that only parents may do (`401`).
+        (`GET /v1/families`) and sign itself out (`POST /v1/kid/logout`), but it can't do anything that only parents
+        may do (`401`). A parent can revoke it at any time (`DELETE /v1/families/{familyId}/kids/{kidId}/sessions/{sessionId}`):
+        the token then answers `401` everywhere.
 
         Rate limited per network like sign-in (`AUTH_LIMITER`). App attestation (`ZapaKid-Attestation`, over the
         exact body bytes, as on sign-in) works the same way, with one difference on staging (`allowlist`): a request
@@ -982,6 +986,59 @@ paths:
               schema: { $ref: "#/components/schemas/Error" }
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/ProviderUnavailable" }
+
+  /v1/kid/logout:
+    post:
+      tags: [Kid pairing]
+      operationId: kidLogout
+      summary: The kid's phone signs itself out.
+      description: |
+        Deletes the kid session the token belongs to (the kid's other phones stay paired). Only a kid session
+        (`zkk_`) can call this; a parent session gets `401` (parents use `POST /v1/auth/logout`). No body.
+      responses:
+        "204": { description: "Signed out. The token no longer works; pair again to get a new session." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/families/{familyId}/kids/{kidId}/sessions:
+    get:
+      tags: [Kid pairing]
+      operationId: listKidSessions
+      summary: "The kid's paired phones: one live session per pairing."
+      description: |
+        Any parent of the family sees them, oldest pairing first. Ids only, never the token or its hash;
+        `lastSeenAt` is day-granular (the first request of each day), so a parent can tell a lost phone from the
+        one in use. A non-member, or a kid of another family, gets `404`. Kid sessions get `401`.
+      parameters: [{ $ref: "#/components/parameters/familyId" }, { $ref: "#/components/parameters/kidId" }]
+      responses:
+        "200":
+          description: The kid's sessions.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [sessions]
+                properties:
+                  sessions: { type: array, items: { $ref: "#/components/schemas/KidSession" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/families/{familyId}/kids/{kidId}/sessions/{sessionId}:
+    delete:
+      tags: [Kid pairing]
+      operationId: revokeKidSession
+      summary: "Unpair one phone: revoke a kid session (lost or replaced phone)."
+      description: |
+        The session is deleted at once and its token answers `401` everywhere from then on. The kid, the kid's
+        other phones and open pairing codes stay. To pair the phone again, create a new code. A session that
+        doesn't exist, or belongs to another kid, gets `404`; so does a non-member. Kid sessions get `401`.
+      parameters:
+        - { $ref: "#/components/parameters/familyId" }
+        - { $ref: "#/components/parameters/kidId" }
+        - { $ref: "#/components/parameters/sessionId" }
+      responses:
+        "204": { description: "Revoked." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
 
   # ---------------------------------------------------------------------------------------------------------------
   # Draft endpoints below: planned, not implemented, will change.
@@ -1161,6 +1218,7 @@ components:
       schema: { type: string, maxLength: 16384 }
     familyId: { name: familyId, in: path, required: true, schema: { type: string } }
     kidId: { name: kidId, in: path, required: true, schema: { type: string } }
+    sessionId: { name: sessionId, in: path, required: true, schema: { $ref: "#/components/schemas/KidSessionId" } }
     connectionId: { name: connectionId, in: path, required: true, schema: { type: string } }
     accountId: { name: accountId, in: path, required: true, schema: { type: string } }
 
@@ -1406,6 +1464,21 @@ components:
         avatar: { $ref: "#/components/schemas/Avatar" }
         grade: { $ref: "#/components/schemas/Grade" }
         createdAt: { type: string, format: date-time }
+    KidSessionId:
+      type: string
+      pattern: "^[0-9a-f]{32}$"
+      description: A random id for one kid session (one paired phone). Not the token and not derived from it.
+    KidSession:
+      type: object
+      required: [id, createdAt, expiresAt, lastSeenAt]
+      properties:
+        id: { $ref: "#/components/schemas/KidSessionId" }
+        createdAt: { type: string, format: date-time, description: When the phone was paired. }
+        expiresAt: { type: string, format: date-time }
+        lastSeenAt:
+          type: string
+          format: date-time
+          description: The last day the phone used the session (updated once a day), or the pairing time.
     Family:
       type: object
       required: [id, name, createdAt, parents, kids]

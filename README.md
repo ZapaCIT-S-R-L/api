@@ -29,6 +29,10 @@ decrypt a chat. The server has no cryptography of its own beyond verifying sign-
   trusted (libsignal `IdentityKeyStore`); the server's key history is a convenience, not the guarantee.
 - **The only crypto in the server** is sign-in token verification (jose), SHA-256 and random tokens (WebCrypto),
   and app attestation checks (pkijs, WebCrypto). No custom primitives.
+- **A lost kid phone is unpaired by a parent.** Kid sessions (`zkk_`, from QR pairing, 30 days) are one per paired
+  phone: a parent lists them (`GET /v1/families/{familyId}/kids/{kidId}/sessions`, ids and dates only) and revokes
+  one (`DELETE .../sessions/{sessionId}`); the token answers 401 everywhere from the next request. The kid's phone
+  signs itself out with `POST /v1/kid/logout`.
 
 ## Services
 

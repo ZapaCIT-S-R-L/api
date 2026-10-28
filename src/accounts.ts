@@ -5,6 +5,7 @@ import type { Env } from "./env";
 import { hashToken, authenticate } from "./sessions";
 
 const KID_TOKEN_PATTERN = /^zkk_[A-Za-z0-9_-]{43}$/;
+const DAY_MS = 86_400_000;
 
 export type Account =
   { role: "parent"; id: string; tokenHash: string } | { role: "kid"; id: string; familyId: string; tokenHash: string };
@@ -26,10 +27,18 @@ export async function authenticateKid(request: Request, env: Env): Promise<Extra
     .bind(tokenHash)
     .first<{ kid_id: string; expires_at: string; family_id: string }>();
   if (!row) return null;
-  if (Date.parse(row.expires_at) <= Date.now()) {
+  const now = Date.now();
+  if (Date.parse(row.expires_at) <= now) {
     await env.DB.prepare("DELETE FROM kid_sessions WHERE token_hash = ?").bind(tokenHash).run();
     return null;
   }
+  // Day-granular activity (written on the first request of a day), so a parent can tell a lost phone from the one
+  // in use (GET /v1/families/{familyId}/kids/{kidId}/sessions, api #78).
+  await env.DB.prepare(
+    "UPDATE kid_sessions SET last_seen_at = ? WHERE token_hash = ? AND coalesce(last_seen_at, created_at) < ?",
+  )
+    .bind(new Date(now).toISOString(), tokenHash, new Date(now - DAY_MS).toISOString())
+    .run();
   return { role: "kid", id: row.kid_id, familyId: row.family_id, tokenHash };
 }
 
