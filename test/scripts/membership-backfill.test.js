@@ -46,12 +46,8 @@ function seededBefore() {
   }
   for (const id of ["f1", "f2"])
     db.prepare("INSERT INTO families (id, name, created_at) VALUES (?, NULL, ?)").run(id, now);
-  db.prepare("INSERT INTO family_parents (family_id, parent_id, joined_at) VALUES ('f1', 'p1', ?)").run(
-    now,
-  );
-  db.prepare("INSERT INTO family_parents (family_id, parent_id, joined_at) VALUES ('f2', 'p2', ?)").run(
-    now,
-  );
+  db.prepare("INSERT INTO family_parents (family_id, parent_id, joined_at) VALUES ('f1', 'p1', ?)").run(now);
+  db.prepare("INSERT INTO family_parents (family_id, parent_id, joined_at) VALUES ('f2', 'p2', ?)").run(now);
   db.prepare(
     "INSERT INTO kids (id, family_id, nickname, avatar, created_at, updated_at) VALUES ('k1', 'f1', 'Theo', 'r', ?, ?)",
   ).run(now, now);
