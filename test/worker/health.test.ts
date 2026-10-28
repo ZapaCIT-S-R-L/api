@@ -49,7 +49,7 @@ describe("GET /health with missing config", () => {
   const cases: [string, Record<string, unknown>, string][] = [
     ["no D1 binding", { DB: undefined }, "DB"],
     ["no rate limiter", { AUTH_LIMITER: undefined }, "AUTH_LIMITER"],
-    ["no Apple audience", { APPLE_AUDIENCES: "" }, "APPLE_AUDIENCES"],
+    ["no Apple bundle id", { APPLE_BUNDLE_IDS: "" }, "APPLE_BUNDLE_IDS"],
     ["bad Apple redirect", { APPLE_WEB_REDIRECT_URL: "http://evil.example/app" }, "APPLE_WEB_REDIRECT_URL"],
     ["bad session TTL", { SESSION_TTL_SECONDS: "forever" }, "SESSION_TTL_SECONDS"],
   ];

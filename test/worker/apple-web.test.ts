@@ -123,9 +123,16 @@ describe("the full web flow", () => {
     expect(JSON.stringify(rows.results)).not.toContain(idToken.split(".")[2]);
   });
 
-  it("the native endpoint accepts a Services ID token too (config-driven audiences)", async () => {
+  // Regression (security review 2026-10-27, L6): each endpoint accepts only its own Apple client.
+  it("the native endpoint refuses a Services ID (web flow) token → 401", async () => {
     const res = await postJson("/v1/auth/apple", { identityToken: await webToken(), ageRange: ADULT });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(401);
+  });
+
+  it("the web callback refuses a bundle id (native) token → #error=invalid_token", async () => {
+    const { state } = await start();
+    const nativeToken = await apple.sign(appleClaims({ nonce: pendingNonce()?.hash }));
+    expect(handBack(await callback({ state, id_token: nativeToken })).get("error")).toBe("invalid_token");
   });
 });
 
