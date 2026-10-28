@@ -34,6 +34,14 @@ test("chat tokens: each environment trusts only its own account service, over ht
   );
 });
 
+test("deployed conversation objects live in the EU jurisdiction", () => {
+  for (const env of [staging, production]) {
+    assert.equal(env.vars.ROOMS_JURISDICTION, "eu");
+    assert.deepEqual(env.durable_objects.bindings, [{ name: "ROOMS", class_name: "ConversationRoom" }]);
+  }
+  assert.equal(rawConfig.vars.ROOMS_JURISDICTION, undefined, "workerd has no jurisdictions");
+});
+
 test("the local test hooks never reach a deployed environment", () => {
   for (const [name, env] of Object.entries(deployed)) {
     assert.equal(env.vars.E2E_HOOKS, undefined, name);
@@ -65,6 +73,14 @@ test("rate limits: separate counters per environment, never shared with the acco
   }
 });
 
+test("each environment has its own attachments bucket in the EU jurisdiction", () => {
+  for (const [name, env] of Object.entries(deployed)) {
+    assert.deepEqual(env.r2_buckets, [
+      { binding: "ATTACHMENTS", bucket_name: `zapakid-chat-attachments-${name}`, jurisdiction: "eu" },
+    ]);
+  }
+});
+
 test("hourly retention purge in every deployed environment", () => {
   for (const env of [staging, production]) assert.deepEqual(env.triggers, { crons: ["23 * * * *"] });
 });
@@ -86,4 +102,12 @@ test("staging and production define every binding and var the Worker reads", () 
     ]);
     for (const key of required) assert.ok(defined.has(key), `${name} is missing ${key}`);
   }
+});
+
+// The calls service's CHAT service binding names these Workers (services/calls/wrangler.jsonc); renaming one breaks
+// every call.
+test("Worker names: zapakid-chat locally, zapakid-chat-staging and zapakid-chat-production when deployed", () => {
+  assert.equal(rawConfig.name, "zapakid-chat");
+  assert.equal(staging.name, undefined);
+  assert.equal(production.name, undefined);
 });
