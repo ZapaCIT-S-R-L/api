@@ -789,7 +789,9 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "429":
-          description: "`too_many_pairings`: 5 codes are still open. Wait until one is used or expires."
+          description: "`too_many_pairings`: 5 codes are still open. Wait until one is used or expires (`Retry-After`)."
+          headers:
+            Retry-After: { schema: { type: integer, const: 300 } }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -801,7 +803,7 @@ paths:
       summary: The kid's phone redeems the pairing code and gets a kid session.
       description: |
         No session is needed: the code is the credential. The response is a kid session (`zkk_` token), valid for
-        365 days. Store it like a parent session (keychain / Keystore). A kid session can read the kid's family
+        30 days. Store it like a parent session (keychain / Keystore). A kid session can read the kid's family
         (`GET /v1/families`), but it can't do anything that only parents may do (`401`).
 
         Rate limited per network like sign-in (`AUTH_LIMITER`). App attestation (`ZapaKid-Attestation`, over the
