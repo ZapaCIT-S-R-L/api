@@ -1,22 +1,40 @@
 // Conversations: 1:1 (direct) and group chats between accounts. Metadata only; content lives encrypted on the
 // phones and, until delivered, as delivery copies in the conversation's Durable Object.
+//
+// Members are either writers (the accounts the conversation was started with) or observers: the current parents of
+// every kid in it, added by the server (api #73). Observers receive every envelope like any member, so they read
+// the whole chat on their own devices, but they can't send, they aren't in calls and they get no push. The column
+// is still called `guardian` (migration 0001); `guardian = 1` is an observer.
 import type { Caller } from "./auth";
 import { ACCOUNT_ID, CONVERSATION_ID, onlyFields, randomId, readJson } from "./body";
 import type { Env } from "./env";
-import { allowedTogether, loadFamilies, missingGuardians, roleOf, type Role } from "./graph";
+import { allowedTogether, contactsOf, loadFamilies, missingObservers, observersOf, roleOf, type Role } from "./graph";
 import { empty, HttpError, invalid, json, notAllowed, notFound } from "./http";
 import { purgeConversationAttachments } from "./attachments";
 import { limit } from "./limits";
 import type { Rooms } from "./rooms";
 
 export const MAX_REQUESTED_MEMBERS = 31;
+// Writers; observers have their own limit and don't count here, so a group of kids isn't blocked by its parents.
 export const MAX_MEMBERS = 64;
+export const MAX_OBSERVERS = 64;
+
+export type MemberRole = Role | "observer";
 
 export interface MemberRow {
   account_id: string;
   role: Role;
   guardian: number;
   deleted_at: number | null;
+}
+
+export const isObserver = (m: Pick<MemberRow, "guardian">): boolean => m.guardian === 1;
+
+// An observer may read, acknowledge and stream, never send (messages, reactions, attachments).
+export function assertWriter(me: Pick<MemberRow, "guardian">): void {
+  if (isObserver(me)) {
+    throw new HttpError(403, "observer_read_only", "You read this conversation as a parent; you can't send to it.");
+  }
 }
 
 interface ConversationRow {
@@ -63,7 +81,7 @@ export async function requireMembership(
   env: Env,
   caller: Pick<Caller, "accountId">,
   conversationId: string,
-): Promise<{ conversation: ConversationRow; members: MemberRow[] }> {
+): Promise<{ conversation: ConversationRow; members: MemberRow[]; me: MemberRow }> {
   if (!CONVERSATION_ID.test(conversationId)) throw notFound();
   const conversation = await env.DB.prepare(
     "SELECT id, kind, state, created_at, closed_at FROM conversations WHERE id = ?1",
@@ -74,7 +92,7 @@ export async function requireMembership(
   const members = await membersOf(env, conversationId);
   const me = members.find((m) => m.account_id === caller.accountId);
   if (!me || me.deleted_at !== null) throw notFound();
-  return { conversation, members };
+  return { conversation, members, me };
 }
 
 async function present(env: Env, conversation: ConversationRow, members: MemberRow[]) {
@@ -90,8 +108,9 @@ async function present(env: Env, conversation: ConversationRow, members: MemberR
     closedAt: conversation.closed_at === null ? null : new Date(conversation.closed_at).toISOString(),
     members: members.map((m) => ({
       accountId: m.account_id,
-      role: m.role,
-      guardian: m.guardian === 1,
+      role: (isObserver(m) ? "observer" : m.role) satisfies MemberRole,
+      // Deprecated alias of role "observer", kept for the apps built against the first contract.
+      guardian: isObserver(m),
       devices: devices.get(m.account_id) ?? [],
     })),
   };
@@ -116,11 +135,13 @@ export async function handleCreate(request: Request, env: Env, caller: Caller): 
   const requested = [caller.accountId, ...members];
   const graph = await loadFamilies(env, requested);
   // Parents and kids both start conversations (Stefan, 2026-10-28). Who may be in one is decided by the family
-  // graph below, and every kid's parents are added, so a kid can't reach anyone a parent hasn't allowed.
+  // graph below, and every kid's parents observe it (unless oversight is off), so a kid can't reach anyone a
+  // parent hasn't allowed, and the parents can read what is said.
   if (requested.some((a) => !graph.of.has(a))) throw notAllowed("Not allowed with these members.");
-  const guardians = missingGuardians(graph, requested);
-  const all = [...requested, ...guardians];
-  if (all.length > MAX_MEMBERS) throw invalid(`At most ${MAX_MEMBERS} members, parents included.`);
+  const observers = missingObservers(graph, requested);
+  if (requested.length > MAX_MEMBERS) throw invalid(`At most ${MAX_MEMBERS} members.`);
+  if (observers.length > MAX_OBSERVERS) throw invalid(`At most ${MAX_OBSERVERS} observing parents.`);
+  const all = [...requested, ...observers];
   if (!allowedTogether(graph, all)) throw notAllowed("Not allowed with these members.");
 
   const kind = members.length === 1 ? "direct" : "group";
@@ -138,7 +159,7 @@ export async function handleCreate(request: Request, env: Env, caller: Caller): 
 
   const id = randomId("c");
   const now = Date.now();
-  const guardianSet = new Set(guardians);
+  const observerSet = new Set(observers);
   await env.DB.batch([
     env.DB.prepare(
       "INSERT INTO conversations (id, kind, direct_key, state, created_by, created_at) VALUES (?1, ?2, ?3, 'open', ?4, ?5)",
@@ -146,7 +167,7 @@ export async function handleCreate(request: Request, env: Env, caller: Caller): 
     ...all.map((account) =>
       env.DB.prepare(
         "INSERT INTO conversation_members (conversation_id, account_id, role, guardian, joined_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-      ).bind(id, account, roleOf(graph, account), guardianSet.has(account) ? 1 : 0, now),
+      ).bind(id, account, roleOf(graph, account), observerSet.has(account) ? 1 : 0, now),
     ),
   ]);
   const conversation: ConversationRow = { id, kind, state: "open", created_at: now, closed_at: null };
@@ -169,6 +190,11 @@ export async function handleList(_request: Request, env: Env, caller: Caller): P
 export async function handleGet(env: Env, caller: Caller, conversationId: string): Promise<Response> {
   const { conversation, members } = await requireMembership(env, caller, conversationId);
   return json(await present(env, conversation, members));
+}
+
+// Discovery (api #73): the accounts the caller may start a conversation with, ids only.
+export async function handleContacts(env: Env, caller: Caller): Promise<Response> {
+  return json({ contacts: await contactsOf(env, caller.accountId) });
 }
 
 export async function handleDelete(env: Env, rooms: Rooms, caller: Caller, conversationId: string): Promise<Response> {
@@ -197,10 +223,12 @@ export async function purgeIfAbandoned(env: Env, rooms: Rooms, conversationId: s
 
 // Re-applies the family rules to a conversation after the family graph changed:
 //   1. members who are in no family any more (left, deleted) are removed;
-//   2. guardians who are no longer a parent of a kid in it are removed; missing parents of kids are added;
+//   2. observers who no longer observe a kid in it (not its parent any more, or oversight turned off) are removed;
+//      the missing observers of the kids in it are added (new parent, oversight turned back on);
 //   3. if members from different families are no longer allowed together (connection removed, kid unshared), or
-//      fewer than two members remain, the conversation is closed (read-only).
-// The conversation's devices get an event so they refresh the member list and rotate their sender keys.
+//      fewer than two writers remain, the conversation is closed (read-only).
+// The conversation's devices get an event so they refresh the member list and rotate their sender keys. When
+// observers are added, the kid's own device re-seals the history to them: the server has nothing it could send.
 export async function reconcile(env: Env, rooms: Rooms, conversationId: string): Promise<void> {
   const conversation = await env.DB.prepare("SELECT state FROM conversations WHERE id = ?1")
     .bind(conversationId)
@@ -215,18 +243,14 @@ export async function reconcile(env: Env, rooms: Rooms, conversationId: string):
   for (const m of members) {
     if (!graph.of.has(m.account_id)) removed.push(m.account_id);
   }
-  let current = members.map((m) => m.account_id).filter((a) => !removed.includes(a));
-  const kidsFamilies = new Set<string>();
-  for (const a of current) for (const f of graph.of.get(a) ?? []) if (f.role === "kid") kidsFamilies.add(f.familyId);
+  const writers = members.filter((m) => !isObserver(m) && !removed.includes(m.account_id)).map((m) => m.account_id);
+  const observers = observersOf(graph, writers);
   for (const m of members) {
-    if (m.guardian !== 1 || removed.includes(m.account_id)) continue;
-    const stillGuardian = (graph.of.get(m.account_id) ?? []).some(
-      (f) => f.role === "parent" && kidsFamilies.has(f.familyId),
-    );
-    if (!stillGuardian) removed.push(m.account_id);
+    if (!isObserver(m) || removed.includes(m.account_id)) continue;
+    if (!observers.has(m.account_id)) removed.push(m.account_id);
   }
-  current = current.filter((a) => !removed.includes(a));
-  const added = conversation.state === "open" ? missingGuardians(graph, current) : [];
+  const current = members.map((m) => m.account_id).filter((a) => !removed.includes(a));
+  const added = conversation.state === "open" ? missingObservers(graph, current) : [];
 
   const now = Date.now();
   const statements = [
@@ -243,7 +267,7 @@ export async function reconcile(env: Env, rooms: Rooms, conversationId: string):
     ),
   ];
   const after = [...current, ...added];
-  const close = conversation.state === "open" && (after.length < 2 || !allowedTogether(graph, after));
+  const close = conversation.state === "open" && (writers.length < 2 || !allowedTogether(graph, after));
   if (close) {
     statements.push(
       env.DB.prepare("UPDATE conversations SET state = 'closed', closed_at = ?2 WHERE id = ?1").bind(

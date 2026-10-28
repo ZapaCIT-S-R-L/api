@@ -4,6 +4,8 @@
 // - Worker tests (vitest.config.ts): an auxiliary Miniflare Worker; the tests set members through its own fetch
 //   (the CHAT_STUB binding): PUT /members {conversationId, accountId, role, deviceId}, DELETE /members
 //   {conversationId, accountId}, PUT /down {conversationId} (chat answers with an error for that conversation).
+//   Role "observer" (a kid's parent reading the chat, api #73) is answered like the real service: not a member,
+//   `observer: true`, and left out of every roster.
 // - e2e (scripts/check.sh: wrangler dev with a second config, wrangler.jsonc here): the members live in the fake
 //   server of test/e2e/fakes.ts, at FAKE_CHAT_URL, which the Node tests fill over HTTP.
 import { WorkerEntrypoint } from "cloudflare:workers";
@@ -29,8 +31,10 @@ export class ChatMembership extends WorkerEntrypoint {
   async member(conversationId, accountId) {
     const members = await membersOf(this.env, conversationId);
     if (members === null) return null;
-    if (!members.some((m) => m.accountId === accountId)) return { member: false, members: [] };
-    return { member: true, members };
+    const me = members.find((m) => m.accountId === accountId);
+    if (!me) return { member: false, observer: false, members: [] };
+    if (me.role === "observer") return { member: false, observer: true, members: [] };
+    return { member: true, observer: false, members: members.filter((m) => m.role !== "observer") };
   }
 }
 

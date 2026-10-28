@@ -4,7 +4,7 @@
 // work once, so the apps can hand them to background transfers without the chat token.
 import type { Caller } from "./auth";
 import { base64url, CONVERSATION_ID, onlyFields, randomId, readJson } from "./body";
-import { assertOpen, requireMembership } from "./conversations";
+import { assertOpen, assertWriter, requireMembership } from "./conversations";
 import type { Env } from "./env";
 import { empty, HttpError, invalid, json, notFound, SECURITY_HEADERS } from "./http";
 import { limit } from "./limits";
@@ -42,8 +42,9 @@ export async function handleReserve(request: Request, env: Env, caller: Caller):
   if (typeof size !== "number" || !Number.isInteger(size) || size < 1 || size > MAX_ATTACHMENT_BYTES) {
     throw invalid(`size: 1 to ${MAX_ATTACHMENT_BYTES} bytes.`);
   }
-  const { conversation } = await requireMembership(env, caller, conversationId);
+  const { conversation, me } = await requireMembership(env, caller, conversationId);
   assertOpen(conversation);
+  assertWriter(me);
   await requireRegisteredDevice(env, caller);
   await limit(env.ATTACH_LIMITER, `attach:${caller.accountId}:${String(caller.deviceId)}`);
 

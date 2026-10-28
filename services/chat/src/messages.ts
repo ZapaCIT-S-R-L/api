@@ -2,7 +2,7 @@
 // whom and that every current device of every member gets its own envelope; it never looks inside one.
 import type { Caller } from "./auth";
 import { isDeviceId, isRegistrationId, onlyFields, readJson, UUID, ACCOUNT_ID } from "./body";
-import { assertOpen, devicesOf, requireMembership } from "./conversations";
+import { assertOpen, assertWriter, devicesOf, isObserver, requireMembership } from "./conversations";
 import type { Env } from "./env";
 import { empty, HttpError, invalid, json } from "./http";
 import { limit } from "./limits";
@@ -41,8 +41,9 @@ export async function handleSend(
   caller: Caller,
   conversationId: string,
 ): Promise<Response> {
-  const { conversation, members } = await requireMembership(env, caller, conversationId);
+  const { conversation, members, me } = await requireMembership(env, caller, conversationId);
   assertOpen(conversation);
+  assertWriter(me);
   await requireRegisteredDevice(env, caller);
   await limit(env.SEND_LIMITER, `send:${key(caller.accountId, caller.deviceId)}`);
   const body = await readJson(request, MAX_SEND_BYTES);
@@ -78,7 +79,7 @@ export async function handleSend(
     });
   }
 
-  // Every current device of every member, except the sending device.
+  // Every current device of every member, observers included, except the sending device.
   const devices = await devicesOf(
     env,
     members.map((m) => m.account_id),
@@ -118,9 +119,13 @@ export async function handleSend(
   )
     .bind(conversationId)
     .run();
-  if (result.offline.length > 0) {
+  // Observers get no push and no badge (Stefan, 2026-10-27): their copies wait for a background fetch or the next
+  // time the app opens.
+  const observers = new Set(members.filter(isObserver).map((m) => m.account_id));
+  const wake = result.offline.filter((d) => !observers.has(d.accountId));
+  if (wake.length > 0) {
     ctx.waitUntil(
-      pushTargets(env, result.offline)
+      pushTargets(env, wake)
         .then((targets) => pushProvider(env).wake(targets))
         .catch((e: unknown) => {
           console.error(JSON.stringify({ msg: "push_failed", err: String(e) }));

@@ -87,6 +87,7 @@ describe("queue consumer", () => {
       { type: "connection.removed", connectionId: "c" },
       { type: "connection.kid_shared", connectionId: "c", kidAccountId: "a" },
       { type: "connection.kid_unshared", connectionId: "c", kidAccountId: "a" },
+      { type: "kid.oversight_changed", kidAccountId: "a", enabled: false },
       {
         type: "device.upserted",
         accountId: "a",
@@ -103,18 +104,58 @@ describe("queue consumer", () => {
     expect(() =>
       parseEvent(event({ type: "device.upserted", accountId: "a", deviceId: 200, registrationId: 1 })),
     ).toThrow();
+    expect(() => parseEvent(event({ type: "kid.oversight_changed", kidAccountId: "a", enabled: "no" }))).toThrow();
   });
 });
 
 describe("graph changes and existing conversations", () => {
-  it("a new parent joins the conversations of the family's kids as guardian", async () => {
+  it("a new parent joins the conversations of the family's kids as observer", async () => {
     await seedFamilies();
     const c = await create(MUM, [ALEX]);
     const rooms = recordingRooms();
     await apply(rooms, { type: "family.member_added", familyId: "fam1", accountId: "acc_step", role: "parent" });
     const after = await get(MUM, c.id);
-    expect(after?.members.find((m) => m.accountId === "acc_step")).toMatchObject({ guardian: true });
+    expect(after?.members.find((m) => m.accountId === "acc_step")).toMatchObject({ guardian: true, role: "observer" });
     expect(rooms.log).toContain(`notify ${c.id} members_changed`);
+  });
+
+  // #73: oversight off takes the kid's parents out of the kid's chats (their streams close, the kids re-key);
+  // on again brings them back, and the kid's device re-seals the history to them.
+  it("oversight off removes the kid's observers, on again adds them back; other kids' observers stay", async () => {
+    await seedFamilies();
+    const c = await create(ALEX, [MARIA]);
+    const rooms = recordingRooms();
+    await apply(rooms, { type: "kid.oversight_changed", kidAccountId: ALEX, enabled: false });
+    let after = await get(ANA, c.id);
+    expect(after?.state).toBe("open");
+    expect(memberIds(after as ConversationBody)).toEqual([ALEX, ANA, MARIA].sort());
+    expect(rooms.log).toContain(`forgetAccount ${c.id} ${MUM}`);
+    expect(rooms.log).toContain(`forgetAccount ${c.id} ${DAD}`);
+    expect(rooms.log.some((l) => l.startsWith(`notify ${c.id} members_changed -`))).toBe(true);
+    expect(await get(MUM, c.id)).toBeNull();
+
+    rooms.log.length = 0;
+    await apply(rooms, { type: "kid.oversight_changed", kidAccountId: ALEX, enabled: true });
+    after = await get(MUM, c.id);
+    expect(memberIds(after as ConversationBody)).toEqual([ALEX, ANA, DAD, MARIA, MUM].sort());
+    expect(after?.members.find((m) => m.accountId === MUM)?.role).toBe("observer");
+    expect(rooms.log).toEqual([`notify ${c.id} members_changed`]);
+  });
+
+  it("oversight off keeps a parent who is a writer; the chat stays open", async () => {
+    await seedFamilies();
+    const c = await create(MUM, [ALEX]);
+    await apply(recordingRooms(), { type: "kid.oversight_changed", kidAccountId: ALEX, enabled: false });
+    const after = await get(MUM, c.id);
+    expect(after?.state).toBe("open");
+    expect(memberIds(after as ConversationBody)).toEqual([ALEX, MUM].sort());
+  });
+
+  it("an observer who stops being a parent of the kid is removed (left the family)", async () => {
+    await seedFamilies();
+    const c = await create(ALEX, [MARIA]);
+    await apply(recordingRooms(), { type: "family.member_removed", familyId: "fam1", accountId: DAD });
+    expect(memberIds((await get(MUM, c.id)) as ConversationBody)).toEqual([ALEX, ANA, MARIA, MUM].sort());
   });
 
   it("removing the connection closes the cross-family chats (read-only), not the family's own", async () => {
@@ -146,6 +187,15 @@ describe("graph changes and existing conversations", () => {
     expect(memberIds(after as ConversationBody)).toEqual([ALEX, MUM].sort());
     expect(rooms.log).toContain(`forgetAccount ${c.id} ${DAD}`);
     expect(rooms.log).toContain(`notify ${c.id} members_changed -${DAD}`);
+  });
+
+  it("a 1:1 whose other writer is gone closes even though observers remain", async () => {
+    await seedFamilies();
+    const c = await create(MUM, [ALEX]);
+    await apply(recordingRooms(), { type: "account.deleted", accountId: MUM });
+    const after = await get(DAD, c.id);
+    expect(after?.state).toBe("closed");
+    expect(memberIds(after as ConversationBody)).toEqual([ALEX, DAD].sort());
   });
 
   it("account deletion: removed everywhere; a 1:1 left with one member closes; with none, purged", async () => {

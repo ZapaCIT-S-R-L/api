@@ -138,20 +138,62 @@ describe("POST /v1/conversations/{id}/messages", () => {
       { accountId: MUM, deviceId: 2 },
     ]);
 
-    const reinstalled = all.map((e) => (e.recipientAccountId === ALEX ? { ...e, recipientRegistrationId: 1 } : e));
-    const gone = await send(c, DAD, {
+    const gone = await send(c, ALEX, {
       messageId: crypto.randomUUID(),
       envelopes: [
-        ...reinstalled.filter((e) => e.recipientAccountId !== DAD),
-        { ...all[0], recipientAccountId: MUM, recipientDeviceId: 1, recipientRegistrationId: 100 },
+        { ...all[0], recipientAccountId: MUM, recipientDeviceId: 1, recipientRegistrationId: 1 },
         { ...all[0], recipientAccountId: MUM, recipientDeviceId: 2, recipientRegistrationId: 7 },
+        { ...all[0], recipientAccountId: DAD, recipientDeviceId: 1, recipientRegistrationId: 101 },
       ],
     });
     expect(gone.status).toBe(410);
     expect(await gone.json()).toMatchObject({
       error: { code: "stale_registration" },
-      staleDevices: [{ accountId: ALEX, deviceId: 1 }],
+      staleDevices: [{ accountId: MUM, deviceId: 1 }],
     });
+  });
+
+  // #73: a kid's parents read the chat (their devices get every envelope) but can't write to it.
+  it("an observer gets the envelopes, fetches and acks them, but can't send (403 observer_read_only)", async () => {
+    const c = await conversation(MUM, [ALEX]);
+    expect(c.members.find((m) => m.accountId === DAD)?.role).toBe("observer");
+    const all = envelopesFor(c, MUM);
+    expect(all.map((e) => e.recipientAccountId).sort()).toEqual([ALEX, DAD]);
+    expect((await send(c, MUM, { messageId: crypto.randomUUID(), envelopes: all })).status).toBe(202);
+    const dad = await queued(c, DAD);
+    expect(dad.envelopes).toHaveLength(1);
+    const ack = await as(await tok(DAD), `/v1/conversations/${c.id}/acks`, {
+      method: "POST",
+      body: JSON.stringify({ envelopeIds: [dad.envelopes[0]?.id] }),
+    });
+    expect(ack.status).toBe(204);
+    const refused = await send(c, DAD, { messageId: crypto.randomUUID(), envelopes: envelopesFor(c, DAD) });
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toMatchObject({ error: { code: "observer_read_only" } });
+    expect((await queued(c, ALEX)).envelopes).toHaveLength(1);
+  });
+
+  it("observers get no push: only the kid's offline device is woken", async () => {
+    for (const [accountId, registrationId] of [
+      [ALEX, 102],
+      [DAD, 101],
+    ] as const) {
+      await applyEvent(
+        env,
+        durableRooms(env),
+        event({
+          type: "device.upserted",
+          accountId,
+          deviceId: 1,
+          registrationId,
+          push: { provider: "fcm", token: `tok-${accountId}` },
+        }),
+      );
+    }
+    const c = await conversation(MUM, [ALEX]);
+    expect((await send(c, MUM, { messageId: crypto.randomUUID(), envelopes: envelopesFor(c, MUM) })).status).toBe(202);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(pushed.flat().map((t) => t.accountId)).toEqual([ALEX]);
   });
 
   it("validates envelopes: base64, size, type, one per device", async () => {

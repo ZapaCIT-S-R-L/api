@@ -14,7 +14,11 @@ export interface ChatMember {
 
 export interface Membership {
   member: boolean;
-  // Every current member of the conversation, the asking account included; empty unless `member`.
+  // The account reads the conversation as a kid's parent (api #73): it may see the call log, but it can't start,
+  // join or be rung for a call, and it never gets the call key.
+  observer: boolean;
+  // Every current member of the conversation who takes part in calls, the asking account included; empty unless
+  // `member`. Observers are never listed.
   members: ChatMember[];
 }
 
@@ -26,7 +30,8 @@ export interface ChatMembershipRpc {
 // The chat service failed or answered something unexpected: refuse (503), never allow.
 export class ChatUnavailable extends Error {}
 
-const NOT_A_MEMBER: Membership = { member: false, members: [] };
+const NOT_A_MEMBER: Membership = { member: false, observer: false, members: [] };
+const OBSERVER: Membership = { member: false, observer: true, members: [] };
 
 const isDevice = (d: unknown): d is number => typeof d === "number" && Number.isInteger(d) && d >= 1 && d <= 127;
 
@@ -54,13 +59,14 @@ export async function membership(env: Env, conversationId: string, accountId: st
   if (typeof a?.member !== "boolean" || !Array.isArray(a.members) || !a.members.every(isMember)) {
     throw new ChatUnavailable("unexpected answer from ChatMembership.member");
   }
-  if (!a.member) return NOT_A_MEMBER;
+  if (!a.member) return a.observer === true ? OBSERVER : NOT_A_MEMBER;
   // A member must be on the list it gets back; anything else is a broken answer.
   if (!a.members.some((m) => m.accountId === accountId)) {
     throw new ChatUnavailable("ChatMembership.member left the member out");
   }
   return {
     member: true,
+    observer: false,
     members: a.members.map((m) => ({ accountId: m.accountId, role: m.role, devices: [...m.devices] })),
   };
 }

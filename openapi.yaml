@@ -1451,6 +1451,7 @@ components:
             - connection.removed
             - connection.kid_shared
             - connection.kid_unshared
+            - kid.oversight_changed
             - device.upserted
             - device.removed
             - account.deleted
@@ -1493,6 +1494,16 @@ components:
             type: { const: connection.kid_unshared }
             connectionId: { type: string, maxLength: 64 }
             kidAccountId: { $ref: "#/components/schemas/AccountId" }
+        - title: kid.oversight_changed
+          description: |
+            The kid's family turned parent oversight on or off for this kid (on by default; no event = on). Off: the
+            kid's parents leave the kid's conversations as observers. On: they join again, and the kid's device
+            re-seals the history to them.
+          required: [type, kidAccountId, enabled]
+          properties:
+            type: { const: kid.oversight_changed }
+            kidAccountId: { $ref: "#/components/schemas/AccountId" }
+            enabled: { type: boolean }
         - title: device.upserted
           description: A device was registered, re-installed (new registration id) or got a new push token.
           required: [type, accountId, deviceId, registrationId]

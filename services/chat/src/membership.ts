@@ -16,6 +16,7 @@ export type MembershipEvent = { v: 1; id: string; occurredAt: string } & (
   | { type: "connection.removed"; connectionId: string }
   | { type: "connection.kid_shared"; connectionId: string; kidAccountId: string }
   | { type: "connection.kid_unshared"; connectionId: string; kidAccountId: string }
+  | { type: "kid.oversight_changed"; kidAccountId: string; enabled: boolean }
   | {
       type: "device.upserted";
       accountId: string;
@@ -60,6 +61,8 @@ export function parseEvent(value: unknown): MembershipEvent | null {
     case "connection.kid_shared":
     case "connection.kid_unshared":
       return ok(str(e.connectionId) && str(e.kidAccountId, ACCOUNT_ID));
+    case "kid.oversight_changed":
+      return ok(str(e.kidAccountId, ACCOUNT_ID) && typeof e.enabled === "boolean");
     case "device.upserted": {
       const push = e.push as { provider?: unknown; token?: unknown } | null | undefined;
       const pushOk =
@@ -153,6 +156,15 @@ export async function applyEvent(env: Env, rooms: Rooms, event: MembershipEvent)
         .run();
       await reconcileAll(env, rooms, await conversationsOf(env, [event.kidAccountId]));
       return;
+    case "kid.oversight_changed":
+      // The kid's parents join or leave the kid's conversations as observers. When they join again, the kid's
+      // device re-seals the history to them (the server holds no plaintext to send).
+      await db
+        .prepare("INSERT OR REPLACE INTO kid_oversight (kid_account_id, enabled) VALUES (?1, ?2)")
+        .bind(event.kidAccountId, event.enabled ? 1 : 0)
+        .run();
+      await reconcileAll(env, rooms, await conversationsOf(env, [event.kidAccountId]));
+      return;
     case "device.upserted": {
       await db
         .prepare(
@@ -188,6 +200,7 @@ export async function applyEvent(env: Env, rooms: Rooms, event: MembershipEvent)
         db.prepare("DELETE FROM family_members WHERE account_id = ?1").bind(event.accountId),
         db.prepare("DELETE FROM shared_kids WHERE kid_account_id = ?1").bind(event.accountId),
         db.prepare("DELETE FROM devices WHERE account_id = ?1").bind(event.accountId),
+        db.prepare("DELETE FROM kid_oversight WHERE kid_account_id = ?1").bind(event.accountId),
       ]);
       await reconcileAll(env, rooms, affected);
       return;
