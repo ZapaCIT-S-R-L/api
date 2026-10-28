@@ -29,8 +29,10 @@ run() {
 e2e() {
   rm -rf .wrangler/state
   npx wrangler d1 migrations apply DB --local || return 1
+  # A throwaway chat token signing key for this run only.
   npx wrangler dev --port "$PORT" --ip 127.0.0.1 --show-interactive-dev-session=false \
     --var "APPLE_JWKS_URL:http://127.0.0.1:$JWKS_PORT/apple" --var "GOOGLE_JWKS_URL:http://127.0.0.1:$JWKS_PORT/google" \
+    --var "CHAT_TOKEN_SIGNING_KEY:$(node scripts/chat-token-key.js)" \
     </dev/null >"$LOG_DIR/wrangler-dev.log" 2>&1 &
   local pid=$!
   local up=0
