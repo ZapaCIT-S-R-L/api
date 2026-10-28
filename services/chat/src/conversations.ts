@@ -3,7 +3,7 @@
 import type { Caller } from "./auth";
 import { ACCOUNT_ID, CONVERSATION_ID, onlyFields, randomId, readJson } from "./body";
 import type { Env } from "./env";
-import { allowedTogether, isParent, loadFamilies, missingGuardians, roleOf, type Role } from "./graph";
+import { allowedTogether, loadFamilies, missingGuardians, roleOf, type Role } from "./graph";
 import { empty, HttpError, invalid, json, notAllowed, notFound } from "./http";
 import { purgeConversationAttachments } from "./attachments";
 import { limit } from "./limits";
@@ -115,7 +115,8 @@ export async function handleCreate(request: Request, env: Env, caller: Caller): 
 
   const requested = [caller.accountId, ...members];
   const graph = await loadFamilies(env, requested);
-  if (!isParent(graph, caller.accountId)) throw notAllowed("Only parents start conversations.");
+  // Parents and kids both start conversations (Stefan, 2026-10-28). Who may be in one is decided by the family
+  // graph below, and every kid's parents are added, so a kid can't reach anyone a parent hasn't allowed.
   if (requested.some((a) => !graph.of.has(a))) throw notAllowed("Not allowed with these members.");
   const guardians = missingGuardians(graph, requested);
   const all = [...requested, ...guardians];

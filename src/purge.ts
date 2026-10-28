@@ -1,5 +1,5 @@
 // Hourly cron (wrangler.jsonc triggers): deletes expired sessions, sign-in nonces, Apple web flows, App Attest
-// challenges, family invitations, kid pairing codes, kid sessions and sent membership events, App Attest keys unused
+// challenges, family invitations, kid pairing codes and kid sessions, sent membership events, App Attest keys unused
 // for 180 days, and devices inactive for 90 days. Data minimisation, and it keeps the one-time tables small however
 // many are requested.
 import { DEVICE_INACTIVE_DAYS } from "./devices";

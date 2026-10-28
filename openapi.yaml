@@ -21,7 +21,8 @@ info:
     and may change.
 
     **Sessions.** Sign-in returns an opaque session token. Send it as `Authorization: Bearer <token>`. The server
-    stores only its SHA-256 hash. A session expires at `expiresAt`; sign in again after that.
+    stores only its SHA-256 hash. A session expires at `expiresAt`; sign in again after that. A parent has at most
+    20 sessions: a new sign-in signs out the oldest beyond that.
   license:
     name: AGPL-3.0-only
     identifier: AGPL-3.0-only
@@ -377,6 +378,18 @@ paths:
       description: Deletes the session the token belongs to. Other sessions of the same parent stay valid.
       responses:
         "204": { description: "Signed out. The token no longer works." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/auth/logout-all:
+    post:
+      tags: [Sign-in]
+      operationId: logoutAll
+      summary: Sign out every session of this parent, on every phone.
+      description: |
+        For a lost phone, or "sign out everywhere". Every token of the parent stops working, this one included.
+        Registered devices keep their keys; a phone that signs in again registers as a new device.
+      responses:
+        "204": { description: "Signed out everywhere." }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
   /v1/me:

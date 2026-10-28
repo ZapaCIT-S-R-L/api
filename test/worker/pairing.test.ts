@@ -99,6 +99,25 @@ describe("POST /v1/families/{familyId}/kids/{kidId}/pairing", () => {
     expect(row?.code_hash).toBe(await sha256Hex(code));
   });
 
+  // Regression (staging, 2026-10-28): the iOS app sends this POST with an empty body (Content-Length: 0) and no
+  // Content-Type; that got 415 unsupported_media_type instead of a code.
+  it("an empty body without Content-Type creates a code", async () => {
+    const { parent, family, kid } = await parentWithKid();
+    const res = await call(`/v1/families/${family.id}/kids/${kid.id}/pairing`, {
+      method: "POST",
+      headers: { ...parent.auth, "content-length": "0" },
+      body: "",
+    });
+    expect(res.status).toBe(201);
+  });
+
+  it("a non-empty body is still refused unless it is {}", async () => {
+    const { parent, family, kid } = await parentWithKid();
+    const path = `/v1/families/${family.id}/kids/${kid.id}/pairing`;
+    expect((await send(path, parent.auth, {})).status).toBe(201);
+    expect((await send(path, parent.auth, { kidId: "x" })).status).toBe(400);
+  });
+
   it("a non-member, or a kid of another family → 404", async () => {
     const ana = await parentWithKid("ana");
     const bob = await parentWithKid("bob");

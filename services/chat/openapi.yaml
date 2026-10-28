@@ -18,8 +18,8 @@ info:
 
     **Membership** (families, kids, connections, devices) comes from the account service as events on a Cloudflare
     Queue (see the `MembershipEvent` schema). The chat service keeps its own copy and enforces the family rules:
-    only parents start conversations, every conversation with a kid includes the parents of every family in it, and
-    kids from another family must be shared through a connection.
+    parents and kids both start conversations, every conversation with a kid includes the parents of every family in
+    it, and kids from another family must be shared through a connection.
 
     **Transport.** HTTPS only, TLS 1.3 only, HSTS. No cookies and no CORS. **Data location:** D1, R2 and Durable
     Objects in the EU jurisdiction. **Errors** are JSON `{"error": {"code": "...", "message": "..."}}`.
@@ -110,13 +110,14 @@ paths:
     post:
       tags: [Conversations]
       operationId: createConversation
-      summary: Start a 1:1 or group conversation (parents only).
+      summary: Start a 1:1 or group conversation (parents and kids).
       description: |
         `members` are the other accounts (not the caller). One account → `direct`; a `direct` conversation with
         the same two accounts that is still open is returned instead of creating a second one (`200`). The server
         adds the parents of every kid's family. Every pair of families in the conversation must be connected, and
         every kid must be shared with every other family in it (`403 not_allowed` otherwise; the response doesn't
-        say which account failed).
+        say which account failed). Kids start conversations under the same rules: a kid reaches only their own
+        family and shared kids of connected families, and their parents are always added.
       requestBody:
         required: true
         content:
