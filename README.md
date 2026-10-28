@@ -18,10 +18,14 @@ decrypt a chat. The server has no cryptography of its own beyond verifying sign-
 
 ## Services
 
-The repo is becoming a monorepo: the root is the account API, and each folder in `services/` is its own Worker with
-its own package, CI and deploy. The root workflows don't lint, test or deploy `services/`.
+The repo root is the account API (api.zapakid.ro). Other services live under `services/`, each its own Worker with
+its own `package.json`, wrangler config, OpenAPI spec, CI (`ci-<service>.yml`) and deploy (`deploy-<service>.yml`):
 
-- [`services/calls`](services/calls/README.md): voice calls (`calls.zapakid.ro`).
+- [`services/chat`](services/chat/README.md): conversations, encrypted envelopes, stream, attachments
+  (chat.zapakid.ro).
+- [`services/calls`](services/calls/README.md): voice calls (calls.zapakid.ro).
+
+A PR that changes only `services/**` skips the account API's checks and deploy.
 
 ## How changes ship
 

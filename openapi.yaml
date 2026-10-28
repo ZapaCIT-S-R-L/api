@@ -126,16 +126,12 @@ tags:
       keys, let users compare them in person (QR scan), and show a key-change warning before sending to a changed
       identity. Apps must also check the key themselves (libsignal `IdentityKeyStore`): the server's announcement
       helps, but the guarantee is that the app never trusts a new key silently, even if the server lies.
-  - name: "Draft: Messages"
+  - name: Chat
     description: |
-      Planned. Sealed envelopes per recipient device: 1:1 messages are libsignal `PreKeySignalMessage` or
-      `SignalMessage`; group messages are `SenderKeyMessage`, and sender keys travel as pairwise-encrypted
-      `SenderKeyDistributionMessage`. The server sees ciphertext, sender, recipient and time, nothing else.
-      Every chat that includes a kid includes the parents of all families in it; the server enforces that list.
-  - name: "Draft: Attachments"
-    description: |
-      Planned. Photos and voice messages are encrypted on the phone (keys and digest travel inside the encrypted
-      message) and uploaded as opaque blobs to R2 (EU).
+      Moved to the chat service (`services/chat/openapi.yaml`, hosts chat.zapakid.ro and chat-staging.zapakid.ro):
+      conversations, messages, the live stream and attachments. The draft `/v1/conversations`, `/v1/messages`,
+      `/v1/stream` and `/v1/attachments` paths were removed from this spec. The chat service authenticates with
+      short-lived chat tokens from this service and receives family and device changes as membership events.
 
 security:
   - session: []
@@ -1065,93 +1061,6 @@ paths:
                   devices: { type: array, items: { $ref: "#/components/schemas/PreKeyBundle" } }
         "404": { description: "No such account or device, or not allowed." }
 
-  /v1/conversations:
-    post:
-      tags: ["Draft: Messages"]
-      operationId: createConversation
-      x-status: draft
-      summary: Start a 1:1 or group chat.
-      description: The server adds the parents of every family whose kid is in the chat, as readers.
-      responses:
-        "201": { description: "Conversation id and the full member list." }
-    get:
-      tags: ["Draft: Messages"]
-      operationId: listConversations
-      x-status: draft
-      summary: The caller's chats (members only; no content).
-      responses:
-        "200": { description: "Conversations." }
-
-  /v1/messages:
-    post:
-      tags: ["Draft: Messages"]
-      operationId: sendMessage
-      x-status: draft
-      summary: Send one encrypted envelope per recipient device.
-      description: |
-        `409` if the device list is stale (missing or extra devices), `410` if a registration id changed; the app
-        refreshes keys and retries. Recipients must be members of the conversation.
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [conversationId, envelopes]
-              properties:
-                conversationId: { type: string }
-                envelopes: { type: array, maxItems: 256, items: { $ref: "#/components/schemas/OutgoingEnvelope" } }
-      responses:
-        "202": { description: "Queued for every device." }
-        "409": { description: "Stale device list." }
-        "410": { description: "Stale registration id." }
-    get:
-      tags: ["Draft: Messages"]
-      operationId: fetchMessages
-      x-status: draft
-      summary: Queued envelopes for this device (when the live stream is not connected).
-      responses:
-        "200": { description: "Envelopes, oldest first." }
-
-  /v1/messages/{envelopeId}:
-    delete:
-      tags: ["Draft: Messages"]
-      operationId: ackMessage
-      x-status: draft
-      summary: Acknowledge an envelope; the server deletes it.
-      parameters: [{ name: envelopeId, in: path, required: true, schema: { type: string } }]
-      responses:
-        "204": { description: "Deleted from the queue." }
-
-  /v1/stream:
-    get:
-      tags: ["Draft: Messages"]
-      operationId: stream
-      x-status: draft
-      summary: WebSocket for live envelopes and events (`identity_changed`, membership changes).
-      description: One Durable Object per account fans out to its connected devices.
-      responses:
-        "101": { description: "Switching protocols." }
-
-  /v1/attachments:
-    post:
-      tags: ["Draft: Attachments"]
-      operationId: createAttachment
-      x-status: draft
-      summary: Reserve an upload for an encrypted photo or voice message.
-      responses:
-        "201": { description: "`{ attachmentId, uploadUrl, expiresAt }`; max size per type." }
-
-  /v1/attachments/{attachmentId}:
-    get:
-      tags: ["Draft: Attachments"]
-      operationId: downloadAttachment
-      x-status: draft
-      summary: Download the encrypted blob (conversation members only).
-      parameters: [{ name: attachmentId, in: path, required: true, schema: { type: string } }]
-      responses:
-        "200": { description: "The ciphertext." }
-
 # Outbound messages. Not HTTP: OpenAPI 3.1 webhooks are used to describe the queue messages this API produces.
 webhooks:
   membershipEvent:
@@ -1647,17 +1556,3 @@ components:
         signedPreKey: { $ref: "#/components/schemas/SignedPreKey" }
         pqPreKey: { $ref: "#/components/schemas/SignedPreKey" }
         preKey: { $ref: "#/components/schemas/PreKey" }
-    OutgoingEnvelope:
-      type: object
-      required: [recipientAccountId, recipientDeviceId, recipientRegistrationId, type, content]
-      properties:
-        recipientAccountId: { type: string }
-        recipientDeviceId: { $ref: "#/components/schemas/DeviceId" }
-        recipientRegistrationId: { type: integer }
-        type:
-          type: string
-          enum: [prekey_message, message, sender_key_message]
-          description: The libsignal ciphertext type. There is no plaintext type.
-        content:
-          allOf: [{ $ref: "#/components/schemas/Base64" }]
-          description: libsignal ciphertext, at most 64 KiB.
