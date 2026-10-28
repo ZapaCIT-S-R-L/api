@@ -1,5 +1,6 @@
 // GET /health: liveness plus a config check. Problems name the binding or variable only, never its value.
 import type { Env } from "./env";
+import { chatTokenProblems } from "./chat-token";
 import { json } from "./http";
 import { parseCredentials } from "./play-integrity";
 import { ttlSeconds } from "./sessions";
@@ -35,6 +36,7 @@ function problems(env: Env): string[] {
       found.push("PLAY_INTEGRITY_CREDENTIALS missing or invalid");
     if (!present.PLAY_CERT_SHA256?.trim()) found.push("PLAY_CERT_SHA256 empty");
   }
+  found.push(...chatTokenProblems(present));
   return found;
 }
 

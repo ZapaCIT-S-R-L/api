@@ -48,10 +48,15 @@ test("the Apple web flow hands back to the app link on zapakid.ro", () => {
     assert.equal(env.vars.APPLE_WEB_REDIRECT_URL, "https://zapakid.ro/app/apple");
 });
 
-test("staging Google client ids are real OAuth client ids or empty (Google sign-in off)", () => {
-  const ids = staging.vars.GOOGLE_CLIENT_IDS.split(",").filter(Boolean);
-  for (const id of ids) assert.match(id, /^\d+-[a-z0-9]+\.apps\.googleusercontent\.com$/);
-  assert.ok(!ids.some((id) => id.includes("local-test")));
+// Google ID tokens carry the client the app asked with as `aud`: Android (Credential Manager, setServerClientId)
+// uses the web (server) client, iOS (GoogleSignIn) the iOS client. The Android client id (…-mbidtcoq…) is never an
+// audience, so the exact list above leaves it out.
+const GOOGLE_WEB = "64042746735-r70nv5pmlro7hpksk1te3ur008ungss1.apps.googleusercontent.com";
+const GOOGLE_IOS = "64042746735-lgdmtj9vvd3kiu7g9qc2elu22la6o1id.apps.googleusercontent.com";
+
+test("staging accepts Google ID tokens for ZapaKid's web and iOS clients only", () => {
+  const ids = staging.vars.GOOGLE_CLIENT_IDS.split(",");
+  assert.deepEqual(ids, [GOOGLE_WEB, GOOGLE_IOS]);
 });
 
 test("staging session TTL is between 1 day and 90 days", () => {
@@ -136,4 +141,16 @@ test("the pinned App Attest root is Apple's App Attestation Root CA", async () =
   const fingerprint = createHash("sha256").update(Buffer.from(b64, "base64")).digest("hex");
   // openssl x509 -in Apple_App_Attestation_Root_CA.pem -noout -fingerprint -sha256 (apple.com/certificateauthority)
   assert.equal(fingerprint, "1cb9823ba28ba6ad2d33a006941de2ae4f513ef1d4e831b9f7e0fa7b6242c932");
+});
+
+test("chat tokens: issued by the API host, for the chat and calls hosts of the same environment, ≤ 15 minutes", () => {
+  assert.equal(staging.vars.CHAT_TOKEN_ISSUER, "https://api-staging.zapakid.ro");
+  assert.equal(staging.vars.CHAT_TOKEN_AUDIENCES, "chat-staging.zapakid.ro,calls-staging.zapakid.ro");
+  assert.equal(production.vars.CHAT_TOKEN_ISSUER, "https://api.zapakid.ro");
+  assert.equal(production.vars.CHAT_TOKEN_AUDIENCES, "chat.zapakid.ro,calls.zapakid.ro");
+  for (const env of [rawConfig, staging, production]) {
+    const ttl = Number(env.vars.CHAT_TOKEN_TTL_SECONDS);
+    assert.ok(Number.isInteger(ttl) && ttl >= 60 && ttl <= 900, String(ttl));
+    assert.equal(env.vars.CHAT_TOKEN_SIGNING_KEY, undefined, "a secret, never a var");
+  }
 });
