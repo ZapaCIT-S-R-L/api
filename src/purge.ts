@@ -1,7 +1,6 @@
-// Daily cron (wrangler.jsonc triggers): deletes expired sessions, sign-in nonces, Apple web flows and App Attest
-// challenges, App Attest keys unused for 180 days, and
-// devices inactive for 90 days. Data minimisation, and it keeps the one-time tables small
-// however many are requested.
+// Daily cron (wrangler.jsonc triggers): deletes expired sessions, sign-in nonces, Apple web flows, App Attest
+// challenges and family invitations, App Attest keys unused for 180 days, and devices inactive for 90 days. Data
+// minimisation, and it keeps the one-time tables small however many are requested.
 import { DEVICE_INACTIVE_DAYS } from "./devices";
 import type { Env } from "./env";
 
@@ -13,7 +12,7 @@ export async function purgeExpired(env: Env): Promise<void> {
   const now = new Date().toISOString();
   const keyCutoff = new Date(Date.now() - APP_ATTEST_KEY_RETENTION_DAYS * 86_400_000).toISOString();
   const deviceCutoff = new Date(Date.now() - DEVICE_INACTIVE_DAYS * 86_400_000).toISOString();
-  const [sessions, nonces, flows, challenges, keys, devices] = await env.DB.batch([
+  const [sessions, nonces, flows, challenges, keys, devices, , invitations] = await env.DB.batch([
     env.DB.prepare("DELETE FROM sessions WHERE expires_at <= ?").bind(now),
     env.DB.prepare("DELETE FROM sign_in_nonces WHERE expires_at <= ?").bind(now),
     // A flow lives 10 minutes; a code issued near its end lives at most 2 more.
@@ -28,6 +27,7 @@ export async function purgeExpired(env: Env): Promise<void> {
       `UPDATE sessions SET device_id = NULL WHERE device_id IS NOT NULL AND NOT EXISTS
          (SELECT 1 FROM devices d WHERE d.account_id = sessions.parent_id AND d.device_id = sessions.device_id)`,
     ),
+    env.DB.prepare("DELETE FROM family_invitations WHERE expires_at <= ?").bind(now),
   ]);
   console.log(
     JSON.stringify({
@@ -38,6 +38,7 @@ export async function purgeExpired(env: Env): Promise<void> {
       appAttestChallenges: challenges?.meta.changes ?? 0,
       appAttestKeys: keys?.meta.changes ?? 0,
       devices: devices?.meta.changes ?? 0,
+      familyInvitations: invitations?.meta.changes ?? 0,
     }),
   );
 }

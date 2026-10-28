@@ -1,0 +1,657 @@
+openapi: 3.1.0
+info:
+  title: ZapaKid Chat
+  version: 1.0.0
+  summary: Sealed mailboxes for ZapaKid's end-to-end encrypted family chat.
+  description: |
+    The chat service stores and forwards libsignal ciphertext between the devices of a conversation. It never sees a
+    key or a plaintext: message bodies, group names, attachment contents and attachment keys only exist encrypted.
+    What it does see is routing metadata: who is in which conversation, which device sent an envelope to which
+    device, sizes and times.
+
+    **Auth.** No login of its own. Every request carries a short-lived (at most 15 minutes) ES256 *chat token* from
+    the account service (`POST /v1/chat/token` on api.zapakid.ro) as `Authorization: Bearer <token>`. The chat
+    service checks it against the account service's public keys (`/.well-known/jwks.json`, cached), so it keeps
+    working while the account service is down. Claims: `iss` the account service URL (`https://api.zapakid.ro`), `aud` containing this host, `sub`
+    the account id, `dev` the libsignal device id (1–127), `role` `parent` or `kid`, `iat`, `exp`. A `conv` claim, if
+    present, is ignored here: the chat service is the source of conversation membership.
+
+    **Membership** (families, kids, connections, devices) comes from the account service as events on a Cloudflare
+    Queue (see the `MembershipEvent` schema). The chat service keeps its own copy and enforces the family rules:
+    only parents start conversations, every conversation with a kid includes the parents of every family in it, and
+    kids from another family must be shared through a connection.
+
+    **Transport.** HTTPS only, TLS 1.3 only, HSTS. No cookies and no CORS. **Data location:** D1, R2 and Durable
+    Objects in the EU jurisdiction. **Errors** are JSON `{"error": {"code": "...", "message": "..."}}`.
+
+    **Stability.** Operations marked `x-status: draft` are planned and not implemented yet.
+  license:
+    name: AGPL-3.0-only
+    identifier: AGPL-3.0-only
+  contact:
+    name: ZapaCIT SRL
+    url: https://github.com/ZapaCIT-S-R-L/zapakid-api
+servers:
+  - url: https://chat-staging.zapakid.ro
+    description: Staging
+  - url: https://chat.zapakid.ro
+    description: Production
+
+tags:
+  - name: Health
+    description: Liveness, for monitoring and the post-deploy checks.
+  - name: Conversations
+    description: |
+      1:1 (`direct`) and group chats. Members are accounts; each member's devices receive their own envelopes.
+      A parent starts a conversation with accounts from their own family and from connected families. The server
+      adds the parents of every kid's family (`guardian: true`); they are real members of the encryption.
+      When a connection is removed or a kid is unshared, the affected conversations are `closed`: history stays on
+      the phones, nothing new can be sent, and the remaining devices rotate their sender keys.
+  - name: Messages
+    description: |
+      One sealed envelope per recipient device: libsignal `PreKeySignalMessage` (`prekey_message`), `SignalMessage`
+      (`message`) or `SenderKeyMessage` (`sender_key_message`). Sender keys travel as pairwise-encrypted messages.
+      The envelopes of a send must cover exactly the current devices of every member except the sending device
+      (the sender's own other devices included), so nobody is silently left out (`409`) and a re-installed device
+      is noticed (`410`).
+
+      **Delivery.** Each envelope is a *delivery copy* for one device. It stays queued until that device
+      acknowledges it, the device is removed, or the conversation is deleted by every member. Connected devices get
+      it live over the stream; others get a content-free push (when configured) and fetch it.
+  - name: Stream
+    description: |
+      A WebSocket per conversation (one Durable Object per conversation, hibernating while idle).
+      Server → client text frames: `{"type":"envelope","envelope":Envelope}` and
+      `{"type":"event","event":{"kind":"members_changed"|"devices_changed"|"conversation_closed","conversationId":"…"}}`.
+      Client → server: `{"type":"ack","envelopeIds":["…"]}` (deletes delivery copies) and `ping` (answered `pong`
+      without waking the object). The server closes the socket with code `4401` when the chat token expires and
+      `4403` when the account leaves the conversation; reconnect with a fresh token. Queued envelopes are sent
+      right after connecting.
+  - name: Attachments
+    description: |
+      Photos and voice messages are encrypted on the phone with a fresh key per file (EXIF stripped first). Only the
+      ciphertext is uploaded; the attachment id, key and digest travel inside the encrypted message. Upload and
+      download use one-time URLs (valid 15 minutes, usable once), so the apps can hand them to background
+      transfers. Attachments live in R2 (EU) until every member has deleted the conversation.
+
+security:
+  - chatToken: []
+
+paths:
+  /health:
+    get:
+      tags: [Health]
+      operationId: health
+      summary: Liveness and configuration check.
+      security: []
+      responses:
+        "200":
+          description: Healthy.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, version]
+                properties:
+                  status: { type: string, const: ok }
+                  version: { type: string, examples: [chat-v1.0.0] }
+        "503":
+          description: Misconfigured; `problems` names the missing binding or variable, never a value.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, version, problems]
+                properties:
+                  status: { type: string, const: misconfigured }
+                  version: { type: string }
+                  problems: { type: array, items: { type: string } }
+
+  /v1/conversations:
+    post:
+      tags: [Conversations]
+      operationId: createConversation
+      summary: Start a 1:1 or group conversation (parents only).
+      description: |
+        `members` are the other accounts (not the caller). One account → `direct`; a `direct` conversation with
+        the same two accounts that is still open is returned instead of creating a second one (`200`). The server
+        adds the parents of every kid's family. Every pair of families in the conversation must be connected, and
+        every kid must be shared with every other family in it (`403 not_allowed` otherwise; the response doesn't
+        say which account failed).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [members]
+              additionalProperties: false
+              properties:
+                members:
+                  type: array
+                  minItems: 1
+                  maxItems: 31
+                  uniqueItems: true
+                  items: { $ref: "#/components/schemas/AccountId" }
+      responses:
+        "200":
+          description: The existing open direct conversation.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Conversation" } } }
+        "201":
+          description: Created.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Conversation" } } }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    get:
+      tags: [Conversations]
+      operationId: listConversations
+      summary: The caller's conversations (not the ones the caller deleted).
+      responses:
+        "200":
+          description: Conversations, newest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [conversations]
+                properties:
+                  conversations: { type: array, items: { $ref: "#/components/schemas/Conversation" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/conversations/{conversationId}:
+    parameters: [{ $ref: "#/components/parameters/conversationId" }]
+    get:
+      tags: [Conversations]
+      operationId: getConversation
+      summary: One conversation with its members and their current devices.
+      responses:
+        "200":
+          description: The conversation.
+          content: { application/json: { schema: { $ref: "#/components/schemas/Conversation" } } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Conversations]
+      operationId: deleteConversation
+      summary: Delete the conversation for the caller's account (all its devices).
+      description: |
+        The caller's queued delivery copies are deleted and the conversation disappears from their list. Once every
+        member has deleted it (or their accounts are gone), the server deletes everything it holds about it:
+        metadata, queued envelopes and attachments.
+      responses:
+        "204": { description: Deleted for the caller. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/conversations/{conversationId}/messages:
+    parameters: [{ $ref: "#/components/parameters/conversationId" }]
+    post:
+      tags: [Messages]
+      operationId: sendMessage
+      x-status: draft
+      summary: Send one encrypted envelope per recipient device.
+      description: |
+        Idempotent per `messageId`: a retry with the same id is accepted again without delivering twice.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [messageId, envelopes]
+              additionalProperties: false
+              properties:
+                messageId: { type: string, format: uuid, description: "Chosen by the sender, for retries." }
+                envelopes:
+                  type: array
+                  minItems: 1
+                  maxItems: 256
+                  items: { $ref: "#/components/schemas/OutgoingEnvelope" }
+      responses:
+        "202":
+          description: Queued for every recipient device.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [messageId, serverTimestamp]
+                properties:
+                  messageId: { type: string, format: uuid }
+                  serverTimestamp: { type: integer, description: Milliseconds since the epoch. }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`stale_devices`: the envelopes don't match the members' current devices. Refresh and retry."
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error, missingDevices, extraDevices]
+                properties:
+                  error: { $ref: "#/components/schemas/ErrorBody" }
+                  missingDevices: { type: array, items: { $ref: "#/components/schemas/DeviceAddress" } }
+                  extraDevices: { type: array, items: { $ref: "#/components/schemas/DeviceAddress" } }
+        "410":
+          description: "`stale_registration`: a device was re-installed (new registration id). Fetch its keys again."
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [error, staleDevices]
+                properties:
+                  error: { $ref: "#/components/schemas/ErrorBody" }
+                  staleDevices: { type: array, items: { $ref: "#/components/schemas/DeviceAddress" } }
+        "413": { $ref: "#/components/responses/TooLarge" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+    get:
+      tags: [Messages]
+      operationId: fetchMessages
+      x-status: draft
+      summary: The delivery copies queued for the calling device, oldest first.
+      parameters:
+        - name: limit
+          in: query
+          required: false
+          schema: { type: integer, minimum: 1, maximum: 100, default: 100 }
+      responses:
+        "200":
+          description: Queued envelopes. `more` is true when there are more than `limit`.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [envelopes, more]
+                properties:
+                  envelopes: { type: array, items: { $ref: "#/components/schemas/Envelope" } }
+                  more: { type: boolean }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/conversations/{conversationId}/acks:
+    parameters: [{ $ref: "#/components/parameters/conversationId" }]
+    post:
+      tags: [Messages]
+      operationId: ackMessages
+      x-status: draft
+      summary: Acknowledge envelopes; their delivery copies for this device are deleted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [envelopeIds]
+              additionalProperties: false
+              properties:
+                envelopeIds: { type: array, minItems: 1, maxItems: 100, items: { type: string, format: uuid } }
+      responses:
+        "204": { description: Deleted (unknown ids are ignored). }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/conversations/{conversationId}/stream:
+    parameters: [{ $ref: "#/components/parameters/conversationId" }]
+    get:
+      tags: [Stream]
+      operationId: stream
+      x-status: draft
+      summary: WebSocket for live envelopes and events (see the `Stream` tag).
+      parameters:
+        - { name: Upgrade, in: header, required: true, schema: { type: string, const: websocket } }
+      responses:
+        "101": { description: Switching protocols. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "426": { description: "`upgrade_required`: not a WebSocket request." }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/attachments:
+    post:
+      tags: [Attachments]
+      operationId: createAttachment
+      x-status: draft
+      summary: Reserve an upload for an encrypted photo or voice message.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [conversationId, size]
+              additionalProperties: false
+              properties:
+                conversationId: { $ref: "#/components/schemas/ConversationId" }
+                size:
+                  {
+                    type: integer,
+                    minimum: 1,
+                    maximum: 26214400,
+                    description: Exact ciphertext size in bytes (≤ 25 MiB).,
+                  }
+      responses:
+        "201":
+          description: Upload with `PUT uploadUrl` (body = the ciphertext, exactly `size` bytes, no Authorization).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [attachmentId, uploadUrl, expiresAt]
+                properties:
+                  attachmentId: { $ref: "#/components/schemas/AttachmentId" }
+                  uploadUrl: { type: string, format: uri }
+                  expiresAt: { type: string, format: date-time }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/attachments/{attachmentId}:
+    parameters: [{ $ref: "#/components/parameters/attachmentId" }]
+    get:
+      tags: [Attachments]
+      operationId: getAttachment
+      x-status: draft
+      summary: A one-time download URL for an uploaded attachment (conversation members only).
+      responses:
+        "200":
+          description: Download with `GET downloadUrl` (no Authorization).
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [attachmentId, size, downloadUrl, expiresAt]
+                properties:
+                  attachmentId: { $ref: "#/components/schemas/AttachmentId" }
+                  size: { type: integer }
+                  downloadUrl: { type: string, format: uri }
+                  expiresAt: { type: string, format: date-time }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/attachments/{attachmentId}/upload:
+    parameters: [{ $ref: "#/components/parameters/attachmentId" }, { $ref: "#/components/parameters/oneTimeToken" }]
+    put:
+      tags: [Attachments]
+      operationId: uploadAttachment
+      x-status: draft
+      summary: The one-time upload URL from `createAttachment`.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: { type: string, contentMediaType: application/octet-stream }
+      responses:
+        "204": { description: Stored. The URL can't be used again. }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "404": { description: "`not_found`: unknown, expired or already used URL." }
+        "413": { $ref: "#/components/responses/TooLarge" }
+
+  /v1/attachments/{attachmentId}/download:
+    parameters: [{ $ref: "#/components/parameters/attachmentId" }, { $ref: "#/components/parameters/oneTimeToken" }]
+    get:
+      tags: [Attachments]
+      operationId: downloadAttachment
+      x-status: draft
+      summary: The one-time download URL from `getAttachment`.
+      security: []
+      responses:
+        "200":
+          description: The ciphertext.
+          content:
+            application/octet-stream:
+              schema: { type: string, contentMediaType: application/octet-stream }
+        "404": { description: "`not_found`: unknown, expired or already used URL." }
+
+components:
+  securitySchemes:
+    chatToken:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: The ES256 chat token from the account service (at most 15 minutes).
+
+  parameters:
+    conversationId:
+      { name: conversationId, in: path, required: true, schema: { $ref: "#/components/schemas/ConversationId" } }
+    attachmentId:
+      { name: attachmentId, in: path, required: true, schema: { $ref: "#/components/schemas/AttachmentId" } }
+    oneTimeToken:
+      name: token
+      in: query
+      required: true
+      description: Part of the one-time URL; never log it.
+      schema: { type: string, pattern: "^[A-Za-z0-9_-]{43}$" }
+
+  responses:
+    InvalidRequest:
+      description: "`invalid_request`: the body is not valid JSON or a field is missing or out of range."
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Unauthorized:
+      description: |
+        `unauthorized`: no chat token, or it is malformed, expired, for another audience or issuer, longer-lived than
+        15 minutes, or its signature doesn't verify. Get a new token from the account service.
+        `auth_unavailable` (503): the account service's public keys could not be fetched; retry later.
+      headers:
+        WWW-Authenticate: { schema: { type: string, const: Bearer } }
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    Forbidden:
+      description: |
+        `not_allowed`: the family rules don't allow it (kids can't start conversations; families must be connected
+        and kids shared). `conversation_closed`: the conversation is read-only.
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    NotFound:
+      description: "`not_found`: no such conversation or attachment for this account."
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    RateLimited:
+      description: "`rate_limited`: too many requests from this account. Wait `Retry-After` seconds."
+      headers:
+        Retry-After: { schema: { type: integer } }
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+    TooLarge:
+      description: "`payload_too_large`: the body is over the limit."
+      content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } }
+
+  schemas:
+    ErrorBody:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, examples: [unauthorized] }
+        message: { type: string }
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: { $ref: "#/components/schemas/ErrorBody" }
+
+    AccountId:
+      type: string
+      pattern: "^[A-Za-z0-9_-]{1,64}$"
+      description: The account id from the account service (the chat token's `sub`).
+    DeviceId:
+      type: integer
+      minimum: 1
+      maximum: 127
+      description: The libsignal device id (the chat token's `dev`).
+    ConversationId:
+      type: string
+      pattern: "^c_[A-Za-z0-9_-]{22}$"
+    AttachmentId:
+      type: string
+      pattern: "^a_[A-Za-z0-9_-]{22}$"
+    Base64:
+      type: string
+      contentEncoding: base64
+    Role:
+      type: string
+      enum: [parent, kid]
+
+    DeviceAddress:
+      type: object
+      required: [accountId, deviceId]
+      properties:
+        accountId: { $ref: "#/components/schemas/AccountId" }
+        deviceId: { $ref: "#/components/schemas/DeviceId" }
+
+    Conversation:
+      type: object
+      required: [id, kind, state, createdAt, members]
+      properties:
+        id: { $ref: "#/components/schemas/ConversationId" }
+        kind: { type: string, enum: [direct, group] }
+        state:
+          type: string
+          enum: [open, closed]
+          description: "`closed`: read-only, after a connection was removed, a kid unshared or a member deleted."
+        createdAt: { type: string, format: date-time }
+        closedAt: { type: [string, "null"], format: date-time }
+        members:
+          type: array
+          items:
+            type: object
+            required: [accountId, role, guardian, devices]
+            properties:
+              accountId: { $ref: "#/components/schemas/AccountId" }
+              role: { $ref: "#/components/schemas/Role" }
+              guardian:
+                type: boolean
+                description: Added by the server as a parent of a kid in the conversation.
+              devices:
+                type: array
+                items:
+                  type: object
+                  required: [deviceId, registrationId]
+                  properties:
+                    deviceId: { $ref: "#/components/schemas/DeviceId" }
+                    registrationId: { type: integer, minimum: 1, maximum: 16383 }
+
+    OutgoingEnvelope:
+      type: object
+      required: [recipientAccountId, recipientDeviceId, recipientRegistrationId, type, content]
+      additionalProperties: false
+      properties:
+        recipientAccountId: { $ref: "#/components/schemas/AccountId" }
+        recipientDeviceId: { $ref: "#/components/schemas/DeviceId" }
+        recipientRegistrationId: { type: integer, minimum: 1, maximum: 16383 }
+        type:
+          type: string
+          enum: [prekey_message, message, sender_key_message]
+          description: The libsignal ciphertext type. There is no plaintext type.
+        content:
+          allOf: [{ $ref: "#/components/schemas/Base64" }]
+          description: libsignal ciphertext, at most 64 KiB once decoded. Opaque to the server.
+
+    Envelope:
+      type: object
+      required: [id, conversationId, messageId, senderAccountId, senderDeviceId, type, content, serverTimestamp]
+      properties:
+        id: { type: string, format: uuid, description: This delivery copy; acknowledge it by this id. }
+        conversationId: { $ref: "#/components/schemas/ConversationId" }
+        messageId: { type: string, format: uuid }
+        senderAccountId: { $ref: "#/components/schemas/AccountId" }
+        senderDeviceId: { $ref: "#/components/schemas/DeviceId" }
+        type: { type: string, enum: [prekey_message, message, sender_key_message] }
+        content: { $ref: "#/components/schemas/Base64" }
+        serverTimestamp: { type: integer, description: Milliseconds since the epoch. }
+
+    MembershipEvent:
+      description: |
+        Not an HTTP body: the messages on the Cloudflare Queue `zapakid-membership-<environment>` (staging,
+        production), produced by the account service (families, connections, devices) and consumed by the chat
+        service. JSON, at most 128 KiB. Delivery is at least once and not ordered across batches: `id` makes a
+        repeat a no-op, and each event carries the full state of what it describes (for example the device's
+        current registration id), so applying events again is safe. The account service must send an event after
+        its own write commits. Unknown `type`s are acknowledged and ignored (forward compatible); a malformed
+        event goes to the dead-letter queue `zapakid-membership-<environment>-dlq` after 5 retries.
+      type: object
+      required: [v, id, type, occurredAt]
+      properties:
+        v: { type: integer, const: 1 }
+        id: { type: string, format: uuid }
+        occurredAt: { type: string, format: date-time }
+        type:
+          type: string
+          enum:
+            - family.member_added
+            - family.member_removed
+            - connection.created
+            - connection.removed
+            - connection.kid_shared
+            - connection.kid_unshared
+            - device.upserted
+            - device.removed
+            - account.deleted
+      oneOf:
+        - title: family.member_added
+          description: A parent or kid joined a family (new family, parent invitation accepted, kid added).
+          required: [type, familyId, accountId, role]
+          properties:
+            type: { const: family.member_added }
+            familyId: { type: string, maxLength: 64 }
+            accountId: { $ref: "#/components/schemas/AccountId" }
+            role: { $ref: "#/components/schemas/Role" }
+        - title: family.member_removed
+          required: [type, familyId, accountId]
+          properties:
+            type: { const: family.member_removed }
+            familyId: { type: string, maxLength: 64 }
+            accountId: { $ref: "#/components/schemas/AccountId" }
+        - title: connection.created
+          required: [type, connectionId, familyIds]
+          properties:
+            type: { const: connection.created }
+            connectionId: { type: string, maxLength: 64 }
+            familyIds: { type: array, minItems: 2, maxItems: 2, items: { type: string, maxLength: 64 } }
+        - title: connection.removed
+          required: [type, connectionId]
+          properties:
+            type: { const: connection.removed }
+            connectionId: { type: string, maxLength: 64 }
+        - title: connection.kid_shared
+          description: The kid's family shares the kid with the other family of the connection.
+          required: [type, connectionId, kidAccountId]
+          properties:
+            type: { const: connection.kid_shared }
+            connectionId: { type: string, maxLength: 64 }
+            kidAccountId: { $ref: "#/components/schemas/AccountId" }
+        - title: connection.kid_unshared
+          required: [type, connectionId, kidAccountId]
+          properties:
+            type: { const: connection.kid_unshared }
+            connectionId: { type: string, maxLength: 64 }
+            kidAccountId: { $ref: "#/components/schemas/AccountId" }
+        - title: device.upserted
+          description: A device was registered, re-installed (new registration id) or got a new push token.
+          required: [type, accountId, deviceId, registrationId]
+          properties:
+            type: { const: device.upserted }
+            accountId: { $ref: "#/components/schemas/AccountId" }
+            deviceId: { $ref: "#/components/schemas/DeviceId" }
+            registrationId: { type: integer, minimum: 1, maximum: 16383 }
+            push:
+              type: [object, "null"]
+              description: Where to send content-free wake-ups; `null` = none.
+              required: [provider, token]
+              properties:
+                provider: { type: string, enum: [apns, fcm] }
+                token: { type: string, maxLength: 4096 }
+        - title: device.removed
+          required: [type, accountId, deviceId]
+          properties:
+            type: { const: device.removed }
+            accountId: { $ref: "#/components/schemas/AccountId" }
+            deviceId: { $ref: "#/components/schemas/DeviceId" }
+        - title: account.deleted
+          description: Immediate account deletion (also sent for each kid when the last parent of a family leaves).
+          required: [type, accountId]
+          properties:
+            type: { const: account.deleted }
+            accountId: { $ref: "#/components/schemas/AccountId" }
