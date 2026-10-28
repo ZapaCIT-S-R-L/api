@@ -8,6 +8,10 @@ import type { Env } from "./env";
 export type MembershipEvent = { v: 1; id: string; occurredAt: string } & (
   | { type: "family.member_added"; familyId: string; accountId: string; role: "parent" | "kid" }
   | { type: "family.member_removed"; familyId: string; accountId: string }
+  | { type: "connection.created"; connectionId: string; familyIds: [string, string] }
+  | { type: "connection.removed"; connectionId: string }
+  | { type: "connection.kid_shared"; connectionId: string; kidAccountId: string }
+  | { type: "connection.kid_unshared"; connectionId: string; kidAccountId: string }
 );
 
 type EventData = MembershipEvent extends infer E
