@@ -25,17 +25,22 @@ test("staging never overrides the Apple or Google key URLs", () => {
   assert.equal(staging.vars.GOOGLE_JWKS_URL, undefined);
 });
 
-// The app id (iOS bundle id) first; then, once Stefan provides it, the Apple Services ID of the web flow (Android).
-function appleAudiences(env) {
-  const ids = env.vars.APPLE_AUDIENCES.split(",").map((id) => id.trim());
-  assert.equal(ids[0], "ro.zapakid.app");
-  for (const id of ids) assert.match(id, /^[a-z0-9-]+(\.[a-z0-9-]+)+$/i);
-  assert.ok(!ids.some((id) => id.endsWith(".local")), "no local test ids");
-  return ids;
+// Apple audiences per endpoint (security review 2026-10-27, L6): the native sign-in accepts only the iOS bundle
+// id, the web flow's callback only the Services ID.
+function ids(value) {
+  const list = (value ?? "")
+    .split(",")
+    .map((id) => id.trim())
+    .filter(Boolean);
+  for (const id of list) assert.match(id, /^[a-z0-9-]+(\.[a-z0-9-]+)+$/i);
+  assert.ok(!list.some((id) => id.endsWith(".local")), "no local test ids");
+  return list;
 }
 
-test("staging accepts Apple tokens for the ZapaKid app and its Services ID (web flow) only", () => {
-  assert.deepEqual(appleAudiences(staging), ["ro.zapakid.app", "ro.zapakid.signin"]);
+test("staging: native Apple sign-in takes the bundle id, the web flow the Services ID, nothing shared", () => {
+  assert.deepEqual(ids(staging.vars.APPLE_BUNDLE_IDS), ["ro.zapakid.app"]);
+  assert.deepEqual(ids(staging.vars.APPLE_SERVICES_IDS), ["ro.zapakid.signin"]);
+  assert.equal(staging.vars.APPLE_AUDIENCES, undefined);
 });
 
 test("the Apple web flow hands back to the app link on zapakid.ro", () => {
@@ -77,7 +82,8 @@ test("production has no route and no public URL until the v1 cutover", () => {
 test("production trusts only the real keys and the ZapaKid app", () => {
   assert.equal(production.vars.APPLE_JWKS_URL, undefined);
   assert.equal(production.vars.GOOGLE_JWKS_URL, undefined);
-  assert.deepEqual(appleAudiences(production), ["ro.zapakid.app"]);
+  assert.deepEqual(ids(production.vars.APPLE_BUNDLE_IDS), ["ro.zapakid.app"]);
+  assert.deepEqual(ids(production.vars.APPLE_SERVICES_IDS), []);
   assert.ok(!production.vars.GOOGLE_CLIENT_IDS.includes("local-test"));
   assert.equal(production.d1_databases[0].database_name, "zapakid-api-production");
 });
@@ -89,8 +95,9 @@ test("auth rate limits: staging and production 20 per minute, separate counters 
   assert.equal(new Set(ids).size, 3);
 });
 
-test("staging and production purge expired sessions and nonces daily", () => {
-  for (const env of [staging, production]) assert.deepEqual(env.triggers, { crons: ["17 3 * * *"] });
+test("staging and production purge expired rows hourly", () => {
+  // Hourly (security review 2026-10-27, L7): unauthenticated endpoints add one-time rows, so they go every hour.
+  for (const env of [staging, production]) assert.deepEqual(env.triggers, { crons: ["17 * * * *"] });
 });
 
 // Regression guard: every binding and variable the Worker requires (non-optional fields of Env in src/env.ts)

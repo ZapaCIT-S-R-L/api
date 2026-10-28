@@ -1,7 +1,8 @@
 // The daily cron deletes expired sessions and sign-in nonces, and keeps the live ones.
 import { createScheduledController } from "cloudflare:test";
 import { env } from "cloudflare:workers";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { ONE_TIME_ROW_ALERT } from "../../src/purge";
 import worker from "../../src/index";
 import { count } from "./helpers";
 
@@ -10,7 +11,7 @@ const future = () => new Date(Date.now() + 3_600_000).toISOString();
 const hex = (c: string) => c.repeat(64);
 
 async function runCron() {
-  await worker.scheduled(createScheduledController({ cron: "17 3 * * *" }), env);
+  await worker.scheduled(createScheduledController({ cron: "17 * * * *" }), env);
 }
 
 describe("daily purge", () => {
@@ -166,6 +167,24 @@ describe("daily purge", () => {
     await runCron();
     const rows = await env.DB.prepare("SELECT code_hash FROM connection_invitations").all<{ code_hash: string }>();
     expect(rows.results.map((r) => r.code_hash)).toEqual([hex("8")]);
+  });
+
+  // Regression (security review 2026-10-27, L7): a flood of live one-time rows (nonces, web flows, attestation
+  // challenges) between purges is reported, so it can be alerted on.
+  it("logs an alert when a one-time table holds more than ONE_TIME_ROW_ALERT live rows", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await env.DB.prepare(
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i <= ?)
+       INSERT INTO sign_in_nonces (nonce_hash, created_at, expires_at)
+       SELECT printf('%064x', i), ?, ? FROM n`,
+    )
+      .bind(ONE_TIME_ROW_ALERT, new Date().toISOString(), future())
+      .run();
+    await runCron();
+    const alerts = error.mock.calls.map((c) => String(c[0])).filter((m) => m.includes("one-time rows over the alert"));
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toContain("sign_in_nonces");
+    error.mockRestore();
   });
 
   it("does nothing on an empty database", async () => {

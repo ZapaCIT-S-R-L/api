@@ -89,7 +89,7 @@ export async function handleAppleWebCallback(request: Request, env: Env): Promis
 
   let identity: Identity;
   try {
-    identity = await verifyIdToken("apple", form.get("id_token") ?? "", env);
+    identity = await verifyIdToken("apple", form.get("id_token") ?? "", env, "web");
   } catch (e) {
     if (e instanceof InvalidToken) {
       console.log(JSON.stringify({ msg: "apple web callback rejected", reason: e.message }));

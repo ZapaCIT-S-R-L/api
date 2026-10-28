@@ -15,7 +15,8 @@
     "VERSION": "dev",
     "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/zapakid-api",
     // Local test ids only: the bundle id and a fake Services ID for the web flow tests.
-    "APPLE_AUDIENCES": "ro.zapakid.app,ro.zapakid.signin.local",
+    "APPLE_BUNDLE_IDS": "ro.zapakid.app",
+    "APPLE_SERVICES_IDS": "ro.zapakid.signin.local",
     "APPLE_WEB_REDIRECT_URL": "https://zapakid.ro/app/apple",
     "GOOGLE_CLIENT_IDS": "000000000000-zapakidlocaltest.apps.googleusercontent.com",
     "SESSION_TTL_SECONDS": "2592000",
@@ -60,9 +61,10 @@
       "vars": {
         "VERSION": "dev",
         "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/zapakid-api",
-        // iOS bundle id, then the Services ID of the web flow on Android (return URL
+        // Native sign-in: the iOS bundle id. Web flow (Android) callback: the Services ID (return URL
         // https://api-staging.zapakid.ro/v1/auth/apple/callback registered with Apple).
-        "APPLE_AUDIENCES": "ro.zapakid.app,ro.zapakid.signin",
+        "APPLE_BUNDLE_IDS": "ro.zapakid.app",
+        "APPLE_SERVICES_IDS": "ro.zapakid.signin",
         "APPLE_WEB_REDIRECT_URL": "https://zapakid.ro/app/apple",
         "GOOGLE_CLIENT_IDS": "64042746735-r70nv5pmlro7hpksk1te3ur008ungss1.apps.googleusercontent.com,64042746735-lgdmtj9vvd3kiu7g9qc2elu22la6o1id.apps.googleusercontent.com",
         "SESSION_TTL_SECONDS": "2592000",
@@ -78,8 +80,8 @@
         "CHAT_TOKEN_AUDIENCES": "chat-staging.zapakid.ro,calls-staging.zapakid.ro",
         "CHAT_TOKEN_TTL_SECONDS": "600",
       },
-      // Daily purge of expired sessions and sign-in nonces (src/purge.ts), 03:17 UTC.
-      "triggers": { "crons": ["17 3 * * *"] },
+      // Hourly purge of expired rows (src/purge.ts), at :17.
+      "triggers": { "crons": ["17 * * * *"] },
       "ratelimits": [{ "name": "AUTH_LIMITER", "namespace_id": "2001", "simple": { "limit": 20, "period": 60 } }],
       // EU jurisdiction. scripts/d1-database.js creates it if needed and puts its id in place of this placeholder
       // at deploy time (deploy.yml); the real id is never committed.
@@ -102,8 +104,10 @@
       "vars": {
         "VERSION": "dev",
         "VERSION_URL": "https://github.com/ZapaCIT-S-R-L/zapakid-api",
-        // Add ",ro.zapakid.signin" at cutover, after api.zapakid.ro and its callback URL are registered with Apple.
-        "APPLE_AUDIENCES": "ro.zapakid.app",
+        // APPLE_SERVICES_IDS: set "ro.zapakid.signin" at cutover, after api.zapakid.ro and its callback URL are
+        // registered with Apple. Empty = the Android web flow is off.
+        "APPLE_BUNDLE_IDS": "ro.zapakid.app",
+        "APPLE_SERVICES_IDS": "",
         "APPLE_WEB_REDIRECT_URL": "https://zapakid.ro/app/apple",
         // Empty (Google sign-in off) until the cutover sets the same client ids as staging.
         "GOOGLE_CLIENT_IDS": "",
@@ -120,7 +124,7 @@
         "CHAT_TOKEN_AUDIENCES": "chat.zapakid.ro,calls.zapakid.ro",
         "CHAT_TOKEN_TTL_SECONDS": "600",
       },
-      "triggers": { "crons": ["17 3 * * *"] },
+      "triggers": { "crons": ["17 * * * *"] },
       "ratelimits": [{ "name": "AUTH_LIMITER", "namespace_id": "3001", "simple": { "limit": 20, "period": 60 } }],
       "d1_databases": [
         {

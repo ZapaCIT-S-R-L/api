@@ -9,7 +9,9 @@ const run = Date.now().toString(36);
 describe("pairing, everywhere", () => {
   it("an unknown code → 410", async () => {
     const res = await post("/v1/pairing/redeem", { code: `zkp_${"A".repeat(43)}` });
-    expect(res.status).toBe(410);
+    // Live, attestation runs first: production ("required") refuses a call without it before looking at the code.
+    if (LIVE) expect([403, 410]).toContain(res.status);
+    else expect(res.status).toBe(410);
   });
 
   it("a malformed code → 400", async () => {
