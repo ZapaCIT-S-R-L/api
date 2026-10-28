@@ -491,6 +491,43 @@ describe("DELETE /v1/devices/{id}", () => {
     expect((await register(again.session.token, deviceKeys(identityKey))).status).toBe(201);
   });
 
+  // api #84 review: a device registered while logout-all runs (here: at its DB.batch) is removed too, with its event.
+  it("logout-all?removeDevices=true removes a device registered concurrently, with its device.removed", async () => {
+    const identityKey = ec();
+    const first = await signIn();
+    await register(first.session.token, deviceKeys(identityKey));
+    const late = await signIn();
+    const lateSession = await authenticateToken(late.session.token);
+    const caller = await signIn();
+    const batch = env.DB.batch.bind(env.DB);
+    let registered = false;
+    vi.spyOn(env.DB, "batch").mockImplementation(async (statements) => {
+      if (!registered) {
+        registered = true;
+        const now = new Date().toISOString();
+        expect(await storeDevice(env, lateSession, 2, parsedKeys(deviceKeys(identityKey)), now)).toBe(true);
+      }
+      return batch(statements);
+    });
+    const res = await call("/v1/auth/logout-all?removeDevices=true", {
+      method: "POST",
+      headers: bearer(caller.session.token),
+    });
+    expect(registered).toBe(true);
+    expect(res.status).toBe(204);
+    expect(await count("devices")).toBe(0);
+    const events = await outboxEvents();
+    expect(events.map((e) => [e.type, e.deviceId])).toEqual([
+      ["device.removed", 1],
+      ["device.removed", 2],
+      ["account.sessions_revoked", undefined],
+    ]);
+    expect(new Set(events.map((e) => e.id)).size).toBe(3);
+    for (const e of events)
+      expect(e.id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(events.every((e) => e.accountId === first.parent.id && e.sent)).toBe(true);
+  });
+
   it("logout-all without removeDevices keeps the devices", async () => {
     const a = await signIn();
     await register(a.session.token, deviceKeys());

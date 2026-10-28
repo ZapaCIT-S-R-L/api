@@ -61,6 +61,21 @@ export function sessionsRevokedEvent(env: Env, accountId: string): D1PreparedSta
   ).bind(body, now, accountId);
 }
 
+// The outbox inserts for a device.removed event per device the account has, to put in the batch right before the
+// statement that deletes those devices: the devices are read from the table in the same transaction, so a device
+// registered at any point before the delete gets its event, and one registered after it is not deleted. Each event
+// gets its own random (v4) id in SQL.
+export function devicesRemovedEvents(env: Env, accountId: string): D1PreparedStatement {
+  const now = new Date().toISOString();
+  const body = JSON.stringify({ v: 1, id: "", type: "device.removed", accountId, deviceId: 0, occurredAt: now });
+  const uuid = `lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)), 2) || '-' ||
+    substr('89ab', 1 + (abs(random()) % 4), 1) || substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6)))`;
+  return env.DB.prepare(
+    `INSERT INTO membership_outbox (body, created_at)
+       SELECT json_set(?, '$.id', ${uuid}, '$.deviceId', device_id), ? FROM devices WHERE account_id = ? ORDER BY device_id`,
+  ).bind(body, now, accountId);
+}
+
 // Sends unsent events in order and marks them sent. Returns how many were sent. Never throws: a missing binding or
 // a failing queue leaves the events for the next flush.
 export async function flushMembershipEvents(env: Env): Promise<number> {

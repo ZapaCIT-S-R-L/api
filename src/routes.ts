@@ -4,7 +4,7 @@ import { appleSignIn, googleSignIn, invalid, onlyFields, readJson, readJsonBody,
 import type { Env } from "./env";
 import { empty, error, json } from "./http";
 import { ProviderUnavailable } from "./jwks";
-import { flushMembershipEvents, membershipEvent, sessionsRevokedEvent } from "./membership-events";
+import { devicesRemovedEvents, flushMembershipEvents, sessionsRevokedEvent } from "./membership-events";
 import { checkNonceClaim, consumeNonce, InvalidNonce, issueNonce } from "./nonces";
 import { getParent, setDisplayName, signIn } from "./parents";
 import {
@@ -157,23 +157,13 @@ export async function handleLogoutAll(request: Request, env: Env): Promise<Respo
     throw invalid("removeDevices must be true or false.");
   }
   const parentId = session.parentId;
-  let devices: number[] = [];
-  if (removeDevices === "true") {
-    const rows = await env.DB.prepare("SELECT device_id FROM devices WHERE account_id = ? ORDER BY device_id")
-      .bind(parentId)
-      .all<{ device_id: number }>();
-    devices = rows.results.map((r) => r.device_id);
-  }
+  // One transaction: the device.removed events are read from the device table right before the delete, so every
+  // device the delete removes has its event, including one registered concurrently (api #84 review).
   await env.DB.batch([
     env.DB.prepare("UPDATE parents SET session_epoch = session_epoch + 1 WHERE id = ?").bind(parentId),
     env.DB.prepare("DELETE FROM sessions WHERE parent_id = ?").bind(parentId),
-    ...(devices.length > 0
-      ? [
-          env.DB.prepare(
-            "DELETE FROM devices WHERE account_id = ? AND device_id IN (SELECT value FROM json_each(?))",
-          ).bind(parentId, JSON.stringify(devices)),
-          ...devices.map((deviceId) => membershipEvent(env, { type: "device.removed", accountId: parentId, deviceId })),
-        ]
+    ...(removeDevices === "true"
+      ? [devicesRemovedEvents(env, parentId), env.DB.prepare("DELETE FROM devices WHERE account_id = ?").bind(parentId)]
       : []),
     sessionsRevokedEvent(env, parentId),
   ]);
