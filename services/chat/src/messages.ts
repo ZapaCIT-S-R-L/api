@@ -184,6 +184,7 @@ export async function handleStream(
     "x-chat-account": caller.accountId,
     "x-chat-device": String(caller.deviceId),
     "x-chat-exp": String(caller.exp),
+    "x-chat-sep": String(caller.sep),
   });
   return roomOf(env, conversationId).fetch(new Request("https://room/stream", { headers }));
 }

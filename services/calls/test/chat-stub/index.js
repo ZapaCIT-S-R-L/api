@@ -3,9 +3,11 @@
 //
 // - Worker tests (vitest.config.ts): an auxiliary Miniflare Worker; the tests set members through its own fetch
 //   (the CHAT_STUB binding): PUT /members {conversationId, accountId, role, deviceId}, DELETE /members
-//   {conversationId, accountId}, PUT /down {conversationId} (chat answers with an error for that conversation).
-//   Role "observer" (a kid's parent reading the chat, api #73) is answered like the real service: not a member,
-//   `observer: true`, and left out of every roster.
+//   {conversationId, accountId}, PUT /down {conversationId} (chat answers with an error for that conversation),
+//   PUT /revoked {accountId, epoch} (the account signed out everywhere: tokens with sep < epoch are revoked),
+//   PUT /down-account {accountId} (the revocation check fails for that account). OldChatMembership is the chat
+//   Worker from before revoked() existed (OLD_CHAT binding). Role "observer" (a kid's parent reading the chat,
+//   api #73) is answered like the real service: not a member, `observer: true`, and left out of every roster.
 // - e2e (scripts/check.sh: wrangler dev with a second config, wrangler.jsonc here): the members live in the fake
 //   server of test/e2e/fakes.ts, at FAKE_CHAT_URL, which the Node tests fill over HTTP.
 import { WorkerEntrypoint } from "cloudflare:workers";
@@ -13,6 +15,9 @@ import { WorkerEntrypoint } from "cloudflare:workers";
 // conversationId → Map(accountId → { role, devices })
 const conversations = new Map();
 const down = new Set();
+// accountId → session epoch below which chat tokens are revoked (PUT /revoked); accounts the chat service fails for.
+const epochs = new Map();
+const downAccounts = new Set();
 
 async function membersOf(env, conversationId) {
   if (env.FAKE_CHAT_URL) {
@@ -36,6 +41,21 @@ export class ChatMembership extends WorkerEntrypoint {
     if (me.role === "observer") return { member: false, observer: true, members: [] };
     return { member: true, observer: false, members: members.filter((m) => m.role !== "observer") };
   }
+
+  // services/chat/src/rpc.ts: true when the token's session epoch is below the account's (a logout-all happened).
+  async revoked(accountId, sep) {
+    if (this.env.FAKE_CHAT_URL) return false;
+    if (downAccounts.has(accountId)) throw new Error("chat is down (test)");
+    return sep < (epochs.get(accountId) ?? 0);
+  }
+}
+
+// A chat Worker from before api #81: ChatMembership without revoked(). The tests reach it as OLD_CHAT
+// (vitest.config.ts) to check calls deployed before chat refuses with a retryable 503 and never lets a token through.
+export class OldChatMembership extends WorkerEntrypoint {
+  async member(conversationId, accountId) {
+    return new ChatMembership(this.ctx, this.env).member(conversationId, accountId);
+  }
 }
 
 export default {
@@ -56,6 +76,14 @@ export default {
     }
     if (url.pathname === "/down" && request.method === "PUT") {
       down.add(body.conversationId);
+      return new Response(null, { status: 204 });
+    }
+    if (url.pathname === "/revoked" && request.method === "PUT") {
+      epochs.set(body.accountId, body.epoch);
+      return new Response(null, { status: 204 });
+    }
+    if (url.pathname === "/down-account" && request.method === "PUT") {
+      downAccounts.add(body.accountId);
       return new Response(null, { status: 204 });
     }
     return new Response("not found", { status: 404 });

@@ -1,10 +1,11 @@
 // ZapaKid calls Worker (calls.zapakid.ro). It sets up voice calls on Cloudflare Realtime and relays sealed call keys
 // between phones; the audio is encrypted on the phones and no key ever reaches this service.
 import { routeCalls } from "./calls";
+import { consumeConversationEvents } from "./conversation-events";
 import type { Env } from "./env";
 import { handleHealth } from "./health";
 import { error } from "./http";
-import { purgeCallLog } from "./purge";
+import { purgeCallLog, purgeProcessedEvents } from "./purge";
 
 export { CallRoom } from "./call-room";
 
@@ -24,7 +25,13 @@ export default {
     }
   },
 
+  // Conversation events from the chat service (wrangler.jsonc queues.consumers): members removed, conversation closed.
+  async queue(batch, env): Promise<void> {
+    await consumeConversationEvents(batch, env);
+  },
+
   async scheduled(_controller, env): Promise<void> {
     await purgeCallLog(env);
+    await purgeProcessedEvents(env);
   },
 } satisfies ExportedHandler<Env>;

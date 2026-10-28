@@ -9,6 +9,7 @@ import {
 } from "./attachments";
 import { authenticate, type Caller } from "./auth";
 import { readJson } from "./body";
+import { flushConversationEvents, purgeConversationOutbox } from "./conversation-events";
 import { handleContacts, handleCreate, handleDelete, handleGet, handleList } from "./conversations";
 import type { Env } from "./env";
 import { handleHealth } from "./health";
@@ -129,6 +130,8 @@ export default {
   },
 
   async scheduled(_controller, env): Promise<void> {
+    await flushConversationEvents(env);
+    await purgeConversationOutbox(env);
     await purgeProcessedEvents(env);
     await purgeAbandonedAttachments(env);
   },

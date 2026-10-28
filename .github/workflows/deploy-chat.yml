@@ -5,6 +5,8 @@
 # default, minor with the `minor` label, major with the `major` label. The release gets an SBOM (CycloneDX).
 # Resources (D1 database and R2 bucket in the EU jurisdiction, membership queues) are created if missing; D1
 # migrations run before the deploy and are not rolled back: every migration must work with the previous Worker.
+# Deploy order: chat before calls. deploy-calls.yml waits until this Worker lists the ChatMembership methods calls
+# uses on /health (`rpc`), so a merge touching both deploys chat first; never remove a method calls still uses.
 # Credentials: the same GitHub environments as the account API (`staging`, `production`):
 #   secret:   CLOUDFLARE_API_TOKEN (permissions: see services/chat/README.md, "Deploying")
 #   variable: CLOUDFLARE_ACCOUNT_ID

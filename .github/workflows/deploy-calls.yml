@@ -3,6 +3,11 @@
 # environment. Each stage rolls back to the previous Worker version if its end-to-end tests fail.
 # The version is `calls-` + the first 12 hex digits of the commit (the vX.Y.Z tags belong to the account API).
 # D1 migrations run before the deploy and are not rolled back: every migration must work with the previous Worker.
+# Resources (the EU D1 database, the conversation events queues from the chat service) are created if missing.
+# Deploy order: chat before calls. Calls calls the chat Worker's ChatMembership RPC (member, revoked) on every request
+# and refuses with 503 when a method is missing, so each stage first waits (up to 30 minutes) until the chat Worker
+# of the same environment lists those methods on /health (scripts/wait-for-rpc.js); deploy-chat.yml runs on the same
+# merge. If chat isn't there in time, the stage fails before it changes anything: deploy chat, then re-run this.
 # Credentials: the same GitHub environments as the API (`staging`, `production`): secret CLOUDFLARE_API_TOKEN,
 # variable CLOUDFLARE_ACCOUNT_ID. The Worker's own secrets come from bootstrap-secrets.yml.
 name: deploy-calls
@@ -14,6 +19,10 @@ on:
       - services/calls/**
       - .github/workflows/deploy-calls.yml
   workflow_dispatch:
+
+# The ChatMembership methods services/calls/src/chat.ts calls; the chat Worker must serve them before calls deploys.
+env:
+  CHAT_RPC: member revoked
 
 permissions:
   contents: read
@@ -29,7 +38,7 @@ defaults:
 jobs:
   staging:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 50
     environment:
       name: staging
       url: https://calls-staging.zapakid.ro/health
@@ -61,11 +70,16 @@ jobs:
         id: version
         run: echo "version=${VERSION:0:18}" >> "$GITHUB_OUTPUT"
 
-      - name: D1 database (EU) and migrations
+      - name: Wait for a compatible chat Worker (staging)
+        run: |
+          # shellcheck disable=SC2086 # one argument per method
+          node ../../scripts/wait-for-rpc.js https://chat-staging.zapakid.ro $CHAT_RPC
+
+      - name: D1 database (EU), queues and migrations
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          node scripts/d1-database.js staging
+          node scripts/resources.js staging
           npx wrangler d1 migrations apply DB --env staging --remote
 
       - name: Deploy
@@ -111,7 +125,7 @@ jobs:
   production:
     needs: staging
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 50
     # Needs @stefan-zpc's approval (environment protection rule).
     environment:
       name: production
@@ -127,11 +141,16 @@ jobs:
       - run: npm ci --ignore-scripts
       - run: npx wrangler deploy --dry-run --env production --outdir dist
 
-      - name: D1 database (EU) and migrations
+      - name: Wait for a compatible chat Worker (production)
+        run: |
+          # shellcheck disable=SC2086 # one argument per method
+          node ../../scripts/wait-for-rpc.js https://chat.zapakid.ro $CHAT_RPC
+
+      - name: D1 database (EU), queues and migrations
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
         run: |
-          node scripts/d1-database.js production
+          node scripts/resources.js production
           npx wrangler d1 migrations apply DB --env production --remote
 
       - name: Deploy

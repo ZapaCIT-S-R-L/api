@@ -33,7 +33,15 @@ describe("authenticate", () => {
       deviceId: 7,
       role: "parent",
       scopes: ["family:f1", "connection:k2"],
+      sep: 0,
     });
+  });
+
+  // api #81: the session epoch claim, which the chat service compares with the account's current one.
+  it("reads the sep claim (0 when missing); a malformed one is invalid", async () => {
+    expect((await check(await issuer.sign(chatClaims({ sep: 3 })))).sep).toBe(3);
+    expect((await check(await issuer.sign(chatClaims()))).sep).toBe(0);
+    for (const sep of [-1, 1.5, "1", null]) await rejects(await issuer.sign(chatClaims({ sep })), /sep/);
   });
 
   it("accepts a kid's token", async () => {

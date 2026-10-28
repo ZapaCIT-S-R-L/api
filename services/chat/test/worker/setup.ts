@@ -15,8 +15,11 @@ const TABLES = [
   "connections",
   "shared_kids",
   "devices",
+  "session_epochs",
+  "device_tombstones",
   "processed_events",
   "kid_oversight",
+  "conversation_outbox",
 ];
 
 beforeEach(async () => {

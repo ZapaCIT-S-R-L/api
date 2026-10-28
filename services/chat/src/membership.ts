@@ -26,11 +26,26 @@ export type MembershipEvent = { v: 1; id: string; occurredAt: string } & (
     }
   | { type: "device.removed"; accountId: string; deviceId: number }
   | { type: "account.deleted"; accountId: string }
+  // The account signed out everywhere (api #81): chat tokens with a `sep` claim below `epoch` are refused.
+  | { type: "account.sessions_revoked"; accountId: string; epoch: number }
 );
 
 export class MalformedEvent extends Error {}
 
+const MAX_EPOCH = Number.MAX_SAFE_INTEGER;
+const isEpoch = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= MAX_EPOCH;
+
+// The epoch before which an account's chat tokens are revoked: 0 until its first logout-all.
+export async function revokedBefore(env: Env, accountId: string): Promise<number> {
+  const epoch = await env.DB.prepare("SELECT epoch FROM session_epochs WHERE account_id = ?1")
+    .bind(accountId)
+    .first<number>("epoch");
+  return epoch ?? 0;
+}
+
 const str = (v: unknown, re = ID): v is string => typeof v === "string" && re.test(v);
+// Device events are ordered by it (api #90).
+const dated = (e: Record<string, unknown>) => !Number.isNaN(Date.parse(e.occurredAt as string));
 
 // The event, null for an unknown type (ignored: newer producer), or MalformedEvent.
 export function parseEvent(value: unknown): MembershipEvent | null {
@@ -72,12 +87,20 @@ export function parseEvent(value: unknown): MembershipEvent | null {
           typeof push.token === "string" &&
           push.token.length > 0 &&
           push.token.length <= 4096);
-      return ok(str(e.accountId, ACCOUNT_ID) && isDeviceId(e.deviceId) && isRegistrationId(e.registrationId) && pushOk);
+      return ok(
+        dated(e) &&
+          str(e.accountId, ACCOUNT_ID) &&
+          isDeviceId(e.deviceId) &&
+          isRegistrationId(e.registrationId) &&
+          pushOk,
+      );
     }
     case "device.removed":
-      return ok(str(e.accountId, ACCOUNT_ID) && isDeviceId(e.deviceId));
+      return ok(dated(e) && str(e.accountId, ACCOUNT_ID) && isDeviceId(e.deviceId));
     case "account.deleted":
       return ok(str(e.accountId, ACCOUNT_ID));
+    case "account.sessions_revoked":
+      return ok(str(e.accountId, ACCOUNT_ID) && isEpoch(e.epoch));
     default:
       return null;
   }
@@ -165,12 +188,19 @@ export async function applyEvent(env: Env, rooms: Rooms, event: MembershipEvent)
         .run();
       await reconcileAll(env, rooms, await conversationsOf(env, [event.kidAccountId]));
       return;
+    // Device events are ordered by occurredAt (api #90): an upsert older than the change that last wrote the row, or
+    // at or before the newest event seen for the device when it was last removed (its tombstone), is ignored, so a late
+    // or backfilled upsert can't bring back a removed device. A removal always applies.
     case "device.upserted": {
-      await db
+      const at = Date.parse(event.occurredAt);
+      const { meta } = await db
         .prepare(
-          `INSERT INTO devices (account_id, device_id, registration_id, push_provider, push_token)
-           VALUES (?1, ?2, ?3, ?4, ?5)
-           ON CONFLICT (account_id, device_id) DO UPDATE SET registration_id = ?3, push_provider = ?4, push_token = ?5`,
+          `INSERT INTO devices (account_id, device_id, registration_id, push_provider, push_token, occurred_at)
+           SELECT ?1, ?2, ?3, ?4, ?5, ?6 WHERE NOT EXISTS (
+             SELECT 1 FROM device_tombstones WHERE account_id = ?1 AND device_id = ?2 AND last_seen_at >= ?6)
+           ON CONFLICT (account_id, device_id) DO UPDATE
+             SET registration_id = ?3, push_provider = ?4, push_token = ?5, occurred_at = ?6
+             WHERE devices.occurred_at <= ?6`,
         )
         .bind(
           event.accountId,
@@ -178,16 +208,29 @@ export async function applyEvent(env: Env, rooms: Rooms, event: MembershipEvent)
           event.registrationId,
           event.push?.provider ?? null,
           event.push?.token ?? null,
+          at,
         )
         .run();
+      if (meta.changes === 0) return;
       for (const id of await conversationsOf(env, [event.accountId])) await rooms.notify(id, "devices_changed", []);
       return;
     }
     case "device.removed": {
-      await db
-        .prepare("DELETE FROM devices WHERE account_id = ?1 AND device_id = ?2")
-        .bind(event.accountId, event.deviceId)
-        .run();
+      await db.batch([
+        db
+          .prepare(
+            // The tombstone keeps the removed row's timestamp when it is newer than the removal: an upsert between
+            // the two must not bring the device back either.
+            `INSERT INTO device_tombstones (account_id, device_id, last_seen_at)
+             SELECT ?1, ?2, max(?3, coalesce(
+               (SELECT occurred_at FROM devices WHERE account_id = ?1 AND device_id = ?2), 0)) WHERE true
+             ON CONFLICT (account_id, device_id) DO UPDATE SET last_seen_at = max(last_seen_at, excluded.last_seen_at)`,
+          )
+          .bind(event.accountId, event.deviceId, Date.parse(event.occurredAt)),
+        db
+          .prepare("DELETE FROM devices WHERE account_id = ?1 AND device_id = ?2")
+          .bind(event.accountId, event.deviceId),
+      ]);
       for (const id of await conversationsOf(env, [event.accountId])) {
         await rooms.forgetDevice(id, event.accountId, event.deviceId);
         await rooms.notify(id, "devices_changed", []);
@@ -201,8 +244,25 @@ export async function applyEvent(env: Env, rooms: Rooms, event: MembershipEvent)
         db.prepare("DELETE FROM shared_kids WHERE kid_account_id = ?1").bind(event.accountId),
         db.prepare("DELETE FROM devices WHERE account_id = ?1").bind(event.accountId),
         db.prepare("DELETE FROM kid_oversight WHERE kid_account_id = ?1").bind(event.accountId),
+        db.prepare("DELETE FROM session_epochs WHERE account_id = ?1").bind(event.accountId),
       ]);
       await reconcileAll(env, rooms, affected);
+      return;
+    }
+    case "account.sessions_revoked": {
+      // Epochs only grow (events may arrive out of order): keep the highest, then close the streams opened with
+      // tokens from before it. Requests with such tokens are refused from now on (src/auth.ts).
+      await db
+        .prepare(
+          `INSERT INTO session_epochs (account_id, epoch) VALUES (?1, ?2)
+           ON CONFLICT (account_id) DO UPDATE SET epoch = max(epoch, excluded.epoch)`,
+        )
+        .bind(event.accountId, event.epoch)
+        .run();
+      const epoch = await revokedBefore(env, event.accountId);
+      for (const id of await conversationsOf(env, [event.accountId])) {
+        await rooms.revokeSessions(id, event.accountId, epoch);
+      }
       return;
     }
   }

@@ -8,6 +8,15 @@ import type { Env } from "./env";
 export type MembershipEvent = { v: 1; id: string; occurredAt: string } & (
   | { type: "family.member_added"; familyId: string; accountId: string; role: "parent" | "kid" }
   | { type: "family.member_removed"; familyId: string; accountId: string }
+  // POST /v1/auth/logout-all: chat tokens with a `sep` claim below `epoch` are revoked (api #81).
+  | { type: "account.sessions_revoked"; accountId: string; epoch: number }
+  | { type: "connection.created"; connectionId: string; familyIds: [string, string] }
+  | { type: "connection.removed"; connectionId: string }
+  | { type: "connection.kid_shared"; connectionId: string; kidAccountId: string }
+  | { type: "connection.kid_unshared"; connectionId: string; kidAccountId: string }
+  | { type: "device.upserted"; accountId: string; deviceId: number; registrationId: number }
+  | { type: "device.removed"; accountId: string; deviceId: number }
+  | { type: "account.deleted"; accountId: string }
 );
 
 type EventData = MembershipEvent extends infer E
@@ -34,6 +43,40 @@ export function membershipEvent(
     now,
     ...(onlyIf?.binds ?? []),
   );
+}
+
+// The outbox insert for an account.sessions_revoked event, to put in the batch right after the statement that
+// increments parents.session_epoch: `epoch` is read from the row in the same transaction, so the event always
+// carries the epoch the increment produced.
+export function sessionsRevokedEvent(env: Env, accountId: string): D1PreparedStatement {
+  const now = new Date().toISOString();
+  const body = JSON.stringify({
+    v: 1,
+    id: crypto.randomUUID(),
+    type: "account.sessions_revoked",
+    accountId,
+    epoch: 0,
+    occurredAt: now,
+  });
+  return env.DB.prepare(
+    "INSERT INTO membership_outbox (body, created_at) SELECT json_set(?, '$.epoch', session_epoch), ? FROM parents WHERE id = ?",
+  ).bind(body, now, accountId);
+}
+
+// A random UUID (version 4) in SQL, evaluated per row, for events written by INSERT ... SELECT.
+const UUID_SQL = `lower(hex(randomblob(4)) || '-' || hex(randomblob(2)) || '-4' || substr(hex(randomblob(2)), 2) || '-' ||
+  substr('89ab', 1 + (abs(random()) % 4), 1) || substr(hex(randomblob(2)), 2) || '-' || hex(randomblob(6)))`;
+
+// A device.removed event for every device row matching `where` (SQL over the devices table, with its binds), to put
+// in the batch right before the statement that deletes those devices. One event per device, in device order.
+export function deviceRemovedEvents(env: Env, where: string, binds: unknown[]): D1PreparedStatement {
+  const now = new Date().toISOString();
+  return env.DB.prepare(
+    `INSERT INTO membership_outbox (body, created_at)
+     SELECT json_object('v', 1, 'id', ${UUID_SQL}, 'type', 'device.removed', 'accountId', account_id,
+       'deviceId', device_id, 'occurredAt', ?1), ?1
+     FROM devices WHERE ${where} ORDER BY account_id, device_id`,
+  ).bind(now, ...binds);
 }
 
 // Sends unsent events in order and marks them sent. Returns how many were sent. Never throws: a missing binding or

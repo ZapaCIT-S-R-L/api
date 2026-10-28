@@ -48,6 +48,23 @@ describe.skipIf(LIVE)("pair a kid's phone (local only)", () => {
     );
     const again = await post("/v1/pairing/redeem", { code: second.code });
     expect(again.status).toBe(200);
-    expect((await bodyOf<{ kid: { id: string } }>(again)).kid.id).toBe(kid.id);
+    const secondPhone = await bodyOf<{ session: { token: string }; kid: { id: string } }>(again);
+    expect(secondPhone.kid.id).toBe(kid.id);
+    const secondAuth = { authorization: `Bearer ${secondPhone.session.token}` };
+
+    // api #78: the parent sees both phones and unpairs the first; the second signs itself out.
+    const sessionsPath = `/v1/families/${family.id}/kids/${kid.id}/sessions`;
+    const listed = await api(sessionsPath, { headers: ana.auth });
+    expect(listed.status).toBe(200);
+    const { sessions } = await bodyOf<{ sessions: { id: string }[] }>(listed);
+    expect(sessions).toHaveLength(2);
+    expect((await api(`${sessionsPath}/${sessions[0]?.id}`, { method: "DELETE", headers: ana.auth })).status).toBe(204);
+    expect((await api("/v1/families", { headers: kidAuth })).status).toBe(401);
+    expect((await api("/v1/families", { headers: secondAuth })).status).toBe(200);
+    expect((await api("/v1/kid/logout", { method: "POST", headers: secondAuth })).status).toBe(204);
+    expect((await api("/v1/families", { headers: secondAuth })).status).toBe(401);
+    expect((await bodyOf<{ sessions: unknown[] }>(await api(sessionsPath, { headers: ana.auth }))).sessions).toEqual(
+      [],
+    );
   });
 });

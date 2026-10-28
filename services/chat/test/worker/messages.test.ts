@@ -274,9 +274,16 @@ describe("retention of delivery copies", () => {
 });
 
 describe("GET /v1/conversations/{id}/stream", () => {
-  async function connect(c: ConversationBody, account: string, lifetime = 600) {
+  async function connect(c: ConversationBody, account: string, lifetime = 600, sep?: number) {
     const token = await issuer.sign(
-      { iss: "http://localhost:8787", aud: "chat.localhost", sub: account, dev: 1, role: "parent" },
+      {
+        iss: "http://localhost:8787",
+        aud: "chat.localhost",
+        sub: account,
+        dev: 1,
+        role: "parent",
+        ...(sep === undefined ? {} : { sep }),
+      },
       { lifetime },
     );
     const res = await as(token, `/v1/conversations/${c.id}/stream`, { headers: { upgrade: "websocket" } });
@@ -331,6 +338,35 @@ describe("GET /v1/conversations/{id}/stream", () => {
     expect(dad.closed).toEqual([{ code: 4403 }]);
     expect(mum.frames.map((f) => f.event?.kind)).toContain("members_changed");
     mum.ws.close();
+  });
+
+  // api #81: a lost phone's open stream is closed when the parent signs out everywhere.
+  it("account.sessions_revoked closes the streams opened with older tokens (4401), not newer ones", async () => {
+    const c = await conversation(MUM, [ALEX]);
+    const lost = await connect(c, MUM, 600, 1);
+    const noSep = await connect(c, MUM, 600);
+    const alex = await connect(c, ALEX, 600, 1);
+    // A second phone of Mum that already signed in again (its token carries the new epoch).
+    const fresh = await connect(c, MUM, 600, 2);
+    await applyEvent(env, durableRooms(env), event({ type: "account.sessions_revoked", accountId: MUM, epoch: 2 }));
+    await settle();
+    expect(lost.closed).toEqual([{ code: 4401 }]);
+    expect(noSep.closed).toEqual([{ code: 4401 }]);
+    expect(fresh.closed).toEqual([]);
+    expect(alex.closed).toEqual([]);
+    // Queued copies stay for the account's phones once they sign in again (a token without sep is revoked now).
+    await send(c, ALEX, { messageId: crypto.randomUUID(), envelopes: envelopesFor(c, ALEX) });
+    expect((await as(await tok(MUM), `/v1/conversations/${c.id}/messages`)).status).toBe(401);
+    expect((await roomOf(env, c.id).queued(c.id, MUM, 1)).envelopes.length).toBeGreaterThan(0);
+    // The lost phone can't reconnect with its old token.
+    const token = await issuer.sign(
+      { iss: "http://localhost:8787", aud: "chat.localhost", sub: MUM, dev: 1, role: "parent", sep: 1 },
+      { lifetime: 600 },
+    );
+    const res = await as(token, `/v1/conversations/${c.id}/stream`, { headers: { upgrade: "websocket" } });
+    expect(res.status).toBe(401);
+    fresh.ws.close();
+    alex.ws.close();
   });
 
   it("the stream closes (4401) once the chat token expired", async () => {

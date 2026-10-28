@@ -49,6 +49,16 @@ export function chatDown(conversationId: string): Promise<void> {
   return chatStub("PUT", "/down", { conversationId });
 }
 
+// The account signed out everywhere (api #81): the chat service now revokes its tokens with sep below `epoch`.
+export function revokeSessions(accountId: string, epoch: number): Promise<void> {
+  return chatStub("PUT", "/revoked", { accountId, epoch });
+}
+
+// The chat service's revocation check fails for this account (an outage).
+export function chatDownForAccount(accountId: string): Promise<void> {
+  return chatStub("PUT", "/down-account", { accountId });
+}
+
 // A phone whose account the chat service lists as a member of `conversations` (unless `member` is false). Its
 // token's `conv` claim holds membership scopes, as the account API issues it, not the conversation ids.
 export async function phone(
@@ -57,7 +67,7 @@ export async function phone(
   deviceId = 1,
   conversations = ["conv-1"],
   role: StubRole = "parent",
-  { member = true, conv }: { member?: boolean; conv?: string[] } = {},
+  { member = true, conv, sep }: { member?: boolean; conv?: string[]; sep?: number } = {},
 ): Promise<Phone> {
   if (member) for (const c of conversations) await addMember(c, accountId, deviceId, role);
   const token = await issuer.sign(
@@ -67,6 +77,7 @@ export async function phone(
       dev: deviceId,
       role: role === "observer" ? "parent" : role,
       ...(conv === undefined ? {} : { conv }),
+      ...(sep === undefined ? {} : { sep }),
     }),
   );
   const request = (method: string, path: string, body?: unknown) =>

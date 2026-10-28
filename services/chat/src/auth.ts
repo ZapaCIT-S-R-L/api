@@ -5,6 +5,7 @@ import type { Env } from "./env";
 import { HttpError } from "./http";
 import { ACCOUNT_ID } from "./body";
 import { allowedJwksUrl, getJwks, KeysUnavailable } from "./jwks";
+import { revokedBefore } from "./membership";
 
 export const MAX_TOKEN_SECONDS = 15 * 60;
 const CLOCK_SKEW_SECONDS = 30;
@@ -15,6 +16,9 @@ export interface Caller {
   role: "parent" | "kid";
   // Token expiry (seconds since the epoch): a stream is closed then.
   exp: number;
+  // The account's session epoch when the token was issued (`sep`; 0 if the claim is missing). The account service
+  // increments it on logout-all (api #81); tokens from before the current epoch are refused.
+  sep: number;
 }
 
 const unauthorized = (message: string) =>
@@ -52,7 +56,7 @@ export async function authenticate(request: Request, env: Env): Promise<Caller> 
     if (e instanceof errors.JOSEError) throw unauthorized("Invalid or expired chat token.");
     throw e;
   }
-  const { sub, dev, role, iat, exp } = payload;
+  const { sub, dev, role, iat, exp, sep } = payload;
   if (typeof iat !== "number" || typeof exp !== "number" || exp - iat > MAX_TOKEN_SECONDS) {
     throw unauthorized("A chat token may live at most 15 minutes.");
   }
@@ -63,5 +67,12 @@ export async function authenticate(request: Request, env: Env): Promise<Caller> 
     throw unauthorized("Invalid dev claim.");
   }
   if (role !== "parent" && role !== "kid") throw unauthorized("Invalid role claim.");
-  return { accountId: sub, deviceId, role, exp };
+  if (sep !== undefined && (typeof sep !== "number" || !Number.isInteger(sep) || sep < 0)) {
+    throw unauthorized("Invalid sep claim.");
+  }
+  const epoch = sep ?? 0;
+  if (epoch < (await revokedBefore(env, sub))) {
+    throw unauthorized("This chat token was revoked (signed out everywhere). Sign in again.");
+  }
+  return { accountId: sub, deviceId, role, exp, sep: epoch };
 }

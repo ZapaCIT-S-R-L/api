@@ -5,10 +5,21 @@ import type { Env } from "./env";
 import { safeUrl } from "./urls";
 
 const TIMEOUT_MS = 10_000;
+const TRANSIENT = new Set([408, 425, 429]);
 
-export class RealtimeUnavailable extends Error {}
+// Realtime could not be reached, failed, or asked us to slow down: worth retrying later, not before `retryAfterMs`
+// when Realtime said when (Retry-After).
+export class RealtimeUnavailable extends Error {
+  constructor(
+    message: string,
+    readonly retryAfterMs = 0,
+  ) {
+    super(message);
+  }
+}
 
-// Realtime refused the request (4xx): its errorCode/errorDescription, passed on to the phone.
+// Realtime refused the request (a 4xx that a retry would not change): its errorCode/errorDescription, passed on to
+// the phone.
 export class RealtimeRejected extends Error {
   constructor(
     readonly upstreamStatus: number,
@@ -37,6 +48,14 @@ async function send(url: string, secret: string, method: string, body: unknown):
   }
 }
 
+// Retry-After (RFC 9110 10.2.3): delay-seconds or an HTTP date. 0 when missing or unreadable.
+export function retryAfterMs(value: string | null, now = Date.now()): number {
+  const v = value?.trim() ?? "";
+  if (/^\d+$/.test(v)) return Number(v) * 1000;
+  const at = v === "" ? NaN : Date.parse(v);
+  return Number.isNaN(at) ? 0 : Math.max(0, at - now);
+}
+
 // One SFU API call for the app: `path` is below /apps/{appId}. Returns the JSON body of a 2xx answer.
 export async function sfu(env: Env, method: "GET" | "POST" | "PUT", path: string, body?: unknown): Promise<unknown> {
   const appId = env.REALTIME_APP_ID;
@@ -44,9 +63,9 @@ export async function sfu(env: Env, method: "GET" | "POST" | "PUT", path: string
   if (!appId || !secret) throw new RealtimeUnavailable("Realtime app credentials not set");
   const res = await send(`${base(env)}/apps/${encodeURIComponent(appId)}${path}`, secret, method, body);
   const json: unknown = await res.json().catch(() => null);
-  if (res.status >= 500 || res.status === 401 || res.status === 403) {
-    // 401/403: our app secret is wrong, not the phone's fault.
-    throw new RealtimeUnavailable(`Realtime answered ${res.status}`);
+  if (res.status >= 500 || res.status === 401 || res.status === 403 || TRANSIENT.has(res.status)) {
+    // 401/403: our app secret is wrong, not the phone's fault. 408/425/429: a timeout or rate limit, not a refusal.
+    throw new RealtimeUnavailable(`Realtime answered ${res.status}`, retryAfterMs(res.headers.get("retry-after")));
   }
   if (!res.ok) {
     const description = (json as { errorDescription?: unknown } | null)?.errorDescription;
@@ -92,4 +111,26 @@ export async function iceServers(env: Env, ttlSeconds: number): Promise<IceServe
     console.error(JSON.stringify({ msg: "turn unavailable, STUN only", err: String(e) }));
     return STUN_ONLY;
   }
+}
+
+const midOf = (track: unknown): string | null => {
+  if (typeof track !== "object" || track === null) return null;
+  const mid = (track as { mid?: unknown }).mid;
+  return typeof mid === "string" && mid.length > 0 ? mid : null;
+};
+
+// Closes every track of an SFU session, the published ones and the pulled ones, without renegotiation: for a device
+// dropped from a call. The SFU stops forwarding its audio and stops feeding it the others'. Realtime has no "delete
+// session"; an empty session ends when the phone drops it. Returns how many tracks were closed.
+export async function closeSession(env: Env, sessionId: string): Promise<number> {
+  const session = encodeURIComponent(sessionId);
+  const state = (await sfu(env, "GET", `/sessions/${session}`)) as { tracks?: unknown };
+  const tracks: unknown[] = Array.isArray(state.tracks) ? state.tracks : [];
+  const mids = tracks.flatMap((t) => {
+    const mid = midOf(t);
+    return mid === null ? [] : [{ mid }];
+  });
+  if (mids.length === 0) return 0;
+  await sfu(env, "PUT", `/sessions/${session}/tracks/close`, { tracks: mids, force: true });
+  return mids.length;
 }
