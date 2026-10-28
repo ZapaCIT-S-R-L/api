@@ -8,7 +8,7 @@ info:
     public keys, ciphertext and the metadata it needs to route messages. It can never decrypt a chat, and it has no
     cryptography of its own beyond verifying Apple and Google sign-in tokens and hashing session tokens.
 
-    **Stability.** Endpoints tagged `Health`, `Sign-in`, `Account` and `Chat tokens` are stable: the apps build against them and
+    **Stability.** Endpoints tagged `Health`, `Sign-in`, `Account`, `Families` and `Chat tokens` are stable: the apps build against them and
     they only change in a backward-compatible way. Every endpoint tagged `Draft: ...` (and marked `x-status: draft`)
     is a plan, not implemented yet, and will change.
 
@@ -82,8 +82,10 @@ tags:
       iOS registers an Apple App Attest key once (`/v1/attestation/challenge`, `/v1/attestation/apple`), then signs
       each sign-in with an assertion in the `ZapaKid-Attestation` header (see `Sign-in`). Android needs no
       registration (Play Integrity). Required on sign-in from launch (decided 2026-10-26).
-  - name: "Draft: Families"
-    description: Planned. A family has one or more parents and the kids they add.
+  - name: Families
+    description: |
+      A family has one or more parents and the kids they add. A parent belongs to one family (v1). Only members see
+      a family; to anyone else it doesn't exist (`404`).
   - name: "Draft: Kids"
     description: Planned. A parent adds a kid and pairs the kid's phone by showing a QR code.
   - name: "Draft: Connections"
@@ -481,45 +483,164 @@ paths:
         "403": { $ref: "#/components/responses/AttestationFailed" }
         "429": { $ref: "#/components/responses/RateLimited" }
 
-  # ---------------------------------------------------------------------------------------------------------------
-  # Draft endpoints below: planned, not implemented, will change.
-  # ---------------------------------------------------------------------------------------------------------------
-
   /v1/families:
     post:
-      tags: ["Draft: Families"]
+      tags: [Families]
       operationId: createFamily
-      x-status: draft
-      summary: Create a family; the caller becomes its first parent.
+      summary: The caller's family; created on first call.
+      description: |
+        The app calls this right after every sign-in, unless the parent is joining a family with an invitation code.
+        The first call creates the family with the caller as its first parent (`201`). Later calls return the
+        existing family (`200`) and ignore `name`. A parent belongs to one family.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                name:
+                  type: [string, "null"]
+                  minLength: 1
+                  maxLength: 60
+                  description: Shown to the family's members only. Trimmed; one line.
       responses:
-        "201": { description: "Created." }
+        "200":
+          description: The caller already had a family. Nothing changed.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Family" }
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Family" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
     get:
-      tags: ["Draft: Families"]
+      tags: [Families]
       operationId: listFamilies
-      x-status: draft
-      summary: The families the caller belongs to.
+      summary: The families the caller belongs to (none or one in v1).
       responses:
-        "200": { description: "Families with their parents and kids." }
+        "200":
+          description: Families with their parents and kids.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [families]
+                properties:
+                  families: { type: array, maxItems: 1, items: { $ref: "#/components/schemas/Family" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
 
   /v1/families/{familyId}/parents/invitations:
     post:
-      tags: ["Draft: Families"]
+      tags: [Families]
       operationId: inviteCoParent
-      x-status: draft
-      summary: Invite another parent into the family (QR, link or email).
+      summary: A one-time code that lets another parent join the family.
+      description: |
+        Show it as a QR code or share it as a link (`https://zapakid.ro/join#<code>`; the fragment never reaches a
+        server log). Valid for 72 hours, single use. At most 5 open invitations per family. Only the SHA-256 of the
+        code is stored. Invitations by email come later. A non-member gets `404`.
       parameters: [{ $ref: "#/components/parameters/familyId" }]
       responses:
-        "201": { description: "Invitation created." }
+        "201":
+          description: Invitation created.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code, expiresAt]
+                properties:
+                  code: { $ref: "#/components/schemas/InvitationCode" }
+                  expiresAt: { type: string, format: date-time }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "429":
+          description: "`too_many_invitations`: 5 invitations are still open. Wait until one is used or expires."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/families/join:
+    post:
+      tags: [Families]
+      operationId: joinFamily
+      summary: Join a family with an invitation code (the second parent).
+      description: |
+        Uses up the code. A parent who is alone in a family without kids (for example, one who already called
+        `POST /v1/families`) moves over, and the empty family is deleted. A parent whose family has kids or another
+        parent gets `409 already_in_family`, and the code stays unused. Repeating the call (already a member) returns
+        the family again.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              additionalProperties: false
+              properties:
+                code: { $ref: "#/components/schemas/InvitationCode" }
+      responses:
+        "200":
+          description: Joined; the family.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Family" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: "`already_in_family`: the caller's own family has kids or another parent."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "410":
+          description: "`invitation_invalid`: the code is unknown, expired or already used. Ask for a new one."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
 
   /v1/families/{familyId}/kids:
     post:
-      tags: ["Draft: Kids"]
+      tags: [Families]
       operationId: addKid
-      x-status: draft
-      summary: Add a kid (nickname and avatar only).
+      summary: Add a kid (nickname, avatar, grade; nothing else).
+      description: |
+        Any parent of the family may add kids, at most 12 per family. A kid has no real name, birthday or photo on
+        the server. Pair the kid's phone afterwards. A non-member gets `404`.
       parameters: [{ $ref: "#/components/parameters/familyId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [nickname, avatar]
+              additionalProperties: false
+              properties:
+                nickname: { type: string, minLength: 1, maxLength: 40, description: Trimmed; one line. }
+                avatar: { $ref: "#/components/schemas/Avatar" }
+                grade: { $ref: "#/components/schemas/Grade" }
       responses:
-        "201": { description: "Created." }
+        "201":
+          description: Created.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Kid" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`too_many_kids`: the family already has 12 kids."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  # ---------------------------------------------------------------------------------------------------------------
+  # Draft endpoints below: planned, not implemented, will change.
+  # ---------------------------------------------------------------------------------------------------------------
 
   /v1/families/{familyId}/kids/{kidId}/pairing:
     post:
@@ -810,6 +931,11 @@ components:
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
+    NotFound:
+      description: "`not_found`: no such resource, or the caller isn't allowed to see it."
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Error" }
     TooLarge:
       description: "`payload_too_large`: the body is over 16 KiB."
       content:
@@ -972,6 +1098,50 @@ components:
             platformStatus: { type: [string, "null"] }
             checkedAt: { type: string, format: date-time }
         createdAt: { type: string, format: date-time }
+
+    InvitationCode:
+      type: string
+      pattern: "^zki_[A-Za-z0-9_-]{43}$"
+      description: A one-time family invitation code. Secret until used; never log it.
+    Avatar:
+      type: string
+      pattern: "^[a-z0-9-]{1,32}$"
+      description: The id of one of the app's built-in avatars (for example `robot-7`). No photos.
+      examples: [robot-7]
+    Grade:
+      type: [integer, "null"]
+      minimum: -1
+      maximum: 12
+      description: "-1 kindergarten, 0 preparatory class, 1-12 school grade, null not set."
+    Kid:
+      type: object
+      required: [id, nickname, avatar, grade, createdAt]
+      properties:
+        id: { type: string, format: uuid, description: Also the kid's account id. }
+        nickname: { type: string }
+        avatar: { $ref: "#/components/schemas/Avatar" }
+        grade: { $ref: "#/components/schemas/Grade" }
+        createdAt: { type: string, format: date-time }
+    Family:
+      type: object
+      required: [id, name, createdAt, parents, kids]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: [string, "null"] }
+        createdAt: { type: string, format: date-time }
+        parents:
+          type: array
+          description: In the order they joined.
+          items:
+            type: object
+            required: [id, displayName]
+            properties:
+              id: { type: string, format: uuid }
+              displayName: { type: [string, "null"] }
+        kids:
+          type: array
+          description: In the order they were added.
+          items: { $ref: "#/components/schemas/Kid" }
 
     Base64:
       type: string
