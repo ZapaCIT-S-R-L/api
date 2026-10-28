@@ -108,3 +108,5 @@ export default {
     await flushMembershipEvents(env);
   },
 } satisfies ExportedHandler<Env>;
+
+export { BadRequest };

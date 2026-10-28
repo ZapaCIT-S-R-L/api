@@ -11,6 +11,8 @@ for (const command of [
   "npm test",
   "wrangler deploy --dry-run --env staging",
   "npm run test:e2e",
+  // The chat stub next to the calls Worker, for its CHAT service binding.
+  "-c wrangler.jsonc -c test/chat-stub/wrangler.jsonc",
   "wrangler d1 migrations apply DB --local",
   "npm audit --omit=dev --audit-level=high",
   "scan source --lockfile package-lock.json",

@@ -1,5 +1,6 @@
-// A phone in the tests: a chat token for one account and device, and the calls API over the Worker's fetch.
-import { exports } from "cloudflare:workers";
+// A phone in the tests: a chat token for one account and device, and the calls API over the Worker's fetch. The
+// chat service's membership answers come from the stub Worker in test/chat-stub (the CHAT service binding).
+import { env, exports } from "cloudflare:workers";
 import { bearer, chatClaims, type CallView, type ErrorBody, type TestIssuer } from "./helpers";
 
 export interface Phone {
@@ -20,14 +21,45 @@ export interface Socket {
   close(): void;
 }
 
+async function chatStub(method: string, path: string, body: unknown): Promise<void> {
+  const res = await env.CHAT_STUB.fetch(`https://chat-stub${path}`, { method, body: JSON.stringify(body) });
+  if (res.status !== 204) throw new Error(`chat stub answered ${res.status}`);
+}
+
+// What the chat service knows: this device of this account is a member of the conversation.
+export function addMember(
+  conversationId: string,
+  accountId: string,
+  deviceId = 1,
+  role: "parent" | "kid" = "parent",
+): Promise<void> {
+  return chatStub("PUT", "/members", { conversationId, accountId, deviceId, role });
+}
+
+// The account left the conversation (left the family, connection removed...).
+export function removeMember(conversationId: string, accountId: string): Promise<void> {
+  return chatStub("DELETE", "/members", { conversationId, accountId });
+}
+
+// The chat service fails for this conversation (an outage).
+export function chatDown(conversationId: string): Promise<void> {
+  return chatStub("PUT", "/down", { conversationId });
+}
+
+// A phone whose account the chat service lists as a member of `conversations` (unless `member` is false). Its
+// token's `conv` claim holds membership scopes, as the account API issues it, not the conversation ids.
 export async function phone(
   issuer: TestIssuer,
   accountId: string,
   deviceId = 1,
   conversations = ["conv-1"],
   role: "parent" | "kid" = "parent",
+  { member = true, conv }: { member?: boolean; conv?: string[] } = {},
 ): Promise<Phone> {
-  const token = await issuer.sign(chatClaims({ sub: accountId, dev: deviceId, conv: conversations, role }));
+  if (member) for (const c of conversations) await addMember(c, accountId, deviceId, role);
+  const token = await issuer.sign(
+    chatClaims({ sub: accountId, dev: deviceId, role, ...(conv === undefined ? {} : { conv }) }),
+  );
   const request = (method: string, path: string, body?: unknown) =>
     exports.default.fetch(
       new Request(`https://calls.test${path}`, {
