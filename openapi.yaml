@@ -8,7 +8,7 @@ info:
     public keys, ciphertext and the metadata it needs to route messages. It can never decrypt a chat, and it has no
     cryptography of its own beyond verifying Apple and Google sign-in tokens and hashing session tokens.
 
-    **Stability.** Endpoints tagged `Health`, `Sign-in`, `Account`, `Families`, `Kid pairing`, `Connections`, `Devices and keys` and `Chat tokens` are stable: the apps build against them and
+    **Stability.** Endpoints tagged `Health`, `Sign-in`, `Account`, `Families`, `Kid pairing`, `Connections` and `Chat tokens` are stable: the apps build against them and
     they only change in a backward-compatible way. Every endpoint tagged `Draft: ...` (and marked `x-status: draft`)
     is a plan, not implemented yet, and will change.
 
@@ -906,7 +906,9 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
         "429":
-          description: "`too_many_pairings`: 5 codes are still open. Wait until one is used or expires."
+          description: "`too_many_pairings`: 5 codes are still open. Wait until one is used or expires (`Retry-After`)."
+          headers:
+            Retry-After: { schema: { type: integer, const: 300 } }
           content:
             application/json:
               schema: { $ref: "#/components/schemas/Error" }
@@ -948,7 +950,7 @@ paths:
       summary: The kid's phone redeems the pairing code and gets a kid session.
       description: |
         No session is needed: the code is the credential. The response is a kid session (`zkk_` token), valid for
-        365 days. Store it like a parent session (keychain / Keystore). A kid session can read the kid's family
+        30 days. Store it like a parent session (keychain / Keystore). A kid session can read the kid's family
         (`GET /v1/families`), but it can't do anything that only parents may do (`401`).
 
         Rate limited per network like sign-in (`AUTH_LIMITER`). App attestation (`ZapaKid-Attestation`, over the
@@ -1773,17 +1775,3 @@ components:
         preKey:
           allOf: [{ $ref: "#/components/schemas/PreKey" }]
           description: A one-time EC prekey; absent when the device has none left.
-    OutgoingEnvelope:
-      type: object
-      required: [recipientAccountId, recipientDeviceId, recipientRegistrationId, type, content]
-      properties:
-        recipientAccountId: { type: string }
-        recipientDeviceId: { $ref: "#/components/schemas/DeviceId" }
-        recipientRegistrationId: { type: integer }
-        type:
-          type: string
-          enum: [prekey_message, message, sender_key_message]
-          description: The libsignal ciphertext type. There is no plaintext type.
-        content:
-          allOf: [{ $ref: "#/components/schemas/Base64" }]
-          description: libsignal ciphertext, at most 64 KiB.

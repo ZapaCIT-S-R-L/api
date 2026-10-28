@@ -96,6 +96,8 @@ export const ALEX = "acc_alex";
 export const ANA = "acc_ana";
 export const MARIA = "acc_maria";
 export const STRANGER = "acc_stranger";
+// Not seeded: tests that need a second kid in fam1 add Sam themselves.
+export const SAM = "acc_sam";
 
 export async function seedFamilies(rooms: Rooms = noRooms, { connect = true, share = true } = {}): Promise<void> {
   await apply(
