@@ -13,6 +13,7 @@ import {
   count,
   makeIssuer,
   resetJwksCache,
+  sha256Hex,
   signInParent,
   stubJwks,
   workerRequest,
@@ -439,6 +440,48 @@ describe("removing or unpairing a kid revokes its phones", () => {
       [kidId, 1],
       [kidId, 2],
     ]);
+  });
+
+  it("DELETE .../sessions/{sessionId}: that phone's device and keys go with its session; the other phone stays", async () => {
+    const { parent, familyId, kidId } = await family("ana");
+    const lost = await pairKid(parent.auth, familyId, kidId);
+    const kept = await pairKid(parent.auth, familyId, kidId);
+    const identityKey = ec();
+    const lostDevice = await registered(lost.auth, deviceKeys(identityKey));
+    const keptDevice = await registered(kept.auth, deviceKeys(identityKey));
+    const sessionsPath = `/v1/families/${familyId}/kids/${kidId}/sessions`;
+    const lostHash = await sha256Hex(lost.token);
+    const lostRow = await env.DB.prepare("SELECT id FROM kid_sessions WHERE token_hash = ?")
+      .bind(lostHash)
+      .first<{ id: string }>();
+
+    expect((await send(`${sessionsPath}/${lostRow?.id}`, parent.auth, undefined, "DELETE")).status).toBe(204);
+    expect((await get("/v1/families", lost.auth)).status).toBe(401);
+    expect((await get("/v1/families", kept.auth)).status).toBe(200);
+    const devices = await env.DB.prepare("SELECT device_id FROM devices WHERE account_id = ?")
+      .bind(kidId)
+      .all<{ device_id: number }>();
+    expect(devices.results.map((d) => d.device_id)).toEqual([keptDevice]);
+    const prekeys = await env.DB.prepare("SELECT DISTINCT device_id FROM one_time_prekeys WHERE account_id = ?")
+      .bind(kidId)
+      .all<{ device_id: number }>();
+    expect(prekeys.results.map((d) => d.device_id)).toEqual([keptDevice]);
+    const removed = (await deviceEvents()).filter((e) => e.type === "device.removed");
+    expect(removed.map((e) => [e.accountId, e.deviceId])).toEqual([[kidId, lostDevice]]);
+  });
+
+  it("DELETE .../sessions/{sessionId} of a phone without a device removes no device", async () => {
+    const { parent, familyId, kidId } = await family("ana");
+    const unregistered = await pairKid(parent.auth, familyId, kidId);
+    const other = await pairKid(parent.auth, familyId, kidId);
+    await registered(other.auth);
+    const row = await env.DB.prepare("SELECT id FROM kid_sessions WHERE token_hash = ?")
+      .bind(await sha256Hex(unregistered.token))
+      .first<{ id: string }>();
+    const path = `/v1/families/${familyId}/kids/${kidId}/sessions/${row?.id}`;
+    expect((await send(path, parent.auth, undefined, "DELETE")).status).toBe(204);
+    expect(await count("devices")).toBe(1);
+    expect((await deviceEvents()).filter((e) => e.type === "device.removed")).toEqual([]);
   });
 
   it("after unpairing, a fresh pairing may replace the kid's identity (PUT /v1/keys/identity)", async () => {
