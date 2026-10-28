@@ -103,3 +103,11 @@ test("staging and production define every binding and var the Worker reads", () 
     for (const key of required) assert.ok(defined.has(key), `${name} is missing ${key}`);
   }
 });
+
+// The calls service's CHAT service binding names these Workers (services/calls/wrangler.jsonc); renaming one breaks
+// every call.
+test("Worker names: zapakid-chat locally, zapakid-chat-staging and zapakid-chat-production when deployed", () => {
+  assert.equal(rawConfig.name, "zapakid-chat");
+  assert.equal(staging.name, undefined);
+  assert.equal(production.name, undefined);
+});

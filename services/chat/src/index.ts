@@ -18,6 +18,8 @@ import { handleAck, handleFetch, handleSend, handleStream } from "./messages";
 import { durableRooms } from "./room";
 
 export { ConversationRoom } from "./room";
+// Workers RPC for the calls service (its CHAT service binding); not reachable over HTTP.
+export { ChatMembership } from "./rpc";
 
 const rooms = durableRooms;
 
