@@ -76,7 +76,7 @@ describe("POST /v1/calls", () => {
     ]);
     expect(body.call.keyLeader).toEqual({ accountId: dad.accountId, deviceId: 1 });
     expect(body.iceServers[1]?.username).toMatch(/^user-/);
-    expect(body.limits).toEqual({ maxParticipants: 8, ringTimeoutSeconds: 45, maxDurationSeconds: 7200 });
+    expect(body.limits).toEqual({ maxParticipants: 8, ringTimeoutSeconds: 30, maxDurationSeconds: 7200 });
     expect(rings).toEqual([
       expect.objectContaining({
         callId: body.call.callId,
@@ -266,17 +266,17 @@ describe("join, leave, decline and the roster", () => {
     events.close();
   });
 
-  it("nobody answers in 45 s → ended no_answer, the ring is cancelled", async () => {
+  it("nobody answers in 30 s (about 5 rings) → ended no_answer, the ring is cancelled", async () => {
     const dad = await phone(issuer, uniqueAccount());
     const { call } = await dad.create();
     const events = await dad.events(call.callId);
-    await advance(call.callId, 46);
+    await advance(call.callId, 31);
     expect(await events.next("ended")).toMatchObject({ reason: "no_answer" });
     expect(await row(call.callId)).toMatchObject({ end_reason: "no_answer" });
     expect(rings.map((r) => r.event)).toEqual(["ring", "cancel"]);
   });
 
-  it("an answered call doesn't time out at 45 s, but ends at the maximum duration", async () => {
+  it("an answered call doesn't time out at 30 s, but ends at the maximum duration", async () => {
     const dad = await phone(issuer, uniqueAccount());
     const mum = await phone(issuer, uniqueAccount());
     const { call } = await dad.create();

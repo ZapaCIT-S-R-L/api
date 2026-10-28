@@ -40,7 +40,7 @@ tags:
       other members' phones ring (PushKit VoIP + CallKit on iOS, a high-priority FCM data message + a full-screen
       incoming call on Android; the push carries only the call id). Each phone opens the events WebSocket
       (`GET /v1/calls/{callId}/events`) right away. A member answers with `join` or `decline`. Nobody answering
-      within `ringTimeoutSeconds` (45 s) ends the call (`no_answer`). Calls last at most `maxDurationSeconds` (2 h)
+      within `ringTimeoutSeconds` (30 s) ends the call (`no_answer`). Calls last at most `maxDurationSeconds` (2 h)
       and hold at most `maxParticipants` (8) devices. A participant whose WebSocket stays closed for 30 s is taken out
       (`disconnected`). The last one to leave ends the call. A member the chat service removes from the conversation
       (unpaired, family left, connection removed, kid unshared, account deleted) is taken out at once (`left` with
@@ -99,7 +99,7 @@ paths:
                     required: [maxParticipants, ringTimeoutSeconds, maxDurationSeconds]
                     properties:
                       maxParticipants: { type: integer, examples: [8] }
-                      ringTimeoutSeconds: { type: integer, examples: [45] }
+                      ringTimeoutSeconds: { type: integer, examples: [30] }
                       maxDurationSeconds: { type: integer, examples: [7200] }
         "400": { $ref: "#/components/responses/InvalidRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
