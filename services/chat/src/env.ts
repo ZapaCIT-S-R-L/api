@@ -19,6 +19,9 @@ export interface Env {
   TOKEN_ISSUER: string;
   TOKEN_AUDIENCE: string;
   ACCOUNT_JWKS_URL: string;
+  // Conversation events for the calls service (src/conversation-events.ts): producer on the queue
+  // zapakid-conversation-events-<env>. Optional: until an environment has the queue, events wait in the D1 outbox.
+  CONVERSATION_EVENTS?: Queue;
   // Local only ("on"): POST /__e2e/membership, loopback requests only. Never set when deployed.
   E2E_HOOKS?: string;
   MEMBERSHIP_E2E?: Queue;

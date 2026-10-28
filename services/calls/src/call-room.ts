@@ -5,14 +5,21 @@
 // Key rotation: every join and leave bumps `epoch`. The key leader (the longest-present participant) then makes a
 // new random call key and sends it sealed to every other participant device (a `keys` message per epoch). An
 // envelope for a device that is not connected yet waits here until it connects, for the current epoch only.
+// A member the chat service removes from the conversation (src/conversation-events.ts) is dropped the same way:
+// their devices leave with reason `removed`, the epoch moves on without them, their sockets are closed, and their
+// SFU sessions are closed: kept in `closing` and retried from the alarm with backoff (a bounded number of times)
+// until Realtime confirms or says the session is gone. A session whose retries run out stays on the list, logged,
+// and keeps the call's state from being deleted: a pending clean-up is never silently dropped.
 import { DurableObject } from "cloudflare:workers";
 import type { Caller, Role } from "./auth";
 import { ChatUnavailable, membership } from "./chat";
 import type { Env } from "./env";
 import { limits } from "./limits";
 import { pushProvider } from "./push";
+import { closeSession, RealtimeRejected, RealtimeUnavailable } from "./realtime";
 
 export type EndReason = "hung_up" | "no_answer" | "declined" | "max_duration" | "disconnected";
+export type LeaveReason = "left" | "disconnected" | "removed";
 type State = "ringing" | "active" | "ended";
 
 interface Participant {
@@ -35,6 +42,16 @@ interface PendingKey {
   blob: string;
 }
 
+// An SFU session of a dropped device whose tracks are not closed yet (src/realtime.ts closeSession).
+interface PendingClose {
+  sessionId: string;
+  attempts: number;
+  // When to try (again).
+  nextAt: number;
+  // Set when CLOSE_MAX_ATTEMPTS failed: no more retries, but kept (and logged) since the tracks may still be open.
+  exhausted?: true;
+}
+
 interface CallState {
   callId: string;
   conversationId: string;
@@ -52,6 +69,8 @@ interface CallState {
   // The devices rung at the start (the other members' devices, from the chat service), to cancel the same ring.
   // Missing in calls started before it was kept.
   ring?: { accountId: string; deviceId: number }[];
+  // SFU sessions of dropped devices still to close. Missing in calls started before it was kept.
+  closing?: PendingClose[];
 }
 
 export interface CallView {
@@ -90,6 +109,14 @@ const MAX_MESSAGE_CHARS = 64 * 1024;
 const MAX_TRACKS = 16;
 const MAX_SOCKETS = 32;
 const BASE64 = /^[A-Za-z0-9+/]+={0,2}$/;
+// Closing a dropped device's SFU tracks is retried with this backoff (5 s, 10 s, 20 s... 5 min), or later when
+// Realtime's Retry-After says so (up to an hour), at most CLOSE_MAX_ATTEMPTS times in all (about 20 minutes).
+const CLOSE_RETRY_MS = 5_000;
+const CLOSE_RETRY_MAX_MS = 5 * 60_000;
+const CLOSE_RETRY_AFTER_MAX_MS = 60 * 60_000;
+const CLOSE_MAX_ATTEMPTS = 10;
+// Realtime no longer has the session: nothing left to close.
+const SESSION_GONE = new Set([404, 410]);
 
 export const deviceKey = (accountId: string, deviceId: number) => JSON.stringify([accountId, deviceId]);
 
@@ -100,6 +127,8 @@ interface SocketInfo {
 
 export class CallRoom extends DurableObject<Env> {
   private call: CallState | null = null;
+  // One closeSessions() run at a time (the RPC and the alarm may overlap).
+  private closingNow = false;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -135,6 +164,7 @@ export class CallRoom extends DurableObject<Env> {
       peak: 1,
       pending: [],
       ring,
+      closing: [],
     };
     await this.env.DB.prepare(
       "INSERT INTO calls (id, conversation_id, created_by_account, created_by_device, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -252,6 +282,40 @@ export class CallRoom extends DurableObject<Env> {
     return ok(null);
   }
 
+  // ---- From the chat service (the conversation events queue, src/conversation-events.ts); no caller check: the
+  // chat service is the source of membership, and only Workers of this account produce into the queue ----
+
+  // These accounts were removed from the conversation at `occurredAt` (ms): every device of theirs leaves the call
+  // now (reason `removed`), the key epoch moves on without them, their events sockets are closed and their SFU
+  // sessions are closed (retried until done). A no-op for accounts not in the call. Stale events are ignored: one
+  // older than the call, or, per device, older than its join (the member was readmitted meanwhile; every join asks
+  // the chat service). Returns the devices dropped.
+  async removeMembers(accountIds: string[], occurredAt: number): Promise<{ accountId: string; deviceId: number }[]> {
+    const call = this.call;
+    if (!call || call.state === "ended" || occurredAt < call.createdAt) return [];
+    const gone = new Set(accountIds);
+    if (call.ring) call.ring = call.ring.filter((r) => !gone.has(r.accountId));
+    const dropped = call.participants.filter((p) => gone.has(p.accountId) && p.joinedAt <= occurredAt);
+    await this.drop(dropped);
+    return dropped.map((p) => ({ accountId: p.accountId, deviceId: p.deviceId }));
+  }
+
+  // The conversation was closed at `occurredAt` (ms; read-only, no calls): everyone leaves and the call ends. A
+  // call started after that is left alone (stale event).
+  async conversationClosed(occurredAt: number): Promise<{ accountId: string; deviceId: number }[]> {
+    const call = this.call;
+    if (!call || call.state === "ended" || occurredAt < call.createdAt) return [];
+    call.ring = [];
+    const dropped = [...call.participants];
+    await this.drop(dropped);
+    return dropped.map((p) => ({ accountId: p.accountId, deviceId: p.deviceId }));
+  }
+
+  // SFU sessions of dropped devices not closed yet (tests and operators).
+  pendingCloses(): PendingClose[] {
+    return this.call?.closing ?? [];
+  }
+
   // ---- The events WebSocket (the Worker forwards the upgrade with the verified caller) ----
 
   override async fetch(request: Request): Promise<Response> {
@@ -330,11 +394,13 @@ export class CallRoom extends DurableObject<Env> {
   // ---- Timers: ring timeout, maximum duration, reconnect grace, cleanup after the end ----
 
   override async alarm(): Promise<void> {
+    await this.closeSessions();
     const call = this.call;
     if (!call) return;
     const now = Date.now();
     if (call.state === "ended") {
-      if (now >= (call.endedAt ?? 0) + KEEP_ENDED_MS) {
+      // Deleted an hour after the end, but not while a session is still to close (see schedule()).
+      if (now >= (call.endedAt ?? 0) + KEEP_ENDED_MS && !call.closing?.length) {
         this.call = null;
         await this.ctx.storage.deleteAll();
       } else {
@@ -401,19 +467,119 @@ export class CallRoom extends DurableObject<Env> {
   private async schedule(): Promise<void> {
     const call = this.call;
     if (!call) return;
-    let next: number;
+    // While closeSessions() runs, its retries are scheduled when it is done (no alarm storm meanwhile).
+    const due = this.closingNow ? [] : (call.closing ?? []).flatMap((c) => (c.exhausted ? [] : [c.nextAt]));
     if (call.state === "ended") {
-      next = (call.endedAt ?? Date.now()) + KEEP_ENDED_MS;
+      // The ended call is deleted after its hour once no session is left to close; with only exhausted ones left
+      // nothing is due: the state stays, for an operator (logged as "sfu session close retries exhausted").
+      if (!call.closing?.length) due.push((call.endedAt ?? Date.now()) + KEEP_ENDED_MS);
     } else {
       const l = limits(this.env);
-      const due = [call.createdAt + l.maxCallSeconds * 1000];
+      due.push(call.createdAt + l.maxCallSeconds * 1000);
       if (call.state === "ringing") due.push(call.createdAt + l.ringTimeoutSeconds * 1000);
       for (const p of call.participants) {
         if (p.disconnectedAt !== null) due.push(p.disconnectedAt + l.reconnectGraceSeconds * 1000);
       }
-      next = Math.min(...due);
     }
+    if (due.length === 0) {
+      // While closeSessions() runs, it schedules when it is done.
+      if (!this.closingNow) await this.ctx.storage.deleteAlarm();
+      return;
+    }
+    const next = Math.min(...due);
     if ((await this.ctx.storage.getAlarm()) !== next) await this.ctx.storage.setAlarm(next);
+  }
+
+  // Drops participants the chat service removed. The `left` events carry the new epoch, so the key leader rotates the
+  // call key without them; their sockets are closed right after, and they get 404 from then on (`access`). Their
+  // SFU sessions go on the closing list, saved with the roster change, and are closed right away or on retry.
+  private async drop(gone: Participant[]): Promise<void> {
+    const call = this.call;
+    if (!call || gone.length === 0) return;
+    const now = Date.now();
+    call.closing = [
+      ...(call.closing ?? []),
+      ...gone.flatMap((p) => (p.sessionId ? [{ sessionId: p.sessionId, attempts: 0, nextAt: now }] : [])),
+    ];
+    call.participants = call.participants.filter((p) => !gone.includes(p));
+    call.epoch++;
+    call.pending = [];
+    for (const p of gone) {
+      this.broadcast({
+        type: "left",
+        accountId: p.accountId,
+        deviceId: p.deviceId,
+        epoch: call.epoch,
+        reason: "removed",
+      });
+    }
+    if (call.participants.length === 0) {
+      await this.end("hung_up");
+      await this.closeSessions();
+      return;
+    }
+    await this.save();
+    for (const p of gone) {
+      for (const ws of this.ctx.getWebSockets(deviceKey(p.accountId, p.deviceId))) {
+        try {
+          ws.close(4403, "removed from the conversation");
+        } catch {
+          // Already closed.
+        }
+      }
+    }
+    this.broadcastRoster();
+    await this.closeSessions();
+  }
+
+  // Closes the SFU tracks of every session on the closing list that is due. Done when Realtime confirms, or says the
+  // session is gone (404, 410). On any other failure (unavailable, rate limited, another refusal) the session stays on
+  // the list and the alarm tries again with backoff, not before Retry-After; after CLOSE_MAX_ATTEMPTS it stays on the
+  // list without retries. The roster never waits for this: the rotated key is what keeps a dropped device out.
+  private async closeSessions(): Promise<void> {
+    if (this.closingNow) return;
+    this.closingNow = true;
+    try {
+      for (;;) {
+        const call = this.call;
+        const now = Date.now();
+        const next = call?.closing?.find((c) => !c.exhausted && c.nextAt <= now);
+        if (!call || !next) break;
+        let done = true;
+        let retryAfterMs = 0;
+        try {
+          await closeSession(this.env, next.sessionId);
+        } catch (e) {
+          if (!(e instanceof RealtimeUnavailable || e instanceof RealtimeRejected)) throw e;
+          done = e instanceof RealtimeRejected && SESSION_GONE.has(e.upstreamStatus);
+          if (e instanceof RealtimeUnavailable) retryAfterMs = Math.min(e.retryAfterMs, CLOSE_RETRY_AFTER_MAX_MS);
+          console.error(JSON.stringify({ msg: "sfu session not closed", callId: call.callId, done, err: e.message }));
+        }
+        // The call may have changed, or been deleted, during the request: update it as it is now.
+        const current = this.call;
+        if (!current?.closing || current.callId !== call.callId) break;
+        if (done) {
+          current.closing = current.closing.filter((c) => c !== next);
+        } else if (++next.attempts >= CLOSE_MAX_ATTEMPTS) {
+          next.exhausted = true;
+          console.error(
+            JSON.stringify({
+              msg: "sfu session close retries exhausted",
+              callId: call.callId,
+              sessionId: next.sessionId,
+              attempts: next.attempts,
+            }),
+          );
+        } else {
+          const backoff = Math.min(CLOSE_RETRY_MS * 2 ** (next.attempts - 1), CLOSE_RETRY_MAX_MS);
+          next.nextAt = Date.now() + Math.max(backoff, retryAfterMs);
+        }
+        await this.save();
+      }
+    } finally {
+      this.closingNow = false;
+      await this.schedule();
+    }
   }
 
   private async remove(p: Participant, reason: "left" | "disconnected"): Promise<void> {
@@ -427,7 +593,13 @@ export class CallRoom extends DurableObject<Env> {
       return;
     }
     await this.save();
-    this.broadcast({ type: "left", accountId: p.accountId, deviceId: p.deviceId, epoch: call.epoch, reason });
+    this.broadcast({
+      type: "left",
+      accountId: p.accountId,
+      deviceId: p.deviceId,
+      epoch: call.epoch,
+      reason: reason satisfies LeaveReason,
+    });
     this.broadcastRoster();
   }
 

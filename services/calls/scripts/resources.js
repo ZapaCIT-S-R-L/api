@@ -1,7 +1,10 @@
-// Finds (or creates, in the EU jurisdiction) the D1 database for a deployed environment and writes its id into
-// wrangler.jsonc in place of that environment's placeholder id. Runs in deploy workflows only, before the D1
-// migrations and the deploy, with the environment's Cloudflare token. The real id is never committed.
-// CLI: node scripts/d1-database.js staging|production
+// Finds or creates the Cloudflare resources of a deployed calls environment, then writes the D1 database id into
+// wrangler.jsonc in place of that environment's placeholder (the real id is never committed):
+//   D1 database zapakid-calls-<env> (EU jurisdiction)
+//   Queues zapakid-conversation-events-<env> and its -dlq (the chat service produces, this service consumes; the
+//   chat deploy creates them too, so either service can go first)
+// Runs in deploy workflows only, before the D1 migrations and the deploy, with the environment's Cloudflare token.
+// CLI: node scripts/resources.js staging|production
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -12,9 +15,12 @@ export const PLACEHOLDERS = {
   production: "00000000-0000-0000-0000-000000000002",
 };
 
-export function databaseName(env) {
+export function names(env) {
   if (!Object.hasOwn(PLACEHOLDERS, env)) throw new Error(`unknown environment "${env}"`);
-  return `zapakid-calls-${env}`;
+  return {
+    database: `zapakid-calls-${env}`,
+    queues: [`zapakid-conversation-events-${env}`, `zapakid-conversation-events-${env}-dlq`],
+  };
 }
 
 // The database called `name` in `wrangler d1 list --json` output. Refuses one outside the EU jurisdiction.
@@ -45,9 +51,18 @@ function wrangler(args) {
   return execFileSync("npx", ["wrangler", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
 }
 
+function exists(args) {
+  try {
+    execFileSync("npx", ["wrangler", ...args], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const env = process.argv[2];
-  const name = databaseName(env);
+  const { database: name, queues } = names(env);
   const list = () => JSON.parse(wrangler(["d1", "list", "--json"]));
   let db = findDatabase(list(), name);
   if (!db) {
@@ -60,4 +75,10 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const path = new URL("../wrangler.jsonc", import.meta.url);
   writeFileSync(path, patchConfig(readFileSync(path, "utf8"), env, db.uuid));
   console.log(`D1 ${name}: ${db.uuid}`);
+
+  for (const queue of queues) {
+    if (exists(["queues", "info", queue])) continue;
+    console.log(`Creating queue ${queue}`);
+    wrangler(["queues", "create", queue]);
+  }
 }

@@ -277,7 +277,7 @@ describe("Realtime proxy", () => {
     );
   });
 
-  it("Realtime refusing → 400 realtime_rejected; Realtime down → 502 realtime_unavailable", async () => {
+  it("Realtime refusing → 400 realtime_rejected; Realtime down or rate limiting → 502 realtime_unavailable", async () => {
     const { dad, callId } = await twoPhoneCall();
     realtime.failNext = 400;
     const rejected = await dad.request("POST", `/v1/calls/${callId}/sessions`, {});
@@ -287,5 +287,10 @@ describe("Realtime proxy", () => {
     const down = await dad.request("POST", `/v1/calls/${callId}/sessions`, {});
     expect(down.status).toBe(502);
     expect(await errorCode(down)).toBe("realtime_unavailable");
+    // A rate limit is "try again later", not a refusal of the phone's request.
+    realtime.failNext = 429;
+    const limited = await dad.request("POST", `/v1/calls/${callId}/sessions`, {});
+    expect(limited.status).toBe(502);
+    expect(await errorCode(limited)).toBe("realtime_unavailable");
   });
 });
