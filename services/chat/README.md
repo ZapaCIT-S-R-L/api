@@ -11,7 +11,8 @@ only routing metadata (who is in which conversation, which device sent to which 
   root), checked against its JWKS (`ACCOUNT_JWKS_URL`, cached; served from cache through an outage of up to a day).
 - **Family graph:** membership events from the account service on the Cloudflare Queue
   `zapakid-membership-<env>` (dead letters in `…-dlq`). The chat service keeps its own copy and enforces the family
-  rules: parents start conversations, kids' parents are always members, other families' kids only when shared.
+  rules: parents and kids start conversations, kids' parents are always members, other families' kids only when
+  shared.
 
 - **Messages:** one Durable Object per conversation (SQLite, EU) holds a delivery copy per recipient device until
   that device acknowledges it, and serves the WebSocket stream (hibernation). Devices without a stream get a
