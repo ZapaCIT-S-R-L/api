@@ -8,6 +8,7 @@ import { handleHealth } from "./health";
 import type { Env } from "./env";
 import { routeFamilies } from "./families";
 import { error } from "./http";
+import { handleRedeemPairing } from "./pairing";
 import { purgeExpired } from "./purge";
 import { limitAuth } from "./rate-limit";
 import { handleLogout, handleMe, handleNonce, handleSignIn } from "./routes";
@@ -33,6 +34,7 @@ const ROUTES: Record<string, { method: string; handler: Handler; limited?: true 
   "/v1/me": { method: "GET", handler: handleMe },
   "/v1/devices": { method: "POST", handler: handleRegisterDevice, limited: true },
   "/v1/keys/prekeys": { method: "GET", handler: handleCountPreKeys },
+  "/v1/pairing/redeem": { method: "POST", handler: handleRedeemPairing, limited: true },
   "/v1/chat/token": { method: "POST", handler: handleChatToken },
   "/.well-known/jwks.json": { method: "GET", handler: handleJwks },
 };

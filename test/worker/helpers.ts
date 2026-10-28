@@ -186,7 +186,9 @@ export async function count(
     | "families"
     | "family_parents"
     | "family_invitations"
-    | "kids",
+    | "kids"
+    | "kid_pairings"
+    | "kid_sessions",
 ): Promise<number> {
   const row = await env.DB.prepare(`SELECT count(*) AS n FROM ${table}`).first<{ n: number }>();
   return row?.n ?? 0;
