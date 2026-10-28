@@ -11,6 +11,10 @@ export type MembershipEvent = { v: 1; id: string; occurredAt: string } & (
   | { type: "device.removed"; accountId: string; deviceId: number }
   // POST /v1/auth/logout-all: chat tokens with a `sep` claim below `epoch` are revoked (api #81).
   | { type: "account.sessions_revoked"; accountId: string; epoch: number }
+  | { type: "connection.created"; connectionId: string; familyIds: [string, string] }
+  | { type: "connection.removed"; connectionId: string }
+  | { type: "connection.kid_shared"; connectionId: string; kidAccountId: string }
+  | { type: "connection.kid_unshared"; connectionId: string; kidAccountId: string }
 );
 
 type EventData = MembershipEvent extends infer E

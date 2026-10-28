@@ -8,7 +8,7 @@ info:
     public keys, ciphertext and the metadata it needs to route messages. It can never decrypt a chat, and it has no
     cryptography of its own beyond verifying Apple and Google sign-in tokens and hashing session tokens.
 
-    **Stability.** Endpoints tagged `Health`, `Sign-in`, `Account`, `Families`, `Kid pairing` and `Chat tokens` are stable: the apps build against them and
+    **Stability.** Endpoints tagged `Health`, `Sign-in`, `Account`, `Families`, `Kid pairing`, `Connections` and `Chat tokens` are stable: the apps build against them and
     they only change in a backward-compatible way. Every endpoint tagged `Draft: ...` (and marked `x-status: draft`)
     is a plan, not implemented yet, and will change.
 
@@ -103,14 +103,20 @@ tags:
         (the empty family is deleted). `device.removed`: `DELETE /v1/devices/{deviceId}`, or
         `POST /v1/auth/logout-all?removeDevices=true` (one per device). `account.sessions_revoked`:
         `POST /v1/auth/logout-all`, with the parent's new session epoch; chat tokens whose `sep` claim is lower are
-        refused from then on and their open streams closed.
+        refused from then on and their open streams closed. `connection.created`, `connection.removed`,
+        `connection.kid_shared` and `connection.kid_unshared` for connections.
       - **Delivery.** At least once; dedupe by `id`. Events are written in the same D1 transaction as the change (a
         transactional outbox), so an event exists exactly when the change happened. They are sent right after the
         change in outbox order, and again by the cron if the queue was unavailable. Without the queue binding they
         wait in the outbox.
       - **Privacy.** Ids only: no names, nicknames, avatars or keys.
+  - name: Connections
+    description: |
+      Parents of different families connect with a one-time code (QR or link), then each family shares chosen kids,
+      one by one. The other family sees a shared kid's nickname and avatar only. Any parent of either family can
+      unshare their own kids or remove the connection. Parents only.
   - name: "Draft: Connections"
-    description: Planned. Parents of different families connect, then each family shares chosen kids.
+    description: Planned. Email invitations, exact search by phone or email, and blocks.
   - name: Devices and keys
     description: |
       Registering a phone with the key directory (implemented). The account id is the parent's `id` from
@@ -1004,6 +1010,134 @@ paths:
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/ProviderUnavailable" }
 
+  /v1/connections:
+    get:
+      tags: [Connections]
+      operationId: listConnections
+      summary: The caller's family's connections, each with the other family and the shared kids.
+      description: |
+        `sharedKids.mine`: ids of your kids shared in this connection. `sharedKids.theirs`: the other family's
+        kids shared with you, with nickname and avatar only.
+      responses:
+        "200":
+          description: Connections, oldest first.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [connections]
+                properties:
+                  connections: { type: array, items: { $ref: "#/components/schemas/Connection" } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+
+  /v1/connections/invitations:
+    post:
+      tags: [Connections]
+      operationId: createConnectionInvitation
+      summary: A one-time code another family's parent scans or opens to connect the two families.
+      description: |
+        Show it as a QR code or share it as a link (`https://zapakid.ro/connect#<code>`). It's valid for 72 hours and
+        works once. At most 5 can be open per family. Only its SHA-256 is stored. Needs a family
+        (`409 no_family`).
+      responses:
+        "201":
+          description: The code.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [code, expiresAt]
+                properties:
+                  code: { $ref: "#/components/schemas/ConnectionCode" }
+                  expiresAt: { type: string, format: date-time }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: "`no_family`: create your family first."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "429":
+          description: "`too_many_invitations`: 5 codes are still open."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/connections/accept:
+    post:
+      tags: [Connections]
+      operationId: acceptConnection
+      summary: Connect your family with the family whose code this is.
+      description: |
+        Scanning the code is the consent of the accepting parent; showing it was the consent of the other family.
+        No kids are shared yet: each family shares kids one by one. Emits `connection.created`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              additionalProperties: false
+              properties:
+                code: { $ref: "#/components/schemas/ConnectionCode" }
+      responses:
+        "201":
+          description: Connected.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Connection" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "409":
+          description: |
+            `no_family`: create your family first. `own_family`: the code is from your own family.
+            `already_connected`: the families are already connected. `too_many_connections`: 50 per family.
+            In every case the code stays unused.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+        "410":
+          description: "`invitation_invalid`: the code is unknown, expired or already used."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/connections/{connectionId}/shared-kids/{kidId}:
+    put:
+      tags: [Connections]
+      operationId: shareKid
+      summary: Share one of your kids with the connected family.
+      description: |
+        Only your own family's kids (anything else is `404`). Repeating it is a no-op. Emits
+        `connection.kid_shared` when the kid wasn't shared yet.
+      parameters: [{ $ref: "#/components/parameters/connectionId" }, { $ref: "#/components/parameters/kidId" }]
+      responses:
+        "204": { description: "Shared." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    delete:
+      tags: [Connections]
+      operationId: unshareKid
+      summary: Stop sharing a kid. The chat service closes the kid's chats with that family.
+      description: Repeating it is a no-op. Emits `connection.kid_unshared` when the kid was shared.
+      parameters: [{ $ref: "#/components/parameters/connectionId" }, { $ref: "#/components/parameters/kidId" }]
+      responses:
+        "204": { description: "No longer shared." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
+  /v1/connections/{connectionId}:
+    delete:
+      tags: [Connections]
+      operationId: removeConnection
+      summary: Disconnect the two families (any parent of either family).
+      description: All shared kids go with it. Emits `connection.removed`. A non-member gets `404`.
+      parameters: [{ $ref: "#/components/parameters/connectionId" }]
+      responses:
+        "204": { description: "Disconnected." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   # ---------------------------------------------------------------------------------------------------------------
   # Draft endpoints below: planned, not implemented, will change.
   # ---------------------------------------------------------------------------------------------------------------
@@ -1037,34 +1171,6 @@ paths:
       parameters: [{ name: requestId, in: path, required: true, schema: { type: string } }]
       responses:
         "200": { description: "Answered." }
-
-  /v1/connections/{connectionId}/shared-kids/{kidId}:
-    put:
-      tags: ["Draft: Connections"]
-      operationId: shareKid
-      x-status: draft
-      summary: Share one kid with the connected family (each direction separately).
-      parameters: [{ $ref: "#/components/parameters/connectionId" }, { $ref: "#/components/parameters/kidId" }]
-      responses:
-        "204": { description: "Shared." }
-    delete:
-      tags: ["Draft: Connections"]
-      operationId: unshareKid
-      x-status: draft
-      summary: Stop sharing a kid. Chats close (history read-only) and group keys rotate.
-      parameters: [{ $ref: "#/components/parameters/connectionId" }, { $ref: "#/components/parameters/kidId" }]
-      responses:
-        "204": { description: "No longer shared." }
-
-  /v1/connections/{connectionId}:
-    delete:
-      tags: ["Draft: Connections"]
-      operationId: removeConnection
-      x-status: draft
-      summary: Disconnect the two families.
-      parameters: [{ $ref: "#/components/parameters/connectionId" }]
-      responses:
-        "204": { description: "Disconnected." }
 
   /v1/blocks:
     post:
@@ -1404,6 +1510,49 @@ components:
       type: string
       pattern: "^zki_[A-Za-z0-9_-]{43}$"
       description: A one-time family invitation code. Secret until used; never log it.
+    ConnectionCode:
+      type: string
+      pattern: "^zkc_[A-Za-z0-9_-]{43}$"
+      description: A one-time code that connects two families (72 hours). Secret until used; never log it.
+    Connection:
+      type: object
+      required: [id, createdAt, family, sharedKids]
+      properties:
+        id: { type: string, format: uuid }
+        createdAt: { type: string, format: date-time }
+        family:
+          type: object
+          description: The other family.
+          required: [id, name, parents]
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: [string, "null"] }
+            parents:
+              type: array
+              items:
+                type: object
+                required: [id, displayName]
+                properties:
+                  id: { type: string, format: uuid }
+                  displayName: { type: [string, "null"] }
+        sharedKids:
+          type: object
+          required: [mine, theirs]
+          properties:
+            mine:
+              type: array
+              description: Ids of your kids shared in this connection.
+              items: { type: string, format: uuid }
+            theirs:
+              type: array
+              description: The other family's kids shared with you.
+              items:
+                type: object
+                required: [id, nickname, avatar]
+                properties:
+                  id: { type: string, format: uuid }
+                  nickname: { type: string }
+                  avatar: { $ref: "#/components/schemas/Avatar" }
     PairingCode:
       type: string
       pattern: "^zkp_[A-Za-z0-9_-]{43}$"
