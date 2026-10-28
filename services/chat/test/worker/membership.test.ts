@@ -5,7 +5,7 @@ import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { reconcile } from "../../src/conversations";
 import worker from "../../src/index";
-import { parseEvent } from "../../src/membership";
+import { parseEvent, revokedBefore } from "../../src/membership";
 import {
   ALEX,
   ANA,
@@ -97,8 +97,12 @@ describe("queue consumer", () => {
       { type: "device.upserted", accountId: "a", deviceId: 2, registrationId: 7, push: null },
       { type: "device.removed", accountId: "a", deviceId: 2 },
       { type: "account.deleted", accountId: "a" },
+      { type: "account.sessions_revoked", accountId: "a", epoch: 1 },
     ];
     for (const body of valid) expect(parseEvent(event(body)), body.type).not.toBeNull();
+    for (const epoch of [0, -1, 1.5, "1", undefined]) {
+      expect(() => parseEvent(event({ type: "account.sessions_revoked", accountId: "a", epoch }))).toThrow();
+    }
     expect(() => parseEvent(event({ type: "connection.created", connectionId: "c", familyIds: ["f", "f"] }))).toThrow();
     expect(() =>
       parseEvent(event({ type: "device.upserted", accountId: "a", deviceId: 200, registrationId: 1 })),
@@ -176,6 +180,28 @@ describe("graph changes and existing conversations", () => {
     expect(ana?.devices).toEqual([{ deviceId: 2, registrationId: 999 }]);
     expect(rooms.log).toContain(`forgetDevice ${c.id} ${ANA}:1`);
     expect(rooms.log.filter((l) => l === `notify ${c.id} devices_changed`)).toHaveLength(2);
+  });
+
+  // api #81: after a logout-all, the account's chat tokens from before the new epoch are refused.
+  it("account.sessions_revoked keeps the highest epoch and closes the account's older streams", async () => {
+    await seedFamilies();
+    const c = await create(MUM, [ALEX]);
+    const rooms = recordingRooms();
+    await apply(rooms, { type: "account.sessions_revoked", accountId: MUM, epoch: 2 });
+    expect(rooms.log).toEqual([`revokeSessions ${c.id} ${MUM} 2`]);
+    expect(await revokedBefore(env, MUM)).toBe(2);
+    // Out of order: an older event never lowers the epoch.
+    await apply(rooms, { type: "account.sessions_revoked", accountId: MUM, epoch: 1 });
+    expect(await revokedBefore(env, MUM)).toBe(2);
+    expect(rooms.log.at(-1)).toBe(`revokeSessions ${c.id} ${MUM} 2`);
+    await apply(rooms, { type: "account.sessions_revoked", accountId: MUM, epoch: 3 });
+    expect(await revokedBefore(env, MUM)).toBe(3);
+    expect(await revokedBefore(env, DAD)).toBe(0);
+    // A revoked token no longer works; one from the new epoch does.
+    expect((await as(await tokenFor(issuer, MUM, { sep: 2 }), `/v1/conversations/${c.id}`)).status).toBe(401);
+    expect((await as(await tokenFor(issuer, MUM, { sep: 3 }), `/v1/conversations/${c.id}`)).status).toBe(200);
+    await apply(rooms, { type: "account.deleted", accountId: MUM });
+    expect(await revokedBefore(env, MUM)).toBe(0);
   });
 
   it("reconcile is a no-op on a healthy conversation", async () => {

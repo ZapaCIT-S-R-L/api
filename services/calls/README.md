@@ -10,8 +10,11 @@ Audio is never stored; the call log in D1 (EU) is metadata only.
   (`ACCOUNT_JWKS_URL`). No login of its own. The token's `conv` claim holds membership scopes, not conversation
   ids, so it is not used to authorize: on every start, join and view the Worker asks the chat service
   (`ChatMembership.member`, `services/chat/src/rpc.ts`) over the `CHAT` service binding (Workers RPC, never public
-  HTTP) whether the caller is a current member, and which members' devices to ring (`src/chat.ts`). Tests and the
-  local e2e run play the chat service with `test/chat-stub`.
+  HTTP) whether the caller is a current member, and which members' devices to ring (`src/chat.ts`). On every request
+  it also asks `ChatMembership.revoked(accountId, sep)` whether the token's session epoch (`sep`) was revoked by a
+  logout-all at the account API; a live call re-asks for each participant every minute and before every relayed
+  key, and drops the ones revoked (`left` with reason `revoked`, socket closed with `4401`). Tests and the local
+  e2e run play the chat service with `test/chat-stub`.
 - Node 24 (`../../.nvmrc`). In this folder: `npm ci --ignore-scripts`, then
   - `npm test`: `test/scripts` (node:test) and `test/worker` (Vitest in the Workers runtime);
   - `scripts/check.sh`: everything CI runs (`.github/workflows/ci-calls.yml`), including the e2e tests against
@@ -27,7 +30,13 @@ on failure), then the same for production once @stefan-zpc approves the `product
 own workflows ignore `services/`. The token needs `Queues: Edit` (root README) for the conversation events queues.
 
 The `CHAT` binding needs the chat Worker of the same environment (`zapakid-chat-staging`, `zapakid-chat-production`)
-deployed with its `ChatMembership` entrypoint first; otherwise the calls deploy fails. The conversation events
+deployed with its `ChatMembership` entrypoint first; otherwise the calls deploy fails. Deploy order: chat before
+calls, enforced. Each calls stage first waits (up to 30 minutes, before migrations or the deploy) until the chat
+Worker of that environment lists every method calls uses (`CHAT_RPC` in the workflow: `member`, `revoked`) in the
+`rpc` field of its `/health` (`scripts/wait-for-rpc.js`); if it doesn't, the stage fails without changing anything:
+deploy chat, then re-run. Should calls still meet a chat Worker without `revoked` (a chat rollback), every request
+gets a retryable 503 `chat_unavailable` with `Retry-After: 30`, logged as `chat outdated`; a token is never let
+through unchecked. The conversation events
 queues (`zapakid-conversation-events-<env>` and `…-dlq`) are created by `scripts/resources.js` if missing, as the
 chat deploy does, so the queue never blocks either deploy.
 
