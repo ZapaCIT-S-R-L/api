@@ -47,7 +47,9 @@ DNS records on the first deploy.
   (unpair, family left, connection removed, kid unshared, account deleted, conversation deleted by that member) or
   closes it, the live call drops those members' devices at once: `left` with reason `removed`, their events
   sockets closed, the epoch bumped so the key leader rotates the call key without them, and their SFU tracks closed
-  (best effort; the rotated key is what keeps them out). A closed conversation ends its call. Without the event
+  (the call room keeps the sessions and retries from its alarm with backoff until Realtime confirms). Replayed
+  events are deduped by id (`processed_events` in D1, 14 days), and events older than the call or than a device's
+  join are ignored, so a readmitted member is not dropped. A closed conversation ends its call. Without the event
   they would only lose access on their next request (every request re-asks the chat service), not mid-call.
 - `src/realtime.ts`: Cloudflare Realtime SFU calls with the app secret, plus TURN credentials (TTL 1 h). If TURN is
   down, it falls back to STUN only.

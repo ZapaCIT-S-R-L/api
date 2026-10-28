@@ -1,14 +1,17 @@
 // Conversation events from the chat service (Cloudflare Queue zapakid-conversation-events-<env>; schema:
 // ConversationEvent in openapi.yaml, the same as services/chat/openapi.yaml). When chat removes members from a
 // conversation, or closes it, the live calls of that conversation drop those members' devices at once: the call
-// room closes their events sockets, rotates the key epoch without them (src/call-room.ts) and this consumer closes
-// their SFU tracks. Without the event they would stay in the call until they left (api #77): since #76 they can't
-// rejoin or open a new SFU session, but their running session keeps going.
+// room closes their events sockets, rotates the key epoch without them and closes their SFU tracks, retrying from
+// its alarm until Realtime confirms (src/call-room.ts). Without the event they would stay in the call until they
+// left (api #77): since #76 they can't rejoin or open a new SFU session, but their running session keeps going.
 //
-// Idempotent by nature: removing a member who is not in the call is a no-op, so repeated delivery needs no dedupe.
+// Delivery is at least once, and the outbox may send an event long after the fact (the hourly flush). A replayed or
+// late event must not drop a member who was readmitted to the conversation and rejoined the call meanwhile, so:
+// - an event id already applied is acknowledged without being applied again (processed_events in D1, 14 days);
+// - the call room ignores an event older than the call, or than the device's join (`occurredAt`, set by chat in
+//   the same transaction as the change).
 import type { Env } from "./env";
 import { limits } from "./limits";
-import { closeSession, RealtimeRejected, RealtimeUnavailable } from "./realtime";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 // Conversation and account ids, as the HTTP API accepts them (src/body.ts, `Id` in openapi.yaml).
@@ -32,6 +35,7 @@ export function parseEvent(value: unknown): ConversationEvent | null {
   if (e.v !== 1 || !str(e.id, UUID) || typeof e.occurredAt !== "string" || typeof e.type !== "string") {
     throw new MalformedEvent("missing v, id, occurredAt or type");
   }
+  if (!Number.isFinite(Date.parse(e.occurredAt))) throw new MalformedEvent("occurredAt is not a date");
   const base = { v: 1 as const, id: e.id, occurredAt: e.occurredAt };
   switch (e.type) {
     case "conversation.members_removed": {
@@ -61,29 +65,38 @@ async function liveCalls(env: Env, conversationId: string): Promise<string[]> {
   return rows.results.map((r) => r.id);
 }
 
-// Applies one event to the live calls of its conversation. The call room drops the members first (their key epoch
-// is over from that moment); closing their SFU tracks is clean-up and best effort: a removed device can't decrypt
-// the rotated call key, and the phone drops its session when its events socket closes.
-export async function applyEvent(env: Env, event: ConversationEvent): Promise<void> {
+// Applies one event to the live calls of its conversation. Returns the devices dropped.
+export async function applyEvent(
+  env: Env,
+  event: ConversationEvent,
+): Promise<{ accountId: string; deviceId: number }[]> {
+  const occurredAt = Date.parse(event.occurredAt);
+  const dropped: { accountId: string; deviceId: number }[] = [];
   for (const callId of await liveCalls(env, event.conversationId)) {
     const room = env.CALL.get(env.CALL.idFromName(callId));
-    const sessions =
-      event.type === "conversation.closed"
-        ? await room.conversationClosed()
-        : await room.removeMembers(event.accountIds);
-    for (const sessionId of sessions) {
-      try {
-        await closeSession(env, sessionId);
-      } catch (e) {
-        if (!(e instanceof RealtimeUnavailable || e instanceof RealtimeRejected)) throw e;
-        console.error(JSON.stringify({ msg: "sfu session not closed", callId, err: e.message }));
-      }
-    }
+    dropped.push(
+      ...(event.type === "conversation.closed"
+        ? await room.conversationClosed(occurredAt)
+        : await room.removeMembers(event.accountIds, occurredAt)),
+    );
   }
+  return dropped;
 }
 
-// Queue consumer. Unknown types are acknowledged; malformed events are retried and end in the dead-letter queue,
-// where they can be inspected (ids only, no content). A failure (D1, the call room) retries the message.
+async function alreadyApplied(env: Env, id: string): Promise<boolean> {
+  return (await env.DB.prepare("SELECT 1 FROM processed_events WHERE id = ?1").bind(id).first()) !== null;
+}
+
+function markApplied(env: Env, id: string): Promise<unknown> {
+  return env.DB.prepare("INSERT OR IGNORE INTO processed_events (id, processed_at) VALUES (?1, ?2)")
+    .bind(id, new Date().toISOString())
+    .run();
+}
+
+// Queue consumer. A repeated event id is acknowledged and not applied again. Unknown types are acknowledged;
+// malformed events are retried and end in the dead-letter queue, where they can be inspected (ids only, no
+// content). A failure (D1, the call room) retries the message; a Realtime failure does not: the member is out of
+// the call already, and the call room keeps retrying their SFU clean-up on its own.
 export async function consumeConversationEvents(batch: MessageBatch, env: Env): Promise<void> {
   for (const message of batch.messages) {
     let event: ConversationEvent | null;
@@ -99,7 +112,15 @@ export async function consumeConversationEvents(batch: MessageBatch, env: Env): 
       continue;
     }
     try {
-      await applyEvent(env, event);
+      if (await alreadyApplied(env, event.id)) {
+        console.log(JSON.stringify({ msg: "conversation_event_repeated", type: event.type, id: event.id }));
+      } else {
+        const dropped = await applyEvent(env, event);
+        await markApplied(env, event.id);
+        if (dropped.length > 0) {
+          console.log(JSON.stringify({ msg: "conversation_event_applied", type: event.type, dropped: dropped.length }));
+        }
+      }
       message.ack();
     } catch (e) {
       console.error(JSON.stringify({ msg: "conversation_event_failed", type: event.type, err: String(e) }));

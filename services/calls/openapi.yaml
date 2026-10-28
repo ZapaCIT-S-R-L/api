@@ -576,8 +576,9 @@ components:
         Not an HTTP body: the messages on the Cloudflare Queue `zapakid-conversation-events-<environment>`
         (staging, production), produced by the chat service when it removes members from a conversation or closes
         one (the same schema is in `services/chat/openapi.yaml`), and consumed here: the live calls of that
-        conversation drop those members' devices at once. Delivery is at least once and not ordered; handling is
-        idempotent (a member not in the call is a no-op), so there is no dedupe. Unknown `type`s are acknowledged
+        conversation drop those members' devices at once. Delivery is at least once and not ordered: an `id` already
+        applied (kept 14 days) is acknowledged and not applied again, and an event whose `occurredAt` is older than
+        the call, or than a device's join (the member was readmitted meanwhile), leaves it alone. Unknown `type`s are acknowledged
         and ignored; a malformed event goes to `zapakid-conversation-events-<environment>-dlq` after 5 retries.
       type: object
       required: [v, id, type, occurredAt, conversationId]

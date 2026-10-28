@@ -5,7 +5,7 @@ import { consumeConversationEvents } from "./conversation-events";
 import type { Env } from "./env";
 import { handleHealth } from "./health";
 import { error } from "./http";
-import { purgeCallLog } from "./purge";
+import { purgeCallLog, purgeProcessedEvents } from "./purge";
 
 export { CallRoom } from "./call-room";
 
@@ -32,5 +32,6 @@ export default {
 
   async scheduled(_controller, env): Promise<void> {
     await purgeCallLog(env);
+    await purgeProcessedEvents(env);
   },
 } satisfies ExportedHandler<Env>;
