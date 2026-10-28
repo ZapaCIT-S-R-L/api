@@ -6,6 +6,7 @@ import { invalid, onlyFields, readJson } from "./body";
 import { randomBase64Url, sha256Hex } from "./crypto";
 import type { Env } from "./env";
 import { error, json } from "./http";
+import { flushMembershipEvents, membershipEvent } from "./membership-events";
 import { handleCreatePairing } from "./pairing";
 import { authenticate } from "./sessions";
 
@@ -172,6 +173,7 @@ async function handleCreateFamily(request: Request, env: Env): Promise<Response>
         session.parentId,
         now,
       ),
+      membershipEvent(env, { type: "family.member_added", familyId: id, accountId: session.parentId, role: "parent" }),
     ]);
   } catch (e) {
     // Two creates at once: the other one won (unique parent_id). The batch rolled back; return that family.
@@ -180,6 +182,7 @@ async function handleCreateFamily(request: Request, env: Env): Promise<Response>
     if (!winner) throw e;
     return json(await loadFamily(env, winner), 200);
   }
+  await flushMembershipEvents(env);
   return json(await loadFamily(env, id), 201);
 }
 
@@ -251,6 +254,7 @@ async function handleJoinFamily(request: Request, env: Env): Promise<Response> {
   // One transaction: use up the code (only if still open), leave the empty family, join. The last two only run
   // when this request is the one that used the code.
   const usedByMe = "EXISTS (SELECT 1 FROM family_invitations WHERE code_hash = ? AND used_by = ? AND used_at = ?)";
+  const onlyIfUsedByMe = { sql: usedByMe, binds: [codeHash, session.parentId, nowIso] };
   const [claim] = await env.DB.batch([
     env.DB.prepare(
       `UPDATE family_invitations SET used_at = ?, used_by = ?
@@ -265,8 +269,23 @@ async function handleJoinFamily(request: Request, env: Env): Promise<Response> {
     env.DB.prepare(
       `INSERT INTO family_parents (family_id, parent_id, joined_at) SELECT ?, ?, ? WHERE ${usedByMe}`,
     ).bind(invitation.family_id, session.parentId, nowIso, codeHash, session.parentId, nowIso),
+    ...(current
+      ? [
+          membershipEvent(
+            env,
+            { type: "family.member_removed", familyId: current, accountId: session.parentId },
+            onlyIfUsedByMe,
+          ),
+        ]
+      : []),
+    membershipEvent(
+      env,
+      { type: "family.member_added", familyId: invitation.family_id, accountId: session.parentId, role: "parent" },
+      onlyIfUsedByMe,
+    ),
   ]);
   if ((claim?.meta.changes ?? 0) !== 1) return gone();
+  await flushMembershipEvents(env);
   return json(await loadFamily(env, invitation.family_id));
 }
 
@@ -291,12 +310,18 @@ async function handleAddKid(request: Request, env: Env, familyId: string): Promi
   const id = crypto.randomUUID();
   const now = new Date().toISOString();
   // Inserted only while the family has fewer than MAX_KIDS (checked in the same statement).
-  const result = await env.DB.prepare(
-    `INSERT INTO kids (id, family_id, nickname, avatar, grade, created_at, updated_at)
-     SELECT ?, ?, ?, ?, ?, ?, ? WHERE (SELECT count(*) FROM kids WHERE family_id = ?) < ?`,
-  )
-    .bind(id, familyId, nickname, body.avatar, grade, now, now, familyId, MAX_KIDS)
-    .run();
-  if (result.meta.changes !== 1) return error(409, "too_many_kids", `A family has at most ${MAX_KIDS} kids.`);
+  const [result] = await env.DB.batch([
+    env.DB.prepare(
+      `INSERT INTO kids (id, family_id, nickname, avatar, grade, created_at, updated_at)
+       SELECT ?, ?, ?, ?, ?, ?, ? WHERE (SELECT count(*) FROM kids WHERE family_id = ?) < ?`,
+    ).bind(id, familyId, nickname, body.avatar, grade, now, now, familyId, MAX_KIDS),
+    membershipEvent(
+      env,
+      { type: "family.member_added", familyId, accountId: id, role: "kid" },
+      { sql: "EXISTS (SELECT 1 FROM kids WHERE id = ?)", binds: [id] },
+    ),
+  ]);
+  if (result?.meta.changes !== 1) return error(409, "too_many_kids", `A family has at most ${MAX_KIDS} kids.`);
+  await flushMembershipEvents(env);
   return json({ id, nickname, avatar: body.avatar, grade, createdAt: now } satisfies Kid, 201);
 }

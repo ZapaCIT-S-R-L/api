@@ -15,6 +15,7 @@ beforeEach(async () => {
       "devices",
       "identity_key_changes",
       "account_identities",
+      "membership_outbox",
       "kid_sessions",
       "kid_pairings",
       "family_invitations",

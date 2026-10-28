@@ -9,6 +9,7 @@ import { handleChangeIdentity } from "./identity";
 import type { Env } from "./env";
 import { routeFamilies } from "./families";
 import { error } from "./http";
+import { flushMembershipEvents } from "./membership-events";
 import { handleRedeemPairing } from "./pairing";
 import { purgeExpired } from "./purge";
 import { limitAuth } from "./rate-limit";
@@ -85,6 +86,7 @@ export default {
   },
 
   async scheduled(_controller, env): Promise<void> {
+    await flushMembershipEvents(env);
     await purgeExpired(env);
   },
 } satisfies ExportedHandler<Env>;
