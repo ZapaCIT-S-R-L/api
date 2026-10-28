@@ -5,7 +5,7 @@ describe("GET /health", () => {
   it("answers ok with the version, no auth needed", async () => {
     const res = await call("/health");
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ status: "ok", version: "dev" });
+    expect(await res.json()).toEqual({ status: "ok", version: "dev", rpc: ["member", "revoked"] });
     expect(res.headers.get("cache-control")).toBe("no-store");
   });
 

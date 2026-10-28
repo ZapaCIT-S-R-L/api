@@ -212,4 +212,44 @@ describe("session limits", () => {
   it("logout-all without a session → 401", async () => {
     await expectUnauthorized(await call("/v1/auth/logout-all", { method: "POST" }));
   });
+
+  // api #81: a lost phone's chat tokens (10 minutes) must die with its sessions, not at their expiry.
+  it("logout-all increments the parent's session epoch and sends account.sessions_revoked with it", async () => {
+    const a = await signIn("parent-a");
+    const b = await signIn("parent-b");
+    for (const expected of [1, 2]) {
+      const again = expected === 1 ? a : await signIn("parent-a");
+      expect((await call("/v1/auth/logout-all", { method: "POST", headers: bearer(again.session.token) })).status).toBe(
+        204,
+      );
+      const epoch = await env.DB.prepare("SELECT session_epoch FROM parents WHERE id = ?")
+        .bind(a.parent.id)
+        .first<number>("session_epoch");
+      expect(epoch).toBe(expected);
+    }
+    const other = await env.DB.prepare("SELECT session_epoch FROM parents WHERE id = ?")
+      .bind(b.parent.id)
+      .first<number>("session_epoch");
+    expect(other).toBe(0);
+    const { results } = await env.DB.prepare("SELECT body, sent_at FROM membership_outbox ORDER BY seq").all<{
+      body: string;
+      sent_at: string | null;
+    }>();
+    const events = results.map((r) => JSON.parse(r.body) as Record<string, unknown>);
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({ v: 1, type: "account.sessions_revoked", accountId: a.parent.id, epoch: 1 });
+    expect(events[1]).toMatchObject({ type: "account.sessions_revoked", accountId: a.parent.id, epoch: 2 });
+    expect(typeof events[0]?.epoch).toBe("number");
+    expect(results.every((r) => r.sent_at !== null)).toBe(true);
+  });
+
+  it("logout-all: removeDevices must be true or false", async () => {
+    const a = await signIn("parent-a");
+    const res = await call("/v1/auth/logout-all?removeDevices=yes", {
+      method: "POST",
+      headers: bearer(a.session.token),
+    });
+    expect(res.status).toBe(400);
+    expect((await call("/v1/me", { headers: bearer(a.session.token) })).status).toBe(200);
+  });
 });

@@ -394,6 +394,8 @@ describe("POST /v1/chat/token for kids", () => {
     expect(payload.role).toBe("kid");
     expect(payload.dev).toBe(deviceId);
     expect(payload.conv).toEqual([`family:${a.familyId}`, `connection:${connectionId}`]);
+    // Kids have no session epoch (logout-all is for parents): no `sep`, which the services read as 0.
+    expect(payload.sep).toBeUndefined();
   });
 
   it("a parent's token carries the registered device and the family scope (no seeded source)", async () => {
@@ -401,7 +403,13 @@ describe("POST /v1/chat/token for kids", () => {
     const deviceId = await registered(parent.auth);
     const { token } = await (await send("/v1/chat/token", parent.auth)).json<{ token: string }>();
     const { payload } = await jwtVerify(token, createLocalJWKSet(await jwks()), { audience: "chat.localhost" });
-    expect(payload).toMatchObject({ sub: parent.id, role: "parent", dev: deviceId, conv: [`family:${familyId}`] });
+    expect(payload).toMatchObject({
+      sub: parent.id,
+      role: "parent",
+      dev: deviceId,
+      conv: [`family:${familyId}`],
+      sep: 0,
+    });
   });
 });
 

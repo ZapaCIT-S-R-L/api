@@ -29,6 +29,11 @@ decrypt a chat. The server has no cryptography of its own beyond verifying sign-
   trusted (libsignal `IdentityKeyStore`); the server's key history is a convenience, not the guarantee.
 - **The only crypto in the server** is sign-in token verification (jose), SHA-256 and random tokens (WebCrypto),
   and app attestation checks (pkijs, WebCrypto). No custom primitives.
+- **A lost phone loses everything at once.** `POST /v1/auth/logout-all` deletes the parent's sessions and bumps
+  their session epoch (`parents.session_epoch`, the chat token's `sep` claim); the `account.sessions_revoked`
+  event makes the chat and calls services refuse the chat tokens already issued and close the streams and calls
+  opened with them, instead of waiting out the token's 10 minutes. `?removeDevices=true` also removes the parent's
+  registered devices (`device.removed` events), so other phones stop sealing messages to the lost one.
 
 ## Services
 

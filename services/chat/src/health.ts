@@ -23,6 +23,10 @@ function problems(env: Env): string[] {
   return found;
 }
 
+// The ChatMembership methods this Worker serves to other Workers (src/rpc.ts). deploy-calls.yml waits until the chat
+// Worker in the same environment lists every method the calls Worker calls, so calls never goes live first.
+export const RPC_METHODS = ["member", "revoked"] as const;
+
 export async function handleHealth(_request: Request, env: Env): Promise<Response> {
   const found = problems(env);
   if (!found.includes("DB binding missing")) {
@@ -36,5 +40,5 @@ export async function handleHealth(_request: Request, env: Env): Promise<Respons
     console.error(JSON.stringify({ msg: "misconfigured", problems: found }));
     return json({ status: "misconfigured", version: env.VERSION, problems: found }, 503);
   }
-  return json({ status: "ok", version: env.VERSION });
+  return json({ status: "ok", version: env.VERSION, rpc: RPC_METHODS });
 }
