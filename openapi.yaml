@@ -108,7 +108,8 @@ tags:
         kid's device is registered (`POST /v1/devices`, or `PUT /v1/keys/identity` for device 1; no `push` yet).
         `device.removed`: a device is removed (`DELETE /v1/devices/{deviceId}`,
         `POST /v1/auth/logout-all?removeDevices=true` (one per device), an identity change, a kid unpaired or
-        removed, or 90 days without a request). `account.deleted`: a kid is removed. `account.sessions_revoked`:
+        removed, a kid's phone revoked or signed out (`POST /v1/kid/logout`), or 90 days without a request). The
+        chat and calls services refuse chat tokens issued for a removed device before its removal. `account.deleted`: a kid is removed. `account.sessions_revoked`:
         `POST /v1/auth/logout-all`, with the parent's new session epoch; chat tokens whose `sep` claim is lower are
         refused from then on and their open streams closed.
       - **Delivery.** At least once; dedupe by `id`. Events are written in the same D1 transaction as the change (a
@@ -1061,8 +1062,10 @@ paths:
       operationId: kidLogout
       summary: The kid's phone signs itself out.
       description: |
-        Deletes the kid session the token belongs to (the kid's other phones stay paired). Only a kid session
-        (`zkk_`) can call this; a parent session gets `401` (parents use `POST /v1/auth/logout`). No body.
+        Deletes the kid session the token belongs to (the kid's other phones stay paired). The device registered on
+        the session is removed too, as when a parent revokes the phone (a `device.removed` event, its prekeys go), so
+        other phones stop sealing messages to it and the chat and calls services refuse its chat tokens. Only a kid
+        session (`zkk_`) can call this; a parent session gets `401` (parents use `POST /v1/auth/logout`). No body.
       responses:
         "204": { description: "Signed out. The token no longer works; pair again to get a new session." }
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -1097,7 +1100,8 @@ paths:
       summary: "Unpair one phone: revoke a kid session (lost or replaced phone)."
       description: |
         The session is deleted at once and its token answers `401` everywhere from then on. The device registered
-        on the session is removed too (a `device.removed` event), so other phones stop sealing messages to it. The
+        on the session is removed too (a `device.removed` event), so other phones stop sealing messages to it, and
+        the chat and calls services refuse chat tokens issued for it and drop its open streams and calls. The
         kid, the kid's other phones and open pairing codes stay. To unpair every phone at once, use
         `DELETE /v1/families/{familyId}/kids/{kidId}/pairing`. To pair the phone again, create a new code. A session that
         doesn't exist, or belongs to another kid, gets `404`; so does a non-member. Kid sessions get `401`.

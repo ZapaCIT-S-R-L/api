@@ -22,6 +22,9 @@ export interface Caller {
   // The account's session epoch when the token was issued (`sep`; 0 if missing). A logout-all at the account API
   // raises it; the chat service knows the current one and this service asks it on every request (src/chat.ts).
   sep: number;
+  // When the token was issued (seconds since the epoch): the chat service refuses tokens issued before the device
+  // was removed (api #92).
+  iat: number;
 }
 
 export class InvalidToken extends Error {}
@@ -68,7 +71,8 @@ export async function verifyChatToken(token: string, env: Env): Promise<Caller> 
 
 function claims(payload: JWTPayload): Caller {
   const { sub, dev, role, conv, iat, exp, sep } = payload;
-  if ((exp ?? 0) - (iat ?? 0) > MAX_LIFETIME_SECONDS) throw new InvalidToken("token lifetime over 15 minutes");
+  if (typeof iat !== "number" || !Number.isInteger(iat) || iat < 0) throw new InvalidToken("bad claim: iat");
+  if ((exp ?? 0) - iat > MAX_LIFETIME_SECONDS) throw new InvalidToken("token lifetime over 15 minutes");
   if (typeof sub !== "string" || sub.length === 0 || sub.length > 128) throw new InvalidToken("bad claim: sub");
   if (typeof dev !== "number" || !Number.isInteger(dev) || dev < 1 || dev > 127)
     throw new InvalidToken("bad claim: dev");
@@ -83,5 +87,5 @@ function claims(payload: JWTPayload): Caller {
   if (sep !== undefined && (typeof sep !== "number" || !Number.isInteger(sep) || sep < 0)) {
     throw new InvalidToken("bad claim: sep");
   }
-  return { accountId: sub, deviceId: dev, role, scopes: conv, sep: sep ?? 0 };
+  return { accountId: sub, deviceId: dev, role, scopes: conv, sep: sep ?? 0, iat };
 }

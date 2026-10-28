@@ -484,6 +484,45 @@ describe("removing or unpairing a kid revokes its phones", () => {
     expect((await deviceEvents()).filter((e) => e.type === "device.removed")).toEqual([]);
   });
 
+  // api #92: signing out removes the phone like a parent's revoke does, so the family stops sealing to it and the
+  // chat and calls services refuse its chat tokens once device.removed arrives.
+  it("POST /v1/kid/logout: that phone's device and keys go with its session, with device.removed; the other stays", async () => {
+    const { parent, familyId, kidId } = await family("ana");
+    const leaving = await pairKid(parent.auth, familyId, kidId);
+    const kept = await pairKid(parent.auth, familyId, kidId);
+    const identityKey = ec();
+    const leavingDevice = await registered(leaving.auth, deviceKeys(identityKey));
+    const keptDevice = await registered(kept.auth, deviceKeys(identityKey));
+
+    expect((await send("/v1/kid/logout", leaving.auth)).status).toBe(204);
+    expect((await get("/v1/families", leaving.auth)).status).toBe(401);
+    expect((await get("/v1/families", kept.auth)).status).toBe(200);
+    const devices = await env.DB.prepare("SELECT device_id FROM devices WHERE account_id = ?")
+      .bind(kidId)
+      .all<{ device_id: number }>();
+    expect(devices.results.map((d) => d.device_id)).toEqual([keptDevice]);
+    const prekeys = await env.DB.prepare("SELECT DISTINCT device_id FROM one_time_prekeys WHERE account_id = ?")
+      .bind(kidId)
+      .all<{ device_id: number }>();
+    expect(prekeys.results.map((d) => d.device_id)).toEqual([keptDevice]);
+    const removed = (await deviceEvents()).filter((e) => e.type === "device.removed");
+    expect(removed.map((e) => [e.accountId, e.deviceId])).toEqual([[kidId, leavingDevice]]);
+    // Sent to the chat service right away, not only at the next cron.
+    const unsent = await env.DB.prepare("SELECT count(*) AS n FROM membership_outbox WHERE sent_at IS NULL").first<{
+      n: number;
+    }>();
+    expect(unsent?.n).toBe(0);
+  });
+
+  it("POST /v1/kid/logout of a phone without a device removes no device", async () => {
+    const { parent, familyId, kidId } = await family("ana");
+    const unregistered = await pairKid(parent.auth, familyId, kidId);
+    await registered((await pairKid(parent.auth, familyId, kidId)).auth);
+    expect((await send("/v1/kid/logout", unregistered.auth)).status).toBe(204);
+    expect(await count("devices")).toBe(1);
+    expect((await deviceEvents()).filter((e) => e.type === "device.removed")).toEqual([]);
+  });
+
   it("after unpairing, a fresh pairing may replace the kid's identity (PUT /v1/keys/identity)", async () => {
     const { parent, familyId, kidId } = await family("ana");
     await registered((await pairKid(parent.auth, familyId, kidId)).auth, deviceKeys(ec()));

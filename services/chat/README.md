@@ -25,7 +25,9 @@ only routing metadata (who is in which conversation, which device sent to which 
 
 - **Calls:** the calls service asks `ChatMembership.member(conversationId, accountId)` (`src/rpc.ts`) whether the
   caller is a current member of an open conversation, and which members and devices to ring, and
-  `ChatMembership.revoked(accountId, sep)` whether a chat token's session epoch was revoked by a logout-all.
+  `ChatMembership.tokenRevoked(accountId, deviceId, sep, iat)` whether a chat token was revoked: by a logout-all
+  (its session epoch) or because its device was removed after it was issued (api #92). `revoked(accountId, sep)`
+  stays for calls Workers from before that.
   Observers are not members for calls (never rung, never given the call key); the answer flags them
   (`observer: true`) so the calls service can show them the call log. Workers RPC through its `CHAT` service
   binding only; there is no HTTP route for it. The other way round, when chat removes members from a conversation
@@ -36,6 +38,11 @@ only routing metadata (who is in which conversation, which device sent to which 
 - **Sign out everywhere:** `account.sessions_revoked` (from `POST /v1/auth/logout-all` on the account service)
   stores the account's new session epoch (`session_epochs`). Chat tokens with a lower `sep` claim are refused and
   their open streams closed with `4401`, so a lost phone loses chat within seconds, not when its token expires.
+
+- **Removed devices:** `device.removed` (a parent revokes a kid's phone or unpairs the kid, the kid signs out, or a
+  logout-all with `removeDevices`) tombstones the device (`device_tombstones`). Chat tokens for that device issued
+  before the removal (up to a second after, for the race with the token endpoint) are refused on every route, and
+  its open streams are closed with `4403` (api #92). A device registered again gets newer tokens, which work.
 
 - **Attachments:** ciphertext only, in R2 (EU) under a random id, ≤ 25 MiB, through one-time upload/download URLs
   (15 minutes, usable once; only the token's hash is stored). Kept until the conversation is purged; abandoned

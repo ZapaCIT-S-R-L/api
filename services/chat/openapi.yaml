@@ -20,8 +20,10 @@ info:
     **Revocation.** When an account signs out everywhere (`POST /v1/auth/logout-all` on the account service), the
     `account.sessions_revoked` event brings the account's new session epoch. From then on a token whose `sep` is
     below it is refused (401), and streams opened with such tokens are closed (`4401`); the app asks the account
-    service for a new token, which answers 401 until the parent signs in again. The calls service asks this
-    service (`ChatMembership.revoked`) the same question on every request.
+    service for a new token, which answers 401 until the parent signs in again. Likewise, after a `device.removed`
+    event (a kid's phone revoked or signed out, api #92) a token for that device issued before the removal is
+    refused (401) and its streams are closed (`4403`). The calls service asks this service
+    (`ChatMembership.tokenRevoked`) the same question on every request.
 
     **Membership** (families, kids, connections, devices) comes from the account service as events on a Cloudflare
     Queue (see the `MembershipEvent` schema). The chat service keeps its own copy and enforces the family rules:
@@ -123,7 +125,7 @@ paths:
                       until the chat Worker in its environment lists every method calls uses.
                     type: array
                     items: { type: string }
-                    examples: [[member, revoked]]
+                    examples: [[member, revoked, tokenRevoked]]
         "503":
           description: Misconfigured; `problems` names the missing binding or variable, never a value.
           content:
