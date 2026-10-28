@@ -5,7 +5,7 @@ import { env } from "cloudflare:workers";
 import { beforeEach, describe, expect, it } from "vitest";
 import { reconcile } from "../../src/conversations";
 import worker from "../../src/index";
-import { parseEvent, revokedBefore } from "../../src/membership";
+import { applyEvent, parseEvent, revokedBefore } from "../../src/membership";
 import {
   ALEX,
   ANA,
@@ -107,6 +107,9 @@ describe("queue consumer", () => {
     expect(() =>
       parseEvent(event({ type: "device.upserted", accountId: "a", deviceId: 200, registrationId: 1 })),
     ).toThrow();
+    // Device events are ordered by occurredAt (api #90): it must be a date.
+    const undated = { ...event({ type: "device.removed", accountId: "a", deviceId: 2 }), occurredAt: "soon" };
+    expect(() => parseEvent(undated)).toThrow();
   });
 });
 
@@ -180,6 +183,65 @@ describe("graph changes and existing conversations", () => {
     expect(ana?.devices).toEqual([{ deviceId: 2, registrationId: 999 }]);
     expect(rooms.log).toContain(`forgetDevice ${c.id} ${ANA}:1`);
     expect(rooms.log.filter((l) => l === `notify ${c.id} devices_changed`)).toHaveLength(2);
+  });
+
+  // api #90: delivery is at least once and unordered; the membership backfill (account migration 0013) queued a
+  // device.upserted for every device, which can arrive after a later device.removed of that device.
+  it("devices: an upsert older than the device's removal does not bring it back; a newer upsert does", async () => {
+    await seedFamilies();
+    const c = await create(MUM, [ANA]);
+    const rooms = recordingRooms();
+    const at = (iso: string, body: Record<string, unknown>) =>
+      applyEvent(env, rooms, { ...event(body), occurredAt: iso });
+    const anaDevices = async () => (await get(MUM, c.id))?.members.find((m) => m.accountId === ANA)?.devices;
+    const backfill = { type: "device.upserted", accountId: ANA, deviceId: 2, registrationId: 500 };
+
+    await at("2026-10-28T10:00:01.000Z", { type: "device.removed", accountId: ANA, deviceId: 2 });
+    await at("2026-10-28T10:00:00.000Z", backfill);
+    await at("2026-10-28T10:00:01.000Z", backfill); // the same millisecond: the removal wins
+    expect(await anaDevices()).toEqual([{ deviceId: 1, registrationId: 103 }]);
+    expect(rooms.log.filter((l) => l === `notify ${c.id} devices_changed`)).toHaveLength(1);
+
+    // The device is registered again after its removal.
+    await at("2026-10-28T10:00:02.000Z", { ...backfill, registrationId: 600 });
+    expect(await anaDevices()).toEqual([
+      { deviceId: 1, registrationId: 103 },
+      { deviceId: 2, registrationId: 600 },
+    ]);
+    // An older upsert of a live device doesn't overwrite a newer one; a redelivery of the newest still applies.
+    await at("2026-10-28T10:00:00.500Z", backfill);
+    await at("2026-10-28T10:00:02.000Z", { ...backfill, registrationId: 600 });
+    expect(await anaDevices()).toContainEqual({ deviceId: 2, registrationId: 600 });
+
+    // device.removed stays authoritative, even when it is older than the last upsert.
+    await at("2026-10-28T10:00:01.500Z", { type: "device.removed", accountId: ANA, deviceId: 2 });
+    expect(await anaDevices()).toEqual([{ deviceId: 1, registrationId: 103 }]);
+    // An older removal never lowers the tombstone.
+    await at("2026-10-28T10:00:00.000Z", { type: "device.removed", accountId: ANA, deviceId: 2 });
+    await at("2026-10-28T10:00:01.000Z", backfill);
+    expect(await anaDevices()).toEqual([{ deviceId: 1, registrationId: 103 }]);
+  });
+
+  // api #91 review: a removal older than the last upsert must not forget that upsert's timestamp.
+  it("devices: a delayed removal keeps the newer upsert's timestamp, so a stale upsert stays ignored", async () => {
+    await seedFamilies();
+    const c = await create(MUM, [ANA]);
+    const rooms = recordingRooms();
+    const at = (iso: string, body: Record<string, unknown>) =>
+      applyEvent(env, rooms, { ...event(body), occurredAt: iso });
+    const anaDevices = async () => (await get(MUM, c.id))?.members.find((m) => m.accountId === ANA)?.devices;
+    const upsert = { type: "device.upserted", accountId: ANA, deviceId: 2, registrationId: 500 };
+
+    await at("2026-10-28T10:00:03.000Z", upsert);
+    await at("2026-10-28T10:00:02.000Z", { type: "device.removed", accountId: ANA, deviceId: 2 });
+    await at("2026-10-28T10:00:02.500Z", upsert);
+    expect(await anaDevices()).toEqual([{ deviceId: 1, registrationId: 103 }]);
+
+    // A later registration still applies, and a newer removal still removes it.
+    await at("2026-10-28T10:00:04.000Z", { ...upsert, registrationId: 600 });
+    expect(await anaDevices()).toContainEqual({ deviceId: 2, registrationId: 600 });
+    await at("2026-10-28T10:00:05.000Z", { type: "device.removed", accountId: ANA, deviceId: 2 });
+    expect(await anaDevices()).toEqual([{ deviceId: 1, registrationId: 103 }]);
   });
 
   // api #81: after a logout-all, the account's chat tokens from before the new epoch are refused.
