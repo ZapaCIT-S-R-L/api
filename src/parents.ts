@@ -61,6 +61,9 @@ export async function setDisplayName(env: Env, id: string, displayName: string):
     .run();
 }
 
+// A parent keeps at most this many sessions; a new sign-in signs out the oldest beyond it.
+export const MAX_SESSIONS_PER_PARENT = 20;
+
 export interface SignInResult {
   session: { token: string; expiresAt: string };
   parent: Parent;
@@ -123,6 +126,12 @@ export async function signIn(
       db
         .prepare("INSERT INTO sessions (token_hash, parent_id, created_at, expires_at) VALUES (?, ?, ?, ?)")
         .bind(tokenHash, parentId, nowIso, expiresAt),
+      db
+        .prepare(
+          `DELETE FROM sessions WHERE parent_id = ? AND token_hash NOT IN
+             (SELECT token_hash FROM sessions WHERE parent_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?)`,
+        )
+        .bind(parentId, parentId, MAX_SESSIONS_PER_PARENT),
     );
     try {
       await db.batch(statements);

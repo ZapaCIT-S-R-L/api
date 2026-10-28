@@ -1,6 +1,7 @@
 // GET /v1/me and POST /v1/auth/logout: the session token from sign-in, as a bearer token.
 import { env } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MAX_SESSIONS_PER_PARENT } from "../../src/parents";
 import {
   ADULT,
   appleClaims,
@@ -178,5 +179,37 @@ describe("PATCH /v1/me", () => {
     const { session } = await signIn();
     expect((await call("/v1/me", { headers: bearer(session.token) })).status).toBe(200);
     expect((await call("/v1/me", { method: "DELETE", headers: bearer(session.token) })).status).toBe(405);
+  });
+});
+
+// Regression (security review 2026-10-27, L8): sessions are capped per parent, and a parent can sign out everywhere.
+describe("session limits", () => {
+  it("keeps the newest MAX_SESSIONS_PER_PARENT sessions; the oldest is signed out", async () => {
+    const tokens: string[] = [];
+    for (let i = 0; i < MAX_SESSIONS_PER_PARENT + 1; i++) tokens.push((await signIn()).session.token);
+    expect(await count("sessions")).toBe(MAX_SESSIONS_PER_PARENT);
+    await expectUnauthorized(await call("/v1/me", { headers: bearer(tokens[0] ?? "") }));
+    expect((await call("/v1/me", { headers: bearer(tokens.at(-1) ?? "") })).status).toBe(200);
+    expect((await call("/v1/me", { headers: bearer(tokens[1] ?? "") })).status).toBe(200);
+  });
+
+  it("the cap is per parent", async () => {
+    await signIn("parent-x");
+    for (let i = 0; i < MAX_SESSIONS_PER_PARENT; i++) await signIn("parent-y");
+    expect(await count("sessions")).toBe(MAX_SESSIONS_PER_PARENT + 1);
+  });
+
+  it("POST /v1/auth/logout-all signs out every session of the parent, not other parents", async () => {
+    const a1 = await signIn("parent-a");
+    const a2 = await signIn("parent-a");
+    const b = await signIn("parent-b");
+    expect((await call("/v1/auth/logout-all", { method: "POST", headers: bearer(a1.session.token) })).status).toBe(204);
+    await expectUnauthorized(await call("/v1/me", { headers: bearer(a1.session.token) }));
+    await expectUnauthorized(await call("/v1/me", { headers: bearer(a2.session.token) }));
+    expect((await call("/v1/me", { headers: bearer(b.session.token) })).status).toBe(200);
+  });
+
+  it("logout-all without a session → 401", async () => {
+    await expectUnauthorized(await call("/v1/auth/logout-all", { method: "POST" }));
   });
 });
