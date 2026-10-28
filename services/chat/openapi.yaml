@@ -66,6 +66,10 @@ tags:
       without waking the object). The server closes the socket with code `4401` when the chat token expires and
       `4403` when the account leaves the conversation; reconnect with a fresh token. Queued envelopes are sent
       right after connecting.
+  - name: Conversation events
+    description: |
+      Not HTTP: the queue messages this service sends to the calls service when members are removed from a
+      conversation or it is closed (`ConversationEvent`), so a live call drops them at once.
   - name: Attachments
     description: |
       Photos and voice messages are encrypted on the phone with a fresh key per file (EXIF stripped first). Only the
@@ -403,6 +407,22 @@ paths:
               schema: { type: string, contentMediaType: application/octet-stream }
         "404": { description: "`not_found`: unknown, expired or already used URL." }
 
+# Outbound messages. Not HTTP: OpenAPI 3.1 webhooks describe the queue messages this service produces.
+webhooks:
+  conversationEvent:
+    post:
+      tags: [Conversation events]
+      operationId: conversationEvent
+      summary: A message on the CONVERSATION_EVENTS Cloudflare Queue, for the calls service (not an HTTP call).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/ConversationEvent" }
+      responses:
+        "200": { description: "The calls service acks the queue message; nothing is returned." }
+
 components:
   securitySchemes:
     chatToken:
@@ -649,3 +669,46 @@ components:
           properties:
             type: { const: account.deleted }
             accountId: { $ref: "#/components/schemas/AccountId" }
+
+    ConversationEvent:
+      description: |
+        Not an HTTP body: the messages on the Cloudflare Queue `zapakid-conversation-events-<environment>`
+        (staging, production), produced by the chat service and consumed by the calls service (the same schema is
+        in `services/calls/openapi.yaml`). Sent when chat removes members from a conversation (unpair, family left,
+        connection removed, kid unshared, account deleted, the member deleted the conversation) or closes one, so a
+        live call drops those members' devices at once (closes their SFU tracks, rotates the call key without
+        them) instead of waiting for their next request. The chat service writes the event in the same D1
+        transaction as the change (outbox) and sends it right after. Delivery is at least once and not ordered:
+        the calls service's handling is idempotent (removing a member who is not in the call is a no-op), so no
+        dedupe is needed. Unknown `type`s are acknowledged and ignored; a malformed event goes to
+        `zapakid-conversation-events-<environment>-dlq` after 5 retries.
+      type: object
+      required: [v, id, type, occurredAt, conversationId]
+      properties:
+        v: { type: integer, const: 1 }
+        id: { type: string, format: uuid }
+        occurredAt: { type: string, format: date-time }
+        conversationId: { $ref: "#/components/schemas/ConversationId" }
+        type:
+          type: string
+          enum:
+            - conversation.members_removed
+            - conversation.closed
+      oneOf:
+        - title: conversation.members_removed
+          description: These accounts are no longer members of the conversation.
+          required: [type, conversationId, accountIds]
+          properties:
+            type: { const: conversation.members_removed }
+            conversationId: { $ref: "#/components/schemas/ConversationId" }
+            accountIds:
+              type: array
+              minItems: 1
+              maxItems: 64
+              items: { $ref: "#/components/schemas/AccountId" }
+        - title: conversation.closed
+          description: The conversation is read-only from now on; it has no calls any more.
+          required: [type, conversationId]
+          properties:
+            type: { const: conversation.closed }
+            conversationId: { $ref: "#/components/schemas/ConversationId" }

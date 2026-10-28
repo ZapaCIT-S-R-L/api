@@ -9,7 +9,12 @@ test("resource names per environment", () => {
   assert.deepEqual(names("staging"), {
     database: "zapakid-chat-staging",
     bucket: "zapakid-chat-attachments-staging",
-    queues: ["zapakid-membership-staging", "zapakid-membership-staging-dlq"],
+    queues: [
+      "zapakid-membership-staging",
+      "zapakid-membership-staging-dlq",
+      "zapakid-conversation-events-staging",
+      "zapakid-conversation-events-staging-dlq",
+    ],
   });
   assert.throws(() => names("dev"));
 });

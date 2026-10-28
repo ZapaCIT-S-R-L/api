@@ -45,7 +45,11 @@ test("deployed conversation objects live in the EU jurisdiction", () => {
 test("the local test hooks never reach a deployed environment", () => {
   for (const [name, env] of Object.entries(deployed)) {
     assert.equal(env.vars.E2E_HOOKS, undefined, name);
-    assert.equal(env.queues?.producers, undefined, `${name}: the account service produces, chat only consumes`);
+    assert.deepEqual(
+      env.queues?.producers,
+      [{ binding: "CONVERSATION_EVENTS", queue: `zapakid-conversation-events-${name}` }],
+      `${name}: the only producer is the conversation events queue for the calls service (no MEMBERSHIP_E2E)`,
+    );
   }
 });
 

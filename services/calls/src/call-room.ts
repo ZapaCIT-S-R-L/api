@@ -5,6 +5,8 @@
 // Key rotation: every join and leave bumps `epoch`. The key leader (the longest-present participant) then makes a
 // new random call key and sends it sealed to every other participant device (a `keys` message per epoch). An
 // envelope for a device that is not connected yet waits here until it connects, for the current epoch only.
+// A member the chat service removes from the conversation (src/conversation-events.ts) is dropped the same way:
+// their devices leave with reason `removed`, the epoch moves on without them, their sockets are closed.
 import { DurableObject } from "cloudflare:workers";
 import type { Caller, Role } from "./auth";
 import { ChatUnavailable, membership } from "./chat";
@@ -13,6 +15,7 @@ import { limits } from "./limits";
 import { pushProvider } from "./push";
 
 export type EndReason = "hung_up" | "no_answer" | "declined" | "max_duration" | "disconnected";
+export type LeaveReason = "left" | "disconnected" | "removed";
 type State = "ringing" | "active" | "ended";
 
 interface Participant {
@@ -252,6 +255,28 @@ export class CallRoom extends DurableObject<Env> {
     return ok(null);
   }
 
+  // ---- From the chat service (the conversation events queue, src/conversation-events.ts); no caller check: the
+  // chat service is the source of membership, and only Workers of this account produce into the queue ----
+
+  // These accounts are no longer members of the conversation: every device of theirs leaves the call now (reason
+  // `removed`), the key epoch moves on without them and their events sockets are closed. Returns the SFU sessions
+  // they had, for the Worker to close. A no-op for accounts not in the call.
+  async removeMembers(accountIds: string[]): Promise<string[]> {
+    const call = this.call;
+    if (!call || call.state === "ended") return [];
+    const gone = new Set(accountIds);
+    if (call.ring) call.ring = call.ring.filter((r) => !gone.has(r.accountId));
+    return this.drop(call.participants.filter((p) => gone.has(p.accountId)));
+  }
+
+  // The conversation is closed (read-only, no calls): everyone leaves and the call ends.
+  async conversationClosed(): Promise<string[]> {
+    const call = this.call;
+    if (!call || call.state === "ended") return [];
+    call.ring = [];
+    return this.drop([...call.participants]);
+  }
+
   // ---- The events WebSocket (the Worker forwards the upgrade with the verified caller) ----
 
   override async fetch(request: Request): Promise<Response> {
@@ -416,6 +441,42 @@ export class CallRoom extends DurableObject<Env> {
     if ((await this.ctx.storage.getAlarm()) !== next) await this.ctx.storage.setAlarm(next);
   }
 
+  // Drops participants the chat service removed. The `left` events carry the new epoch, so the key leader rotates the
+  // call key without them; their sockets are closed right after, and they get 404 from then on (`access`).
+  private async drop(gone: Participant[]): Promise<string[]> {
+    const call = this.call;
+    if (!call || gone.length === 0) return [];
+    const sessions = gone.flatMap((p) => (p.sessionId ? [p.sessionId] : []));
+    call.participants = call.participants.filter((p) => !gone.includes(p));
+    call.epoch++;
+    call.pending = [];
+    for (const p of gone) {
+      this.broadcast({
+        type: "left",
+        accountId: p.accountId,
+        deviceId: p.deviceId,
+        epoch: call.epoch,
+        reason: "removed",
+      });
+    }
+    if (call.participants.length === 0) {
+      await this.end("hung_up");
+      return sessions;
+    }
+    await this.save();
+    for (const p of gone) {
+      for (const ws of this.ctx.getWebSockets(deviceKey(p.accountId, p.deviceId))) {
+        try {
+          ws.close(4403, "removed from the conversation");
+        } catch {
+          // Already closed.
+        }
+      }
+    }
+    this.broadcastRoster();
+    return sessions;
+  }
+
   private async remove(p: Participant, reason: "left" | "disconnected"): Promise<void> {
     const call = this.call;
     if (!call) return;
@@ -427,7 +488,13 @@ export class CallRoom extends DurableObject<Env> {
       return;
     }
     await this.save();
-    this.broadcast({ type: "left", accountId: p.accountId, deviceId: p.deviceId, epoch: call.epoch, reason });
+    this.broadcast({
+      type: "left",
+      accountId: p.accountId,
+      deviceId: p.deviceId,
+      epoch: call.epoch,
+      reason: reason satisfies LeaveReason,
+    });
     this.broadcastRoster();
   }
 

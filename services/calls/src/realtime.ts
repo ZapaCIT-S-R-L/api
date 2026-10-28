@@ -93,3 +93,25 @@ export async function iceServers(env: Env, ttlSeconds: number): Promise<IceServe
     return STUN_ONLY;
   }
 }
+
+const midOf = (track: unknown): string | null => {
+  if (typeof track !== "object" || track === null) return null;
+  const mid = (track as { mid?: unknown }).mid;
+  return typeof mid === "string" && mid.length > 0 ? mid : null;
+};
+
+// Closes every track of an SFU session, the published ones and the pulled ones, without renegotiation: for a device
+// dropped from a call. The SFU stops forwarding its audio and stops feeding it the others'. Realtime has no "delete
+// session"; an empty session ends when the phone drops it. Returns how many tracks were closed.
+export async function closeSession(env: Env, sessionId: string): Promise<number> {
+  const session = encodeURIComponent(sessionId);
+  const state = (await sfu(env, "GET", `/sessions/${session}`)) as { tracks?: unknown };
+  const tracks: unknown[] = Array.isArray(state.tracks) ? state.tracks : [];
+  const mids = tracks.flatMap((t) => {
+    const mid = midOf(t);
+    return mid === null ? [] : [{ mid }];
+  });
+  if (mids.length === 0) return 0;
+  await sfu(env, "PUT", `/sessions/${session}/tracks/close`, { tracks: mids, force: true });
+  return mids.length;
+}

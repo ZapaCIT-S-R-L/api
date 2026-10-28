@@ -1,16 +1,19 @@
-// Tests for scripts/d1-database.js: the deploy finds the right EU database and patches only its environment.
+// Tests for scripts/resources.js: the deploy finds the right EU database and queues, and patches only its environment.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { databaseName, findDatabase, patchConfig, PLACEHOLDERS } from "../../scripts/d1-database.js";
+import { findDatabase, names, patchConfig, PLACEHOLDERS } from "../../scripts/resources.js";
 
 const UUID = "0123abcd-4567-89ef-0123-456789abcdef";
 
-test("database names per environment", () => {
-  assert.equal(databaseName("staging"), "zapakid-calls-staging");
-  assert.equal(databaseName("production"), "zapakid-calls-production");
-  assert.throws(() => databaseName("local"));
-  assert.throws(() => databaseName("__proto__"));
+test("resource names per environment", () => {
+  assert.deepEqual(names("staging"), {
+    database: "zapakid-calls-staging",
+    queues: ["zapakid-conversation-events-staging", "zapakid-conversation-events-staging-dlq"],
+  });
+  assert.equal(names("production").database, "zapakid-calls-production");
+  assert.throws(() => names("local"));
+  assert.throws(() => names("__proto__"));
 });
 
 test("refuses a database outside the EU, duplicates and bad uuids", () => {
