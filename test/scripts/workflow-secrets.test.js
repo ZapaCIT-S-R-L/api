@@ -27,7 +27,7 @@ for (const { file, doc } of workflows) {
         if (!usesSecret(step.env)) continue;
         const run = String(step.run ?? "");
         assert.ok(
-          /wrangler|d1-database\.js|resources\.js/.test(run),
+          /wrangler|d1-database\.js|resources\.js|bootstrap-secrets\.js/.test(run),
           `step "${step.name ?? run.slice(0, 40)}" gets the token`,
         );
         assert.ok(
