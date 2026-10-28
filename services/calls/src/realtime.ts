@@ -5,10 +5,13 @@ import type { Env } from "./env";
 import { safeUrl } from "./urls";
 
 const TIMEOUT_MS = 10_000;
+const TRANSIENT = new Set([408, 425, 429]);
 
+// Realtime could not be reached, failed, or asked us to slow down: worth retrying later.
 export class RealtimeUnavailable extends Error {}
 
-// Realtime refused the request (4xx): its errorCode/errorDescription, passed on to the phone.
+// Realtime refused the request (a 4xx that a retry would not change): its errorCode/errorDescription, passed on to
+// the phone.
 export class RealtimeRejected extends Error {
   constructor(
     readonly upstreamStatus: number,
@@ -44,8 +47,8 @@ export async function sfu(env: Env, method: "GET" | "POST" | "PUT", path: string
   if (!appId || !secret) throw new RealtimeUnavailable("Realtime app credentials not set");
   const res = await send(`${base(env)}/apps/${encodeURIComponent(appId)}${path}`, secret, method, body);
   const json: unknown = await res.json().catch(() => null);
-  if (res.status >= 500 || res.status === 401 || res.status === 403) {
-    // 401/403: our app secret is wrong, not the phone's fault.
+  if (res.status >= 500 || res.status === 401 || res.status === 403 || TRANSIENT.has(res.status)) {
+    // 401/403: our app secret is wrong, not the phone's fault. 408/425/429: a timeout or rate limit, not a refusal.
     throw new RealtimeUnavailable(`Realtime answered ${res.status}`);
   }
   if (!res.ok) {

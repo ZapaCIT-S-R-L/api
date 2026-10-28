@@ -300,6 +300,32 @@ describe("conversation.members_removed", () => {
     for (const s of Object.values(sockets)) s.close();
   });
 
+  it.each([
+    ["GET session", "failNext"],
+    ["PUT tracks/close", "failNextClose"],
+  ] as const)("keeps the SFU clean-up to retry when Realtime rate limits the %s (429)", async (_, fail) => {
+    const { mum4, sockets, callId, mumSession } = await familyCall();
+    await removeMember("conv-1", mum4.accountId);
+    realtime[fail] = 429;
+    const result = await deliver([
+      event({ type: "conversation.members_removed", conversationId: "conv-1", accountIds: [mum4.accountId] }),
+    ]);
+    expect(result.explicitAcks).toEqual(["m0"]);
+    await sockets.mum4.next("__closed");
+
+    // A rate limit is not a refusal: her tracks are still open and the session stays on the list, retry due in 5 s.
+    expect(realtime.tracks.get(mumSession)).toHaveLength(2);
+    const pending = await room(callId).pendingCloses();
+    expect(pending).toEqual([{ sessionId: mumSession, attempts: 1, nextAt: expect.any(Number) as number }]);
+    expect(pending[0]?.nextAt).toBeGreaterThan(Date.now() + 4000);
+
+    // The retry gets through: every track closed, nothing left to retry.
+    await advance(callId, 6);
+    expect(realtime.tracks.get(mumSession)).toEqual([]);
+    expect(await room(callId).pendingCloses()).toEqual([]);
+    for (const s of Object.values(sockets)) s.close();
+  });
+
   it("retries the SFU clean-up after the call has ended too, and stops when Realtime says the session is gone", async () => {
     const dad = await phone(issuer, uniqueAccount(), 1);
     const mum = await phone(issuer, uniqueAccount(), 2);

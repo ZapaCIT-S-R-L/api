@@ -520,9 +520,9 @@ export class CallRoom extends DurableObject<Env> {
     await this.closeSessions();
   }
 
-  // Closes the SFU tracks of every session on the closing list that is due. Done when Realtime confirms, or answers
-  // that the session is gone (4xx); when Realtime is unavailable the session stays on the list and the alarm tries
-  // again with backoff. The roster never waits for this: the rotated key is what keeps a dropped device out.
+  // Closes the SFU tracks of every session on the closing list that is due. Done when Realtime confirms, or refuses
+  // for good (4xx, e.g. the session is gone); when Realtime is unavailable or rate limits us (5xx, 408, 425, 429, see
+  // sfu()) the session stays on the list and the alarm tries again with backoff. The roster never waits for this: the rotated key is what keeps a dropped device out.
   private async closeSessions(): Promise<void> {
     if (this.closingNow) return;
     this.closingNow = true;

@@ -99,12 +99,21 @@ export interface FakeRealtime {
   tracks: Map<string, FakeTrack[]>;
   // Next answers: an HTTP status to fail with (Realtime outage or refusal), or null for the normal answer.
   failNext: number | null;
+  // The same for the next PUT tracks/close only (the GET before it answers normally).
+  failNextClose: number | null;
   turnDown: boolean;
 }
 
 // Serves the Realtime and TURN APIs the way developers.cloudflare.com/realtime documents them.
 export function fakeRealtime(stub: FetchStub): FakeRealtime {
-  const fake: FakeRealtime = { requests: [], sessions: [], tracks: new Map(), failNext: null, turnDown: false };
+  const fake: FakeRealtime = {
+    requests: [],
+    sessions: [],
+    tracks: new Map(),
+    failNext: null,
+    failNextClose: null,
+    turnDown: false,
+  };
   let n = 0;
   stub.other = (url, init) => {
     if (!url.startsWith(`${REALTIME}/`)) return undefined;
@@ -113,9 +122,11 @@ export function fakeRealtime(stub: FetchStub): FakeRealtime {
     const auth = new Headers(init?.headers).get("authorization");
     const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : null;
     fake.requests.push({ method, path, auth, body });
-    if (fake.failNext !== null) {
-      const status = fake.failNext;
-      fake.failNext = null;
+    const closing = method === "PUT" && path.endsWith("/tracks/close");
+    const status = fake.failNext ?? (closing ? fake.failNextClose : null);
+    if (status !== null) {
+      if (fake.failNext !== null) fake.failNext = null;
+      else fake.failNextClose = null;
       return Promise.resolve(Response.json({ errorCode: "fake_error", errorDescription: "fake refusal" }, { status }));
     }
     if (path.startsWith("/turn/")) {

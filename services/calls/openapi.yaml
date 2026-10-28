@@ -463,7 +463,7 @@ components:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
     RealtimeUnavailable:
-      description: "`realtime_unavailable`: Cloudflare Realtime could not be reached. Retry later."
+      description: "`realtime_unavailable`: Cloudflare Realtime could not be reached, or is rate limiting. Retry later."
       content:
         application/json:
           schema: { $ref: "#/components/schemas/Error" }
