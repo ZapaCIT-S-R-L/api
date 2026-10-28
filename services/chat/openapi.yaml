@@ -592,13 +592,15 @@ components:
 
     MembershipEvent:
       description: |
-        Not an HTTP body: the messages on the Cloudflare Queue `zapakid-membership-<environment>` (staging,
-        production), produced by the account service (families, connections, devices) and consumed by the chat
-        service. JSON, at most 128 KiB. Delivery is at least once and not ordered across batches: `id` makes a
-        repeat a no-op, and each event carries the full state of what it describes (for example the device's
-        current registration id), so applying events again is safe. The account service must send an event after
-        its own write commits. Unknown `type`s are acknowledged and ignored (forward compatible); a malformed
-        event goes to the dead-letter queue `zapakid-membership-<environment>-dlq` after 5 retries.
+        Not an HTTP body: the messages on the Cloudflare Queue `zapakid-membership-<environment>` (staging, production),
+        produced by the account service (families, connections, devices) and consumed by the chat service. JSON, at most
+        128 KiB. Delivery is at least once and not ordered across batches: `id` makes a repeat a no-op, and each event
+        carries the full state of what it describes (for example the device's current registration id), so applying
+        events again is safe. Device events are ordered by `occurredAt`: a `device.upserted` that occurred at or before
+        the device's last `device.removed`, or before the upsert already applied, is ignored (a late or backfilled
+        upsert never brings back a removed device); `device.removed` always applies. The account service must send an
+        event after its own write commits. Unknown `type`s are acknowledged and ignored (forward compatible); a
+        malformed event goes to the dead-letter queue `zapakid-membership-<environment>-dlq` after 5 retries.
       type: object
       required: [v, id, type, occurredAt]
       properties:
