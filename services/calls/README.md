@@ -24,10 +24,12 @@ Audio is never stored; the call log in D1 (EU) is metadata only.
 A merge to `main` that touches `services/calls/` runs `.github/workflows/deploy-calls.yml`: tests, D1 database (EU,
 created if missing) and migrations, `wrangler deploy --env staging`, e2e against calls-staging.zapakid.ro (rollback
 on failure), then the same for production once @stefan-zpc approves the `production` environment. The account API's
-own workflows ignore `services/`.
+own workflows ignore `services/`. The token needs `Queues: Edit` (root README) for the conversation events queues.
 
 The `CHAT` binding needs the chat Worker of the same environment (`zapakid-chat-staging`, `zapakid-chat-production`)
-deployed with its `ChatMembership` entrypoint first; otherwise the calls deploy fails.
+deployed with its `ChatMembership` entrypoint first; otherwise the calls deploy fails. The conversation events
+queues (`zapakid-conversation-events-<env>` and `…-dlq`) are created by `scripts/resources.js` if missing, as the
+chat deploy does, so the queue never blocks either deploy.
 
 The GitHub environments and Cloudflare API token are the API's (root README, "Deploying"): the same token scopes
 cover this Worker (Workers Scripts, D1, Workers Routes and DNS on `zapakid.ro`). The custom domains create their own
@@ -40,6 +42,17 @@ DNS records on the first deploy.
   join and leave. It runs the hibernating events WebSocket and relays the libsignal-sealed key envelopes to the one
   device each is for, queuing them for a device that isn't connected yet. It also runs the timers: 45 s ring
   timeout, 2 h maximum, 30 s reconnect grace, and cleanup an hour after the end.
+- `src/conversation-events.ts`: the consumer of the chat service's `ConversationEvent` queue
+  (`zapakid-conversation-events-<env>`, dead letters in `…-dlq`). When chat removes members from a conversation
+  (unpair, family left, connection removed, kid unshared, account deleted, conversation deleted by that member) or
+  closes it, the live call drops those members' devices at once: `left` with reason `removed`, their events
+  sockets closed, the epoch bumped so the key leader rotates the call key without them, and their SFU tracks closed
+  (the call room keeps the sessions and retries from its alarm with backoff, honouring Retry-After, up to 10
+  attempts, until Realtime confirms or answers 404/410 for the session; a session whose retries run out stays on
+  the list, logged as `sfu session close retries exhausted`, and the ended call's state is kept for it). Replayed
+  events are deduped by id (`processed_events` in D1, 14 days), and events older than the call or than a device's
+  join are ignored, so a readmitted member is not dropped. A closed conversation ends its call. Without the event
+  they would only lose access on their next request (every request re-asks the chat service), not mid-call.
 - `src/realtime.ts`: Cloudflare Realtime SFU calls with the app secret, plus TURN credentials (TTL 1 h). If TURN is
   down, it falls back to STUN only.
 - `src/push.ts`: the ringing interface (PushKit VoIP / FCM). It's a stub until the APNs and FCM credentials and the

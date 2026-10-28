@@ -85,17 +85,38 @@ export interface ErrorBody {
 
 export const REALTIME = "https://rtc.live.cloudflare.com/v1";
 
+export interface FakeTrack {
+  location: "local" | "remote";
+  mid: string;
+  trackName: string;
+  sessionId?: string;
+}
+
 export interface FakeRealtime {
   requests: { method: string; path: string; auth: string | null; body: unknown }[];
   sessions: string[];
+  // The open tracks of each session (added by tracks/new, removed by tracks/close), as GET /sessions/{id} shows them.
+  tracks: Map<string, FakeTrack[]>;
   // Next answers: an HTTP status to fail with (Realtime outage or refusal), or null for the normal answer.
   failNext: number | null;
+  // The same for the next PUT tracks/close only (the GET before it answers normally).
+  failNextClose: number | null;
+  // A Retry-After header for the next failed answer (failNext/failNextClose), or null for none.
+  retryAfter: string | null;
   turnDown: boolean;
 }
 
 // Serves the Realtime and TURN APIs the way developers.cloudflare.com/realtime documents them.
 export function fakeRealtime(stub: FetchStub): FakeRealtime {
-  const fake: FakeRealtime = { requests: [], sessions: [], failNext: null, turnDown: false };
+  const fake: FakeRealtime = {
+    requests: [],
+    sessions: [],
+    tracks: new Map(),
+    failNext: null,
+    failNextClose: null,
+    retryAfter: null,
+    turnDown: false,
+  };
   let n = 0;
   stub.other = (url, init) => {
     if (!url.startsWith(`${REALTIME}/`)) return undefined;
@@ -104,10 +125,16 @@ export function fakeRealtime(stub: FetchStub): FakeRealtime {
     const auth = new Headers(init?.headers).get("authorization");
     const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : null;
     fake.requests.push({ method, path, auth, body });
-    if (fake.failNext !== null) {
-      const status = fake.failNext;
-      fake.failNext = null;
-      return Promise.resolve(Response.json({ errorCode: "fake_error", errorDescription: "fake refusal" }, { status }));
+    const closing = method === "PUT" && path.endsWith("/tracks/close");
+    const status = fake.failNext ?? (closing ? fake.failNextClose : null);
+    if (status !== null) {
+      if (fake.failNext !== null) fake.failNext = null;
+      else fake.failNextClose = null;
+      const headers: Record<string, string> = fake.retryAfter === null ? {} : { "retry-after": fake.retryAfter };
+      fake.retryAfter = null;
+      return Promise.resolve(
+        Response.json({ errorCode: "fake_error", errorDescription: "fake refusal" }, { status, headers }),
+      );
     }
     if (path.startsWith("/turn/")) {
       if (fake.turnDown) return Promise.resolve(new Response("down", { status: 503 }));
@@ -132,16 +159,37 @@ export function fakeRealtime(stub: FetchStub): FakeRealtime {
       fake.sessions.push(sessionId);
       return Promise.resolve(Response.json({ sessionId }, { status: 201 }));
     }
-    const tracks = /^\/apps\/[^/]+\/sessions\/[^/]+\/tracks\/(new|close)$/.exec(path);
+    const tracks = /^\/apps\/[^/]+\/sessions\/([^/]+)\/tracks\/(new|close)$/.exec(path);
     if (tracks) {
+      const [, sessionId = "", action] = tracks;
+      const open = fake.tracks.get(sessionId) ?? [];
+      fake.tracks.set(sessionId, open);
       const requested = (body as { tracks?: Record<string, unknown>[] }).tracks ?? [];
+      const answered = requested.map((t, i) => ({ ...t, mid: t.mid ?? String(open.length + i) }));
+      if (action === "new") {
+        for (const t of answered) open.push(t as unknown as FakeTrack);
+      } else {
+        const closed = new Set(answered.map((t) => t.mid));
+        fake.tracks.set(
+          sessionId,
+          open.filter((t) => !closed.has(t.mid)),
+        );
+      }
       return Promise.resolve(
         Response.json({
           requiresImmediateRenegotiation: false,
           sessionDescription: { type: "answer", sdp: "v=0 fake answer" },
-          tracks: requested.map((t, i) => ({ ...t, mid: t.mid ?? String(i) })),
+          tracks: answered,
         }),
       );
+    }
+    const session = /^\/apps\/[^/]+\/sessions\/([^/]+)$/.exec(path);
+    if (method === "GET" && session) {
+      const open = fake.tracks.get(session[1] ?? "");
+      if (!fake.sessions.includes(session[1] ?? "")) {
+        return Promise.resolve(Response.json({ errorCode: "not_found" }, { status: 404 }));
+      }
+      return Promise.resolve(Response.json({ tracks: (open ?? []).map((t) => ({ ...t, status: "active" })) }));
     }
     if (/^\/apps\/[^/]+\/sessions\/[^/]+\/renegotiate$/.test(path)) return Promise.resolve(Response.json({}));
     return Promise.resolve(Response.json({ errorCode: "not_found" }, { status: 404 }));
