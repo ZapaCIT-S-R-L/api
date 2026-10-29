@@ -198,10 +198,15 @@ export async function applyEvent(env: Env, rooms: Rooms, event: MembershipEvent)
       return;
     case "kid.oversight_changed":
       // The kid's parents join or leave the kid's conversations as observers. When they join again, the kid's
-      // device re-seals the history to them (the server holds no plaintext to send).
+      // device re-seals the history to them (the server holds no plaintext to send). Ordered by occurredAt: a change
+      // older than the one that last wrote the row is ignored (delivery is unordered); reconciling is idempotent.
       await db
-        .prepare("INSERT OR REPLACE INTO kid_oversight (kid_account_id, enabled) VALUES (?1, ?2)")
-        .bind(event.kidAccountId, event.enabled ? 1 : 0)
+        .prepare(
+          `INSERT INTO kid_oversight (kid_account_id, enabled, occurred_at) VALUES (?1, ?2, ?3)
+           ON CONFLICT (kid_account_id) DO UPDATE SET enabled = excluded.enabled, occurred_at = excluded.occurred_at
+           WHERE excluded.occurred_at >= kid_oversight.occurred_at`,
+        )
+        .bind(event.kidAccountId, event.enabled ? 1 : 0, Date.parse(event.occurredAt))
         .run();
       await reconcileAll(env, rooms, await conversationsOf(env, [event.kidAccountId]));
       return;

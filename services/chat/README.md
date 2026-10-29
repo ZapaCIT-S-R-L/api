@@ -18,8 +18,7 @@ only routing metadata (who is in which conversation, which device sent to which 
   turned off per kid (`kid.oversight_changed`); the server keeps that in `kid_oversight`. Kids aren't told who
   observes. A conversation has at most 64 observers besides its 64 writers; if a family change would push it over
   (`reconcile()`), nobody is added and the conversation is closed instead.
-  **Not yet produced:** the account API has no endpoint to turn oversight off and never sends
-  `kid.oversight_changed`, so oversight is always on for now; the chat side is ready for it (api #94). `GET /v1/contacts` lists who an account may chat with (ids only).
+  Produced by the account API (`PUT /v1/families/{familyId}/kids/{kidId}/oversight`, api #94); changes are ordered by `occurredAt`, so a late older one is ignored. `GET /v1/contacts` lists who an account may chat with (ids only).
 
 - **Messages:** one Durable Object per conversation (SQLite, EU) holds a delivery copy per recipient device until
   that device acknowledges it, and serves the WebSocket stream (hibernation). Devices without a stream get a
