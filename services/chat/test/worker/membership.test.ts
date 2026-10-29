@@ -149,6 +149,25 @@ describe("graph changes and existing conversations", () => {
     expect(rooms.log).toEqual([`notify ${c.id} members_changed`]);
   });
 
+  // api #99 review: delivery is unordered, so an older oversight change must not overwrite a newer one.
+  it("oversight: a late older change is ignored (off then on, delivered on first), a newer one applies", async () => {
+    await seedFamilies();
+    const c = await create(ALEX, [MARIA]);
+    const rooms = recordingRooms();
+    const at = (iso: string, enabled: boolean) =>
+      applyEvent(env, rooms, { ...event({ type: "kid.oversight_changed", kidAccountId: ALEX, enabled }), occurredAt: iso });
+    const observers = async () => memberIds((await get(ANA, c.id)) as ConversationBody).includes(MUM);
+
+    await at("2026-10-29T10:00:02.000Z", true);
+    await at("2026-10-29T10:00:01.000Z", false);
+    expect(await observers()).toBe(true);
+
+    await at("2026-10-29T10:00:03.000Z", false);
+    expect(await observers()).toBe(false);
+    await at("2026-10-29T10:00:02.500Z", true);
+    expect(await observers()).toBe(false);
+  });
+
   it("oversight off keeps a parent who is a writer; the chat stays open", async () => {
     await seedFamilies();
     const c = await create(MUM, [ALEX]);
