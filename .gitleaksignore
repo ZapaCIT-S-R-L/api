@@ -1,7 +1,8 @@
 # False positives only, one gitleaks fingerprint per line with the reason above it.
 # 34b832a: the lint:api script set REDOCLY_SUPPRESS_UPDATE_NOTICE=true (no secret); removed in the next commit.
 34b832af4c6a264f4e8c0f1c4cf9f2f3839bff85:package.json:generic-api-key:11
-# f82d7b7: PEM armour around a P-256 test key generated at run time and a dummy "not a key" string (api #102, no
-# secret); the next commit builds the armour at run time.
+# f82d7b7: PEM armour around a P-256 test key generated at run time (api #102, no secret); b35fbf0 builds the armour
+# at run time.
 f82d7b72cabac891dd49904587e3f0aa9bbfa689:services/calls/test/worker/push.test.ts:private-key:29
-f82d7b72cabac891dd49904587e3f0aa9bbfa689:services/calls/test/worker/push.test.ts:private-key:204
+# f82d7b7: a fake APNs device token in push.test.ts ("0123456789abcdef" repeated; no secret), renamed in the next commit.
+f82d7b72cabac891dd49904587e3f0aa9bbfa689:services/calls/test/worker/push.test.ts:generic-api-key:19

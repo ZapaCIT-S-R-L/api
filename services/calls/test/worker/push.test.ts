@@ -15,8 +15,8 @@ let pem: string;
 let publicKey: CryptoKey;
 let logged: string[];
 
-const TOKEN_A = "a".repeat(64);
-const TOKEN_B = "0123456789abcdef".repeat(4);
+const DEVICE_A = "a".repeat(64);
+const DEVICE_B = "0123456789abcdef".repeat(4);
 
 // PEM armour, assembled at run time so the secret scanner doesn't take the test for a committed key.
 const LABEL = ["PRIVATE", "KEY"].join(" ");
@@ -88,11 +88,11 @@ afterEach(() => {
 
 describe("APNs VoIP ring", () => {
   it("sends one VoIP push per iOS device: topic <bundle id>.voip, priority 10, a JWT, only the call id", async () => {
-    await apnsProvider(config()).ring(call([iphone("acc-1", 1, TOKEN_A), iphone("acc-2", 3, TOKEN_B)]));
+    await apnsProvider(config()).ring(call([iphone("acc-1", 1, DEVICE_A), iphone("acc-2", 3, DEVICE_B)]));
 
     expect(sent.map((s) => s.url).sort()).toEqual([
-      `https://api.push.apple.com/3/device/${TOKEN_B}`,
-      `https://api.push.apple.com/3/device/${TOKEN_A}`,
+      `https://api.push.apple.com/3/device/${DEVICE_B}`,
+      `https://api.push.apple.com/3/device/${DEVICE_A}`,
     ]);
     for (const s of sent) {
       expect(s.headers.get("apns-push-type")).toBe("voip");
@@ -106,7 +106,7 @@ describe("APNs VoIP ring", () => {
   });
 
   it("authorizes with an ES256 JWT: kid = APNS_KEY_ID, iss = APNS_TEAM_ID, iat now, signed with the key", async () => {
-    await apnsProvider(config()).ring(call([iphone("acc-1", 1, TOKEN_A)]));
+    await apnsProvider(config()).ring(call([iphone("acc-1", 1, DEVICE_A)]));
 
     const [scheme, jwt] = (sent[0]?.headers.get("authorization") ?? "").split(" ");
     expect(scheme).toBe("bearer");
@@ -128,20 +128,20 @@ describe("APNs VoIP ring", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const apns = apnsProvider(config());
     const auth = () => sent.at(-1)?.headers.get("authorization");
-    await apns.ring(call([iphone("acc-1", 1, TOKEN_A)]));
+    await apns.ring(call([iphone("acc-1", 1, DEVICE_A)]));
     const first = auth();
     vi.advanceTimersByTime(39 * 60 * 1000);
-    await apns.ring(call([iphone("acc-1", 1, TOKEN_A)]));
+    await apns.ring(call([iphone("acc-1", 1, DEVICE_A)]));
     expect(auth()).toBe(first);
     vi.advanceTimersByTime(2 * 60 * 1000);
-    await apns.ring(call([iphone("acc-1", 1, TOKEN_A)]));
+    await apns.ring(call([iphone("acc-1", 1, DEVICE_A)]));
     expect(auth()).not.toBe(first);
   });
 
   it("uses the sandbox host only when APNS_ENVIRONMENT is sandbox", async () => {
-    await apnsProvider({ ...config(), APNS_ENVIRONMENT: "sandbox" }).ring(call([iphone("acc-1", 1, TOKEN_A)]));
-    await apnsProvider({ ...config(), APNS_ENVIRONMENT: "production" }).ring(call([iphone("acc-1", 1, TOKEN_A)]));
-    await apnsProvider({ ...config(), APNS_ENVIRONMENT: "anything" }).ring(call([iphone("acc-1", 1, TOKEN_A)]));
+    await apnsProvider({ ...config(), APNS_ENVIRONMENT: "sandbox" }).ring(call([iphone("acc-1", 1, DEVICE_A)]));
+    await apnsProvider({ ...config(), APNS_ENVIRONMENT: "production" }).ring(call([iphone("acc-1", 1, DEVICE_A)]));
+    await apnsProvider({ ...config(), APNS_ENVIRONMENT: "anything" }).ring(call([iphone("acc-1", 1, DEVICE_A)]));
     expect(sent.map((s) => new URL(s.url).host)).toEqual([
       "api.sandbox.push.apple.com",
       "api.push.apple.com",
@@ -154,19 +154,19 @@ describe("APNs VoIP ring", () => {
       call([
         { accountId: "acc-1", deviceId: 1, push: { provider: "fcm", token: "fcm-token" } },
         { accountId: "acc-2", deviceId: 2 },
-        iphone("acc-3", 1, TOKEN_A),
+        iphone("acc-3", 1, DEVICE_A),
       ]),
     );
-    expect(sent.map((s) => s.url)).toEqual([`https://api.push.apple.com/3/device/${TOKEN_A}`]);
+    expect(sent.map((s) => s.url)).toEqual([`https://api.push.apple.com/3/device/${DEVICE_A}`]);
   });
 
   it("skips a malformed token instead of putting it in the URL", async () => {
-    await apnsProvider(config()).ring(call([iphone("acc-1", 1, "../../x?y"), iphone("acc-2", 1, TOKEN_A)]));
-    expect(sent.map((s) => s.url)).toEqual([`https://api.push.apple.com/3/device/${TOKEN_A}`]);
+    await apnsProvider(config()).ring(call([iphone("acc-1", 1, "../../x?y"), iphone("acc-2", 1, DEVICE_A)]));
+    expect(sent.map((s) => s.url)).toEqual([`https://api.push.apple.com/3/device/${DEVICE_A}`]);
   });
 
   it("cancel sends nothing (the ringing phone learns from the events WebSocket)", async () => {
-    await apnsProvider(config()).cancel(call([iphone("acc-1", 1, TOKEN_A)]));
+    await apnsProvider(config()).cancel(call([iphone("acc-1", 1, DEVICE_A)]));
     expect(sent).toEqual([]);
   });
 });
@@ -182,7 +182,7 @@ describe("APNs failures never fail the call", () => {
     };
     await expect(
       apnsProvider(config()).ring(
-        call([iphone("acc-1", 1, TOKEN_A), iphone("acc-2", 1, TOKEN_B), iphone("acc-3", 1, "c".repeat(64))]),
+        call([iphone("acc-1", 1, DEVICE_A), iphone("acc-2", 1, DEVICE_B), iphone("acc-3", 1, "c".repeat(64))]),
       ),
     ).resolves.toBeUndefined();
     expect(sent).toHaveLength(3);
@@ -191,11 +191,11 @@ describe("APNs failures never fail the call", () => {
 
   it("logs neither the device token nor the key", async () => {
     answer = () => Response.json({ reason: "Unregistered" }, { status: 410 });
-    await apnsProvider(config()).ring(call([iphone("acc-1", 1, TOKEN_A)]));
+    await apnsProvider(config()).ring(call([iphone("acc-1", 1, DEVICE_A)]));
     expect(logged.length).toBeGreaterThan(0);
     const body = pem.split("\n")[1] ?? "";
     for (const line of logged) {
-      expect(line).not.toContain(TOKEN_A);
+      expect(line).not.toContain(DEVICE_A);
       expect(line).not.toContain(body);
       expect(line).not.toContain(sent[0]?.headers.get("authorization")?.split(" ")[1]);
     }
@@ -206,7 +206,7 @@ describe("APNs failures never fail the call", () => {
       apnsProvider({
         ...config(),
         APNS_AUTH_KEY: armour("bm90IGEga2V5"),
-      }).ring(call([iphone("acc-1", 1, TOKEN_A)])),
+      }).ring(call([iphone("acc-1", 1, DEVICE_A)])),
     ).resolves.toBeUndefined();
     expect(sent).toEqual([]);
     expect(logged.some((l) => l.includes("APNS_AUTH_KEY"))).toBe(true);
@@ -216,7 +216,7 @@ describe("APNs failures never fail the call", () => {
   it("missing APNS_KEY_ID, APNS_TEAM_ID or APNS_TOPIC: names them, sends nothing, no throw", async () => {
     await expect(
       apnsProvider({ APNS_AUTH_KEY: pem, APNS_KEY_ID: "", APNS_TEAM_ID: "", APNS_TOPIC: "" }).ring(
-        call([iphone("acc-1", 1, TOKEN_A)]),
+        call([iphone("acc-1", 1, DEVICE_A)]),
       ),
     ).resolves.toBeUndefined();
     expect(sent).toEqual([]);
@@ -227,23 +227,23 @@ describe("APNs failures never fail the call", () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     const apns = apnsProvider(config());
     answer = () => Response.json({ reason: "ExpiredProviderToken" }, { status: 403 });
-    await apns.ring(call([iphone("acc-1", 1, TOKEN_A)]));
+    await apns.ring(call([iphone("acc-1", 1, DEVICE_A)]));
     const first = sent[0]?.headers.get("authorization");
     vi.advanceTimersByTime(1000);
     answer = () => new Response(null, { status: 200 });
-    await apns.ring(call([iphone("acc-1", 1, TOKEN_A)]));
+    await apns.ring(call([iphone("acc-1", 1, DEVICE_A)]));
     expect(sent[1]?.headers.get("authorization")).not.toBe(first);
   });
 });
 
 describe("provider selection", () => {
   it("without APNS_AUTH_KEY the stub stays: nothing is sent", async () => {
-    await providerFor({ ...config(), APNS_AUTH_KEY: undefined }).ring(call([iphone("acc-1", 1, TOKEN_A)]));
+    await providerFor({ ...config(), APNS_AUTH_KEY: undefined }).ring(call([iphone("acc-1", 1, DEVICE_A)]));
     expect(sent).toEqual([]);
   });
 
   it("with APNS_AUTH_KEY set, iPhones ring through APNs", async () => {
-    await providerFor(config()).ring(call([iphone("acc-1", 1, TOKEN_A)]));
+    await providerFor(config()).ring(call([iphone("acc-1", 1, DEVICE_A)]));
     expect(sent).toHaveLength(1);
   });
 });
