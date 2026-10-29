@@ -73,7 +73,17 @@ DNS records on the first deploy.
   token or the key, and never fails the call. Ending a ring sends nothing: a VoIP push must always show a call, and
   the ringing phone learns the end from the events WebSocket. Without `APNS_AUTH_KEY` (tests, local dev) nothing is
   sent. Not live yet: the device push tokens don't reach this service (`ChatMembership.member` lists device ids
-  only), so only targets that carry a token are rung. Android (FCM) comes separately.
+  only), so only targets that carry a token are rung. Android (FCM) is `src/push-fcm.ts`.
+- `src/push-fcm.ts`: ringing Android phones. One high-priority FCM data message per device (`android.priority:
+  high`, `android.ttl: 0s`, no `notification` block), whose `data` is exactly what the app parses
+  (`ro.zapakid.calls.ring.CallPush`): `type: "call"` with `callId` and `conversationId`, or `type: "call_cancel"`
+  with `callId`. Unlike APNs, a cancel is sent, because that is what stops an Android phone ringing. FCM's v1 API
+  takes an OAuth 2.0 access token minted from the `FCM_CREDENTIALS_JSON` secret — an RS256 JWT bearer grant, the
+  same one `src/play-integrity.ts` makes in the accounts Worker — cached until a minute before it expires. A failed
+  push is logged with its status and FCM reason, never the registration token, the key or the access token, and
+  never fails the call. Without the secret (tests, local dev) nothing is sent. Not registered yet: the composite in
+  `src/push.ts` picks a provider per target, and the device push tokens still don't reach this service
+  (android #57).
 - Limits: 8 participants, and 10 calls started and 30 joins a minute per account (rate limiting binding).
 
 ## Secrets
@@ -93,6 +103,11 @@ The chat tokens need the account API's signing key; the same workflow makes it.
 iPhone ringing also needs the `APNS_AUTH_KEY` secret, the APNs `.p8` key (PEM), with `APNS_KEY_ID` set to its key id
 in `wrangler.jsonc`. `bootstrap-secrets` doesn't import it yet (api #102); until it does, the secret is unset and
 iPhones in the background don't ring. Calls work either way.
+
+Android ringing also needs the `FCM_CREDENTIALS_JSON` secret: the Firebase service-account JSON, with `project_id`,
+`client_email` and `private_key` (android #57). `bootstrap-secrets` doesn't import it either, so it is set by hand
+the same way. Until it is, Android phones ring only while the app is open. Neither push credential is reported by
+`/health`: a missing one only means phones don't ring in the background, never that the Worker is misconfigured.
 
 ## Retention
 
