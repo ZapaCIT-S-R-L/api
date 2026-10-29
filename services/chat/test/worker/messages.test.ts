@@ -335,6 +335,24 @@ describe("GET /v1/conversations/{id}/stream", () => {
     alex.ws.close();
   });
 
+  // Review of #98: observers are read-only, so their typing is refused too (writers' typing still reaches them).
+  it("an observer's typing is not relayed; the observer still sees the writers' typing", async () => {
+    const c = await conversation(MUM, [ALEX]);
+    const dad = await connect(c, DAD);
+    const alex = await connect(c, ALEX);
+    const mum = await connect(c, MUM);
+    await settle();
+    dad.ws.send(JSON.stringify({ type: "typing" }));
+    await settle();
+    expect(alex.frames).toEqual([]);
+    expect(mum.frames).toEqual([]);
+    alex.ws.send(JSON.stringify({ type: "typing" }));
+    await settle();
+    expect(dad.frames).toEqual([{ type: "typing", accountId: ALEX, deviceId: 1 }]);
+    expect(mum.frames).toEqual([{ type: "typing", accountId: ALEX, deviceId: 1 }]);
+    for (const l of [dad, alex, mum]) l.ws.close();
+  });
+
   it("a second device of the same account does not get its own account's typing", async () => {
     await applyEvent(
       env,
