@@ -353,6 +353,23 @@ describe("GET /v1/conversations/{id}/stream", () => {
     for (const l of [dad, alex, mum]) l.ws.close();
   });
 
+  // Re-review of #98: the role is read again when a signal is relayed, so a socket opened as a writer stops once
+  // the member is only an observer.
+  it("a socket opened as a writer stops relaying typing once the member became an observer", async () => {
+    const c = await conversation(MUM, [ALEX]);
+    const mum = await connect(c, MUM);
+    const alex = await connect(c, ALEX);
+    await settle();
+    await env.DB.prepare("UPDATE conversation_members SET guardian = 1 WHERE conversation_id = ?1 AND account_id = ?2")
+      .bind(c.id, MUM)
+      .run();
+    mum.ws.send(JSON.stringify({ type: "typing" }));
+    await settle();
+    expect(alex.frames).toEqual([]);
+    mum.ws.close();
+    alex.ws.close();
+  });
+
   it("a second device of the same account does not get its own account's typing", async () => {
     await applyEvent(
       env,
