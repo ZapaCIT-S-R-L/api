@@ -94,7 +94,7 @@ export function parseEvent(value: unknown): MembershipEvent | null {
     case "connection.kid_unshared":
       return ok(str(e.connectionId) && str(e.kidAccountId, ACCOUNT_ID));
     case "kid.oversight_changed":
-      return ok(str(e.kidAccountId, ACCOUNT_ID) && typeof e.enabled === "boolean");
+      return ok(dated(e) && str(e.kidAccountId, ACCOUNT_ID) && typeof e.enabled === "boolean");
     case "device.upserted": {
       const push = e.push as { provider?: unknown; token?: unknown } | null | undefined;
       const pushOk =
