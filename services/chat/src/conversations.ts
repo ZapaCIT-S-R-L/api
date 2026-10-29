@@ -117,7 +117,7 @@ async function present(env: Env, conversation: ConversationRow, members: MemberR
   };
 }
 
-export async function handleCreate(request: Request, env: Env, caller: Caller): Promise<Response> {
+export async function handleCreate(request: Request, env: Env, rooms: Rooms, caller: Caller): Promise<Response> {
   await limit(env.CREATE_LIMITER, `create:${caller.accountId}`);
   const body = await readJson(request);
   onlyFields(body, ["members"]);
@@ -171,6 +171,7 @@ export async function handleCreate(request: Request, env: Env, caller: Caller): 
       ).bind(id, account, roleOf(graph, account), observerSet.has(account) ? 1 : 0, now),
     ),
   ]);
+  for (const account of all) await rooms.conversationAdded(id, account);
   const conversation: ConversationRow = { id, kind, state: "open", created_at: now, closed_at: null };
   return json(await present(env, conversation, await membersOf(env, id)), 201);
 }
@@ -303,6 +304,7 @@ export async function reconcile(env: Env, rooms: Rooms, conversationId: string):
   for (const account of removed) await rooms.forgetAccount(conversationId, account);
   if (await purgeIfAbandoned(env, rooms, conversationId)) return;
   if (removed.length > 0 || added.length > 0) await rooms.notify(conversationId, "members_changed", removed);
+  for (const account of added) await rooms.conversationAdded(conversationId, account);
   if (close) await rooms.notify(conversationId, "conversation_closed", []);
 }
 

@@ -7,6 +7,7 @@ import type { Env } from "./env";
 import { empty, HttpError, invalid, json } from "./http";
 import { limit } from "./limits";
 import { pushProvider, pushTargets } from "./push";
+import { hubOf } from "./account-hub";
 import { roomOf, type EnvelopeType, type StoredEnvelope } from "./room";
 
 export const MAX_ENVELOPES = 256;
@@ -187,4 +188,20 @@ export async function handleStream(
     "x-chat-sep": String(caller.sep),
   });
   return roomOf(env, conversationId).fetch(new Request("https://room/stream", { headers }));
+}
+
+// GET /v1/events: the account's WebSocket for "you were added to a conversation" (src/account-hub.ts).
+export async function handleEvents(request: Request, env: Env, caller: Caller): Promise<Response> {
+  if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
+    throw new HttpError(426, "upgrade_required", "Open a WebSocket.", {}, { upgrade: "websocket" });
+  }
+  await requireRegisteredDevice(env, caller);
+  await limit(env.CONNECT_LIMITER, `connect:${key(caller.accountId, caller.deviceId)}`);
+  const headers = new Headers({
+    upgrade: "websocket",
+    "x-chat-device": String(caller.deviceId),
+    "x-chat-exp": String(caller.exp),
+    "x-chat-sep": String(caller.sep),
+  });
+  return hubOf(env, caller.accountId).fetch(new Request("https://hub/events", { headers }));
 }

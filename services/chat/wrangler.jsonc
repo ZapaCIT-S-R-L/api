@@ -24,8 +24,16 @@
   },
 
   // One Durable Object per conversation (SQLite storage): delivery copies and the WebSocket stream.
-  "durable_objects": { "bindings": [{ "name": "ROOMS", "class_name": "ConversationRoom" }] },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ConversationRoom"] }],
+  "durable_objects": {
+    "bindings": [
+      { "name": "ROOMS", "class_name": "ConversationRoom" },
+      { "name": "ACCOUNTS", "class_name": "AccountHub" },
+    ],
+  },
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["ConversationRoom"] },
+    { "tag": "v2", "new_sqlite_classes": ["AccountHub"] },
+  ],
 
   // Per account (conversations) or device (sends, stream connects) per minute. High locally so the e2e suite fits.
   // Each environment has its own namespace ids (separate counters); 41xx/42xx/43xx are the chat service's.
@@ -80,7 +88,12 @@
         "ACCOUNT_JWKS_URL": "https://api-staging.zapakid.ro/.well-known/jwks.json",
         "ROOMS_JURISDICTION": "eu",
       },
-      "durable_objects": { "bindings": [{ "name": "ROOMS", "class_name": "ConversationRoom" }] },
+      "durable_objects": {
+    "bindings": [
+      { "name": "ROOMS", "class_name": "ConversationRoom" },
+      { "name": "ACCOUNTS", "class_name": "AccountHub" },
+    ],
+  },
       "ratelimits": [
         { "name": "SEND_LIMITER", "namespace_id": "4201", "simple": { "limit": 120, "period": 60 } },
         { "name": "CREATE_LIMITER", "namespace_id": "4202", "simple": { "limit": 20, "period": 60 } },
@@ -133,7 +146,12 @@
         "ACCOUNT_JWKS_URL": "https://api.zapakid.ro/.well-known/jwks.json",
         "ROOMS_JURISDICTION": "eu",
       },
-      "durable_objects": { "bindings": [{ "name": "ROOMS", "class_name": "ConversationRoom" }] },
+      "durable_objects": {
+    "bindings": [
+      { "name": "ROOMS", "class_name": "ConversationRoom" },
+      { "name": "ACCOUNTS", "class_name": "AccountHub" },
+    ],
+  },
       "ratelimits": [
         { "name": "SEND_LIMITER", "namespace_id": "4301", "simple": { "limit": 120, "period": 60 } },
         { "name": "CREATE_LIMITER", "namespace_id": "4302", "simple": { "limit": 20, "period": 60 } },

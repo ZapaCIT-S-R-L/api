@@ -3,6 +3,7 @@
 // idle conversation costs nothing). The Worker checks the chat token and membership before calling in; the object
 // trusts its caller and never sees anything but ciphertext.
 import { DurableObject } from "cloudflare:workers";
+import { hubOf } from "./account-hub";
 import type { Env } from "./env";
 import type { RoomEventKind, Rooms } from "./rooms";
 
@@ -325,6 +326,14 @@ export function durableRooms(env: Env): Rooms {
     forgetAccount: (id, account) => roomOf(env, id).forgetAccount(account),
     forgetDevice: (id, account, device) => roomOf(env, id).forgetDevice(account, device),
     revokeSessions: (id, account, epoch) => roomOf(env, id).revokeSessions(account, epoch),
+    // A failing announcement never fails the change: the phone lists its conversations when it starts anyway.
+    conversationAdded: (id, account) =>
+      hubOf(env, account)
+        .conversationAdded(id)
+        .catch((e: unknown) => {
+          console.error(JSON.stringify({ msg: "conversation_added_failed", err: String(e) }));
+        }),
+    revokeAccountSessions: (account, epoch) => hubOf(env, account).revokeSessions(epoch),
     purge: (id) => roomOf(env, id).purge(),
   };
 }

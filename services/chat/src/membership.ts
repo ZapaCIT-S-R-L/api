@@ -280,6 +280,7 @@ export async function applyEvent(env: Env, rooms: Rooms, event: MembershipEvent)
       for (const id of await conversationsOf(env, [event.accountId])) {
         await rooms.revokeSessions(id, event.accountId, epoch);
       }
+      await rooms.revokeAccountSessions(event.accountId, epoch);
       return;
     }
   }
