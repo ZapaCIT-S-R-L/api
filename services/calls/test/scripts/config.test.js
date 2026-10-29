@@ -81,6 +81,17 @@ test("Realtime and TURN: the real Cloudflare API in every deployed environment; 
   }
 });
 
+test("APNs VoIP pushes: key id, team, bundle id and host in every environment; the auth key only as a secret", () => {
+  for (const env of [rawConfig, staging, production]) {
+    for (const name of ["APNS_KEY_ID", "APNS_TEAM_ID", "APNS_TOPIC", "APNS_ENVIRONMENT"]) {
+      assert.equal(typeof env.vars[name], "string", name);
+    }
+    assert.equal(env.vars.APNS_AUTH_KEY, undefined, "APNS_AUTH_KEY is a secret");
+    assert.equal(env.vars.APNS_TOPIC, "ro.zapakid.app", "the bundle id; the code adds .voip");
+  }
+  for (const env of [staging, production]) assert.equal(env.vars.APNS_ENVIRONMENT, "production");
+});
+
 test("call limits: at most 8 participants, 30 s ring (about 5 rings), 2 h, TURN credentials at most 1 h", () => {
   for (const env of [rawConfig, staging, production]) {
     assert.equal(env.vars.MAX_PARTICIPANTS, "8");
