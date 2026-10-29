@@ -14,7 +14,14 @@ export type MembershipEvent = { v: 1; id: string; occurredAt: string } & (
   | { type: "connection.removed"; connectionId: string }
   | { type: "connection.kid_shared"; connectionId: string; kidAccountId: string }
   | { type: "connection.kid_unshared"; connectionId: string; kidAccountId: string }
-  | { type: "device.upserted"; accountId: string; deviceId: number; registrationId: number }
+  // `push`: where to send content-free wake-ups for this device; null = none (PUT /v1/devices/{id}/push).
+  | {
+      type: "device.upserted";
+      accountId: string;
+      deviceId: number;
+      registrationId: number;
+      push?: { provider: "apns" | "fcm"; token: string } | null;
+    }
   | { type: "device.removed"; accountId: string; deviceId: number }
   | { type: "account.deleted"; accountId: string }
 );
