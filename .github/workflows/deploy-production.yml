@@ -4,7 +4,7 @@
 # The e2e check and rollback run once the PRODUCTION_URL variable is set on the production environment (cutover).
 # Credentials live only in the `production` environment: secret CLOUDFLARE_API_TOKEN, variable CLOUDFLARE_ACCOUNT_ID.
 # name: deploy-production
-# 
+#
 # on:
 #   workflow_dispatch:
 #     inputs:
@@ -12,14 +12,14 @@
 #         description: Release tag to deploy (vMAJOR.MINOR.PATCH)
 #         required: true
 #         type: string
-# 
+#
 # permissions:
 #   contents: read
-# 
+#
 # concurrency:
 #   group: deploy-production
 #   cancel-in-progress: false
-# 
+#
 # jobs:
 #   production:
 #     runs-on: ubuntu-latest
