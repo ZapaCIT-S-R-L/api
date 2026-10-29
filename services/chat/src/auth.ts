@@ -5,7 +5,7 @@ import type { Env } from "./env";
 import { HttpError } from "./http";
 import { ACCOUNT_ID } from "./body";
 import { allowedJwksUrl, getJwks, KeysUnavailable } from "./jwks";
-import { revokedBefore } from "./membership";
+import { deviceRemovedSince, revokedBefore } from "./membership";
 
 export const MAX_TOKEN_SECONDS = 15 * 60;
 const CLOCK_SKEW_SECONDS = 30;
@@ -16,6 +16,8 @@ export interface Caller {
   role: "parent" | "kid";
   // Token expiry (seconds since the epoch): a stream is closed then.
   exp: number;
+  // When the token was issued (seconds since the epoch).
+  iat: number;
   // The account's session epoch when the token was issued (`sep`; 0 if the claim is missing). The account service
   // increments it on logout-all (api #81); tokens from before the current epoch are refused.
   sep: number;
@@ -74,5 +76,10 @@ export async function authenticate(request: Request, env: Env): Promise<Caller> 
   if (epoch < (await revokedBefore(env, sub))) {
     throw unauthorized("This chat token was revoked (signed out everywhere). Sign in again.");
   }
-  return { accountId: sub, deviceId, role, exp, sep: epoch };
+  // The device was removed after the token was issued (a parent revoked the kid's phone, the kid signed out, or a
+  // logout-all removed the devices, api #92): the phone must not fetch, ack, read attachments or stream any more.
+  if (await deviceRemovedSince(env, sub, deviceId, iat)) {
+    throw unauthorized("This chat token's device was removed (unpaired or signed out). Sign in or pair again.");
+  }
+  return { accountId: sub, deviceId, role, exp, iat, sep: epoch };
 }

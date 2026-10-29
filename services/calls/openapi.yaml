@@ -215,7 +215,8 @@ paths:
         **Server → phone:**
         - `{"type":"roster","call":Call}` on connect and after every change;
         - `{"type":"joined","accountId","deviceId","epoch"}`, `{"type":"left","accountId","deviceId","epoch","reason"}`
-          (`left`, `disconnected`, `revoked`: that account signed out everywhere, or `removed`: no longer a member of
+          (`left`, `disconnected`, `revoked`: that account signed out everywhere or that device was removed, or
+          `removed`: no longer a member of
           the conversation; that device's socket is then closed with code `4403` and the call answers `404` to it from
           then on), `{"type":"declined","accountId"}`;
         - `{"type":"key","epoch","fromAccount","fromDevice","blob"}`: a sealed call key for this device (queued
@@ -227,7 +228,8 @@ paths:
         - `{"type":"pong"}`.
 
         The server closes the socket with code `4401` when the chat token it was opened with is revoked (the
-        account signed out everywhere, `POST /v1/auth/logout-all` at the account API): that device leaves the call.
+        account signed out everywhere, `POST /v1/auth/logout-all` at the account API, or the device was removed: a
+        kid's phone revoked by a parent or signed out): that device leaves the call.
         Participants are checked against the chat service every minute and before every key they relay.
 
         **Phone → server:**
@@ -416,8 +418,8 @@ components:
     Unauthorized:
       description: |
         `invalid_token`: no chat token, or it is expired, revoked (the account signed out everywhere after it was
-        issued: its `sep` claim is below the account's session epoch, which the chat service knows), for another
-        host or not from the account API.
+        issued: its `sep` claim is below the account's session epoch, which the chat service knows; or its device
+        was removed after it was issued), for another host or not from the account API.
       headers:
         WWW-Authenticate: { schema: { type: string, const: Bearer } }
       content:

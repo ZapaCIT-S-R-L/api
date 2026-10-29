@@ -1,5 +1,5 @@
-// api #81: calls asks the chat Worker's ChatMembership.revoked on every request, so calls must never go live before a
-// chat Worker that serves it. deploy-calls.yml enforces that by waiting, in each stage, before anything is changed,
+// api #81, #92: calls asks the chat Worker's ChatMembership.tokenRevoked on every request, so calls must never go live
+// before a chat Worker that serves it. deploy-calls.yml enforces that by waiting, in each stage, before anything is changed,
 // until the chat Worker of the same environment lists every method calls uses on /health.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -24,7 +24,7 @@ function job(name) {
 test("CHAT_RPC lists every ChatMembership method calls uses", () => {
   const listed = /\n {2}CHAT_RPC: (.+)\n/.exec(workflow)?.[1].trim().split(/\s+/).sort();
   assert.deepEqual(listed, rpcMethods());
-  assert.ok(listed.includes("revoked"));
+  assert.ok(listed.includes("tokenRevoked"));
 });
 
 for (const [name, chatUrl] of [

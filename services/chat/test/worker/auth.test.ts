@@ -2,6 +2,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { noRooms } from "../../src/rooms";
 import {
+  ALEX,
   apply,
   as,
   call,
@@ -107,6 +108,43 @@ describe("chat token", () => {
       expect(await status(await issuer.sign(claims(MUM, { sep: 3 })))).toBe(200);
       // Other accounts are not affected.
       expect(await status(await issuer.sign(claims(DAD, { sep: 0 })))).toBe(200);
+    });
+  });
+
+  // api #92: a removed device (a parent revoked a kid's phone, the kid signed out, logout-all with removeDevices) is
+  // tombstoned by device.removed; tokens issued for it before the removal are refused on every route.
+  describe("removed device", () => {
+    const now = () => Math.floor(Date.now() / 1000);
+
+    it("after device.removed, tokens for that device issued before it are refused everywhere", async () => {
+      const token = await issuer.sign(claims(ALEX, { role: "kid" }));
+      expect(await status(token)).toBe(200);
+      await apply(noRooms, { type: "device.removed", accountId: ALEX, deviceId: 1 });
+      for (const [method, path] of [
+        ["GET", "/v1/conversations"],
+        ["GET", "/v1/conversations/c1/messages"],
+        ["POST", "/v1/conversations/c1/acks"],
+        ["DELETE", "/v1/conversations/c1"],
+        ["GET", "/v1/attachments/a1"],
+        ["POST", "/v1/attachments"],
+        ["GET", "/v1/conversations/c1/stream"],
+      ] as const) {
+        const res = await as(token, path, { method, ...(method === "POST" ? { body: "{}" } : {}) });
+        expect(res.status, `${method} ${path}`).toBe(401);
+        expect(res.headers.get("www-authenticate")).toBe("Bearer");
+        expect((await res.json<{ error: { message: string } }>()).error.message).toMatch(/removed/);
+      }
+      // A token issued just before or in the second after the removal is still refused (no race at the edge).
+      expect(await status(await issuer.sign(claims(ALEX, { role: "kid" }), { iat: now() - 60 }))).toBe(401);
+      expect(await status(await issuer.sign(claims(ALEX, { role: "kid" }), { iat: now() + 1 }))).toBe(401);
+    });
+
+    it("other devices and accounts are not affected; a token issued after the device registers again works", async () => {
+      await apply(noRooms, { type: "device.removed", accountId: ALEX, deviceId: 1 });
+      expect(await status(await issuer.sign(claims(ALEX, { role: "kid", dev: 2 })))).toBe(200);
+      expect(await status(await issuer.sign(claims(MUM)))).toBe(200);
+      // The device registered again (a new pairing): the account service only issues a token for it from then on.
+      expect(await status(await issuer.sign(claims(ALEX, { role: "kid" }), { iat: now() + 3 }))).toBe(200);
     });
   });
 

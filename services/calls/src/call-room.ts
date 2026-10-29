@@ -12,7 +12,7 @@
 // and keeps the call's state from being deleted: a pending clean-up is never silently dropped.
 import { DurableObject } from "cloudflare:workers";
 import type { Caller, Role } from "./auth";
-import { ChatUnavailable, membership, revoked } from "./chat";
+import { ChatUnavailable, membership, revoked, type TokenRef } from "./chat";
 import type { Env } from "./env";
 import { limits } from "./limits";
 import { pushProvider } from "./push";
@@ -30,6 +30,9 @@ interface Participant {
   role: Role;
   // The chat token's session epoch at join (missing in calls from before it was kept: counts as 0).
   sep?: number;
+  // The chat token's iat at join (missing in calls from before api #92: counts as 0, so any removal of the device
+  // since drops it).
+  iat?: number;
   joinedAt: number;
   sessionId: string | null;
   tracks: string[];
@@ -141,6 +144,8 @@ interface SocketInfo {
   deviceId: number;
   // The chat token's session epoch (missing on sockets from before it was kept: counts as 0).
   sep?: number;
+  // The chat token's iat (missing on sockets from before api #92: counts as 0).
+  iat?: number;
 }
 
 export class CallRoom extends DurableObject<Env> {
@@ -355,7 +360,12 @@ export class CallRoom extends DurableObject<Env> {
     const [client, server] = [pair[0], pair[1]];
     const key = deviceKey(who.accountId, who.deviceId);
     this.ctx.acceptWebSocket(server, [key]);
-    server.serializeAttachment({ accountId: who.accountId, deviceId: who.deviceId, sep: who.sep } satisfies SocketInfo);
+    server.serializeAttachment({
+      accountId: who.accountId,
+      deviceId: who.deviceId,
+      sep: who.sep,
+      iat: who.iat,
+    } satisfies SocketInfo);
     const p = this.find(who);
     if (p && p.disconnectedAt !== null) {
       p.disconnectedAt = null;
@@ -391,10 +401,11 @@ export class CallRoom extends DurableObject<Env> {
       send(ws, { type: "error", code: "invalid_message", message: keys });
       return;
     }
-    // A phone whose account signed out everywhere must not hand out call keys (api #81).
+    // A phone whose account signed out everywhere (api #81) or whose device was removed (api #92) must not hand out
+    // call keys.
     let gone: boolean;
     try {
-      gone = await revoked(this.env, { accountId: info.accountId, sep: info.sep ?? 0 });
+      gone = await revoked(this.env, tokenOf(info));
     } catch (e) {
       if (!(e instanceof ChatUnavailable)) throw e;
       console.error(JSON.stringify({ msg: "chat unavailable", err: e.message }));
@@ -535,7 +546,7 @@ export class CallRoom extends DurableObject<Env> {
       if (this.call?.state === "ended") return;
       let gone: boolean;
       try {
-        gone = await revoked(this.env, { accountId: p.accountId, sep: p.sep ?? 0 });
+        gone = await revoked(this.env, tokenOf(p));
       } catch (e) {
         if (!(e instanceof ChatUnavailable)) throw e;
         console.error(JSON.stringify({ msg: "chat unavailable", err: e.message }));
@@ -824,12 +835,20 @@ export class CallRoom extends DurableObject<Env> {
   }
 }
 
+const tokenOf = (t: { accountId: string; deviceId: number; sep?: number; iat?: number }): TokenRef => ({
+  accountId: t.accountId,
+  deviceId: t.deviceId,
+  sep: t.sep ?? 0,
+  iat: t.iat ?? 0,
+});
+
 function participant(who: Caller, now: number): Participant {
   return {
     accountId: who.accountId,
     deviceId: who.deviceId,
     role: who.role,
     sep: who.sep,
+    iat: who.iat,
     joinedAt: now,
     sessionId: null,
     tracks: [],

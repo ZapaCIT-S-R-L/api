@@ -8,7 +8,7 @@ import { REVALIDATE_MS } from "../../src/call-room";
 import { ChatOutdated, revoked } from "../../src/chat";
 import worker from "../../src/index";
 import { resetJwksCache } from "../../src/jwks";
-import { chatDownForAccount, errorCode, phone, revokeSessions } from "./calls-helpers";
+import { chatDownForAccount, errorCode, phone, removeDevice, revokeSessions } from "./calls-helpers";
 import {
   bearer,
   fakeRealtime,
@@ -89,14 +89,16 @@ describe("revoked chat tokens", () => {
     expect(await errorCode(res)).toBe("chat_unavailable");
   });
 
-  it("calls deployed before chat (no ChatMembership.revoked yet) → retryable 503, never allowed", async () => {
+  it("calls deployed before chat (no ChatMembership.tokenRevoked yet) → retryable 503, never allowed", async () => {
     const conv = conversation();
     const dad = await phone(issuer, uniqueAccount(), 1, [conv], "parent", { sep: 1 });
     const { call } = await dad.create(conv);
     // Revoked as far as the new chat Worker knows; the old one can't say, so calls must not let it through.
     await revokeSessions(dad.accountId, 2);
     const oldChat = { ...env, CHAT: env.OLD_CHAT };
-    await expect(revoked(oldChat, { accountId: dad.accountId, sep: 1 })).rejects.toBeInstanceOf(ChatOutdated);
+    await expect(revoked(oldChat, { accountId: dad.accountId, deviceId: 1, sep: 1, iat: 0 })).rejects.toBeInstanceOf(
+      ChatOutdated,
+    );
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
     for (const [method, path, body] of [
       ["GET", `/v1/calls/${call.callId}`, undefined],
@@ -117,7 +119,9 @@ describe("revoked chat tokens", () => {
     expect(errors.mock.calls.some(([line]) => String(line).includes("chat outdated"))).toBe(true);
     // An ordinary chat failure is not mistaken for an outdated chat Worker.
     await chatDownForAccount(dad.accountId);
-    await expect(revoked(env, { accountId: dad.accountId, sep: 1 })).rejects.not.toBeInstanceOf(ChatOutdated);
+    await expect(revoked(env, { accountId: dad.accountId, deviceId: 1, sep: 1, iat: 0 })).rejects.not.toBeInstanceOf(
+      ChatOutdated,
+    );
   });
 
   it("a revoked phone that relays a key is dropped from the call and its socket closed (4401)", async () => {
@@ -231,5 +235,79 @@ describe("revoked chat tokens", () => {
     const view = await grandma.request("GET", `/v1/calls/${call.callId}`).then((r) => r.json<CallView>());
     expect(view.state).toBe("ended");
     expect(view.endReason).toBe("disconnected");
+  });
+});
+
+// api #92: a parent revoked a kid's phone (or the kid signed out, or a logout-all removed the devices). The chat
+// service tombstones the device; calls asks it on every request, before every relayed key and once a minute, so the
+// phone can't start, join or watch a call, and is dropped from a live one.
+describe("removed devices", () => {
+  it("a revoked kid phone's token is refused for every request and the events socket", async () => {
+    const conv = conversation();
+    const kid = uniqueAccount();
+    const phoneA = await phone(issuer, kid, 1, [conv], "kid");
+    const phoneB = await phone(issuer, kid, 2, [conv], "kid");
+    const mum = await phone(issuer, uniqueAccount(), 1, [conv]);
+    const { call } = await mum.create(conv);
+    await removeDevice(kid, 1);
+    for (const [method, path] of [
+      ["GET", `/v1/calls/${call.callId}`],
+      ["POST", `/v1/calls/${call.callId}/join`],
+      ["GET", `/v1/calls?conversationId=${conv}`],
+    ] as const) {
+      const res = await phoneA.request(method, path);
+      expect(res.status, `${method} ${path}`).toBe(401);
+      expect(res.headers.get("www-authenticate")).toBe("Bearer");
+      expect(await errorCode(res)).toBe("invalid_token");
+    }
+    expect((await phoneA.request("POST", "/v1/calls", { conversationId: conv })).status).toBe(401);
+    await expect(phoneA.events(call.callId)).rejects.toThrow(/answered 401/);
+    // The kid's other phone and other accounts are not affected.
+    expect((await phoneB.join(call.callId)).status).toBe(200);
+    expect((await mum.request("GET", `/v1/calls/${call.callId}`)).status).toBe(200);
+  });
+
+  it("a revoked kid phone in a live call is dropped and its socket closed (4401) on its next key relay", async () => {
+    const conv = conversation();
+    const kid = await phone(issuer, uniqueAccount(), 1, [conv], "kid");
+    const mum = await phone(issuer, uniqueAccount(), 1, [conv]);
+    const { call } = await mum.create(conv);
+    expect((await kid.join(call.callId)).status).toBe(200);
+    const kidEvents = await kid.events(call.callId);
+    const mumEvents = await mum.events(call.callId);
+    await kidEvents.next("roster");
+    await mumEvents.next("roster");
+    const closes: number[] = [];
+    kidEvents.ws.addEventListener("close", (e) => {
+      closes.push(e.code);
+    });
+
+    await removeDevice(kid.accountId, 1);
+    kidEvents.send({ type: "keys", epoch: 2, envelopes: [{ toAccount: mum.accountId, toDevice: 1, blob }] });
+    expect(await mumEvents.next("left")).toMatchObject({ accountId: kid.accountId, deviceId: 1, reason: "revoked" });
+    await kidEvents.next("__closed");
+    expect(closes).toEqual([4401]);
+    expect(mumEvents.messages.some((m) => m.type === "key")).toBe(false);
+    mumEvents.close();
+  });
+
+  it("a quiet revoked kid phone is dropped at the next minutely check", async () => {
+    const conv = conversation();
+    const kid = await phone(issuer, uniqueAccount(), 1, [conv], "kid");
+    const mum = await phone(issuer, uniqueAccount(), 1, [conv]);
+    const { call } = await mum.create(conv);
+    expect((await kid.join(call.callId)).status).toBe(200);
+    const kidEvents = await kid.events(call.callId);
+    const mumEvents = await mum.events(call.callId);
+    await kidEvents.next("roster");
+    await mumEvents.next("roster");
+
+    await removeDevice(kid.accountId, 1);
+    await advance(call.callId, REVALIDATE_MS + 1);
+    expect(await mumEvents.next("left")).toMatchObject({ accountId: kid.accountId, reason: "revoked" });
+    await kidEvents.next("__closed");
+    const view = await mum.request("GET", `/v1/calls/${call.callId}`).then((r) => r.json<CallView>());
+    expect(view.participants.map((p) => p.accountId)).toEqual([mum.accountId]);
+    mumEvents.close();
   });
 });

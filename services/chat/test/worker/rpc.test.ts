@@ -151,6 +151,40 @@ describe("ChatMembership.member", () => {
     }
   });
 
+  // api #92: the calls service asks whether a chat token is revoked, by a logout-all (sep) or because its device
+  // was removed (a revoked or signed-out kid phone), on every request, before every relayed key and once a minute.
+  it("tokenRevoked(accountId, deviceId, sep, iat): epoch and removed devices", async () => {
+    const tokenRevoked = (accountId: unknown, deviceId: unknown, sep: unknown, iat: unknown) =>
+      exports.ChatMembership.tokenRevoked(accountId as string, deviceId as number, sep as number, iat as number);
+    const iat = Math.floor(Date.now() / 1000);
+    expect(await tokenRevoked(ALEX, 1, 0, iat)).toBe(false);
+    await apply(noRooms, { type: "device.removed", accountId: ALEX, deviceId: 1 });
+    expect(await tokenRevoked(ALEX, 1, 0, iat)).toBe(true);
+    expect(await tokenRevoked(ALEX, 1, 0, iat - 600)).toBe(true);
+    expect(await tokenRevoked(ALEX, 2, 0, iat)).toBe(false);
+    expect(await tokenRevoked(MUM, 1, 0, iat)).toBe(false);
+    // Issued after the device registered again.
+    expect(await tokenRevoked(ALEX, 1, 0, iat + 3)).toBe(false);
+    await apply(noRooms, { type: "account.sessions_revoked", accountId: MUM, epoch: 2 });
+    expect(await tokenRevoked(MUM, 1, 1, iat)).toBe(true);
+    expect(await tokenRevoked(MUM, 1, 2, iat)).toBe(false);
+    // Anything malformed counts as revoked.
+    for (const args of [
+      ["", 1, 0, iat],
+      [null, 1, 0, iat],
+      [MUM, 0, 0, iat],
+      [MUM, 128, 0, iat],
+      [MUM, "1", 0, iat],
+      [MUM, 1, -1, iat],
+      [MUM, 1, undefined, iat],
+      [MUM, 1, 0, undefined],
+      [MUM, 1, 0, -1],
+      [MUM, 1, 0, 1.5],
+    ]) {
+      expect(await tokenRevoked(args[0], args[1], args[2], args[3]), JSON.stringify(args)).toBe(true);
+    }
+  });
+
   it("is not reachable over HTTP", async () => {
     const res = await as(await tokenFor(issuer, MUM), "/ChatMembership/member", { method: "POST", body: "{}" });
     expect(res.status).toBe(404);

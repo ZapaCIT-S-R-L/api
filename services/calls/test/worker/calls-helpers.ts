@@ -54,6 +54,12 @@ export function revokeSessions(accountId: string, epoch: number): Promise<void> 
   return chatStub("PUT", "/revoked", { accountId, epoch });
 }
 
+// The device was removed (a parent revoked the kid's phone, the kid signed out, api #92): the chat service now
+// revokes the tokens issued for it before.
+export function removeDevice(accountId: string, deviceId: number): Promise<void> {
+  return chatStub("PUT", "/device-removed", { accountId, deviceId });
+}
+
 // The chat service's revocation check fails for this account (an outage).
 export function chatDownForAccount(accountId: string): Promise<void> {
   return chatStub("PUT", "/down-account", { accountId });
