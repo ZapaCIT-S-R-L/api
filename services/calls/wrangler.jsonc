@@ -97,7 +97,7 @@
         "APNS_KEY_ID": "68239BP2QT",
         "APNS_TEAM_ID": "9572LYGZ7S",
         "APNS_TOPIC": "ro.zapakid.app",
-        "APNS_ENVIRONMENT": "production",
+        "APNS_ENVIRONMENT": "sandbox",
       },
       "durable_objects": { "bindings": [{ "name": "CALL", "class_name": "CallRoom" }] },
       // zapakid-chat-staging must be deployed (with ChatMembership) before this binding can be.
