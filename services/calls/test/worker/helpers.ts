@@ -208,6 +208,7 @@ export interface CallView {
   callId: string;
   conversationId: string;
   state: "ringing" | "active" | "ended";
+  answeredAt: string | null;
   epoch: number;
   keyLeader: { accountId: string; deviceId: number } | null;
   participants: {
