@@ -27,13 +27,17 @@ const rejects = async (token: string, reason: RegExp) => {
 
 describe("authenticate", () => {
   it("accepts a chat token from the account API for this host", async () => {
-    const caller = await check(await issuer.sign(chatClaims({ conv: ["family:f1", "connection:k2"], dev: 7 })));
+    const iat = Math.floor(Date.now() / 1000);
+    const caller = await check(
+      await issuer.sign(chatClaims({ conv: ["family:f1", "connection:k2"], dev: 7 }), { iat }),
+    );
     expect(caller).toEqual({
       accountId: "account-1",
       deviceId: 7,
       role: "parent",
       scopes: ["family:f1", "connection:k2"],
       sep: 0,
+      iat,
     });
   });
 

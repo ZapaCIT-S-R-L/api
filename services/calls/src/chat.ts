@@ -25,8 +25,9 @@ export interface Membership {
 // The chat service's ChatMembership entrypoint, as the binding exposes it. null: no such conversation.
 export interface ChatMembershipRpc {
   member(conversationId: string, accountId: string): Promise<Membership | null>;
-  // Whether a chat token issued at session epoch `sep` for the account was revoked by a logout-all (api #81).
-  revoked(accountId: string, sep: number): Promise<boolean>;
+  // Whether a chat token for the account's device, issued at `iat` (seconds) at session epoch `sep`, was revoked: by
+  // a logout-all (api #81) or because the device was removed since (api #92).
+  tokenRevoked(accountId: string, deviceId: number, sep: number, iat: number): Promise<boolean>;
 }
 
 // The chat service failed or answered something unexpected: refuse (503), never allow.
@@ -38,7 +39,7 @@ export class ChatUnavailable extends Error {}
 export class ChatOutdated extends ChatUnavailable {}
 
 // How workerd rejects a call to a method the RPC receiver doesn't have (TypeError: The RPC receiver does not
-// implement the method "revoked".).
+// implement the method "tokenRevoked".).
 const MISSING_METHOD = /does not implement the method/;
 
 const NOT_A_MEMBER: Membership = { member: false, observer: false, members: [] };
@@ -82,20 +83,29 @@ export async function membership(env: Env, conversationId: string, accountId: st
   };
 }
 
+// The token a participant or socket holds, as far as the revocation check needs it.
+export interface TokenRef {
+  accountId: string;
+  deviceId: number;
+  sep: number;
+  iat: number;
+}
+
 // Whether the caller's chat token was revoked: the account signed out everywhere (POST /v1/auth/logout-all at the
-// account API) after the token was issued. Only the chat service receives that event, so it is asked on every
-// request and before every relayed key; a token found revoked is refused like an invalid one.
-export async function revoked(env: Env, who: { accountId: string; sep: number }): Promise<boolean> {
+// account API, api #81), or the device was removed after the token was issued (a kid's phone revoked or signed out,
+// api #92). Only the chat service receives those events, so it is asked on every request and before every relayed
+// key; a token found revoked is refused like an invalid one.
+export async function revoked(env: Env, who: TokenRef): Promise<boolean> {
   let answer: unknown;
   try {
-    answer = await env.CHAT.revoked(who.accountId, who.sep);
+    answer = await env.CHAT.tokenRevoked(who.accountId, who.deviceId, who.sep, who.iat);
   } catch (e) {
     if (e instanceof TypeError && MISSING_METHOD.test(e.message)) {
-      throw new ChatOutdated("the chat Worker has no ChatMembership.revoked (deploy chat before calls)");
+      throw new ChatOutdated("the chat Worker has no ChatMembership.tokenRevoked (deploy chat before calls)");
     }
     throw new ChatUnavailable(String(e));
   }
-  if (typeof answer !== "boolean") throw new ChatUnavailable("unexpected answer from ChatMembership.revoked");
+  if (typeof answer !== "boolean") throw new ChatUnavailable("unexpected answer from ChatMembership.tokenRevoked");
   return answer;
 }
 

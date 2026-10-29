@@ -24,11 +24,19 @@ export interface KidSession {
 }
 
 // The kid's phone signs itself out: only this session goes; the kid's other phones stay paired. Parents get 401
-// (they use POST /v1/auth/logout).
+// (they use POST /v1/auth/logout). Like a parent's revoke, the device registered on the session goes in the same
+// transaction (a device.removed event, prekeys cascade, api #92): the family stops sealing to it, and the chat and
+// calls services refuse the phone's chat tokens once the event arrives.
 export async function handleKidLogout(request: Request, env: Env): Promise<Response> {
   const kid = await authenticateKid(request, env);
   if (!kid) return unauthorized();
-  await env.DB.prepare("DELETE FROM kid_sessions WHERE token_hash = ?").bind(kid.tokenHash).run();
+  const boundDevice = "account_id = ? AND device_id = (SELECT device_id FROM kid_sessions WHERE token_hash = ?)";
+  await env.DB.batch([
+    deviceRemovedEvents(env, boundDevice, [kid.id, kid.tokenHash]),
+    env.DB.prepare(`DELETE FROM devices WHERE ${boundDevice}`).bind(kid.id, kid.tokenHash),
+    env.DB.prepare("DELETE FROM kid_sessions WHERE token_hash = ?").bind(kid.tokenHash),
+  ]);
+  await flushMembershipEvents(env);
   return empty(204);
 }
 

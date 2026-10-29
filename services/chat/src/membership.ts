@@ -43,6 +43,23 @@ export async function revokedBefore(env: Env, accountId: string): Promise<number
   return epoch ?? 0;
 }
 
+// A token issued up to this long after a device's removal still counts as issued before it: the account service
+// takes the removal's occurredAt (ms) before its delete commits, and a token's iat is in whole seconds, so a token
+// signed while the delete was in flight can't slip through. A device registered again is refused for at most
+// about two seconds.
+const REMOVAL_MARGIN_MS = 1000;
+
+// Whether the device was removed (device.removed, api #92) after a token for it was issued at `iat` (seconds). A
+// device registered again after the removal has a newer token: that one works.
+export async function deviceRemovedSince(env: Env, accountId: string, deviceId: number, iat: number): Promise<boolean> {
+  const row = await env.DB.prepare(
+    "SELECT 1 AS removed FROM device_tombstones WHERE account_id = ?1 AND device_id = ?2 AND last_seen_at >= ?3",
+  )
+    .bind(accountId, deviceId, iat * 1000 - REMOVAL_MARGIN_MS)
+    .first<{ removed: number }>();
+  return row !== null;
+}
+
 const str = (v: unknown, re = ID): v is string => typeof v === "string" && re.test(v);
 // Device events are ordered by it (api #90).
 const dated = (e: Record<string, unknown>) => !Number.isNaN(Date.parse(e.occurredAt as string));

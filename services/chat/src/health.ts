@@ -25,7 +25,7 @@ function problems(env: Env): string[] {
 
 // The ChatMembership methods this Worker serves to other Workers (src/rpc.ts). deploy-calls.yml waits until the chat
 // Worker in the same environment lists every method the calls Worker calls, so calls never goes live first.
-export const RPC_METHODS = ["member", "revoked"] as const;
+export const RPC_METHODS = ["member", "revoked", "tokenRevoked"] as const;
 
 export async function handleHealth(_request: Request, env: Env): Promise<Response> {
   const found = problems(env);

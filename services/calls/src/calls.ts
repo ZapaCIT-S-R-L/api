@@ -77,13 +77,19 @@ export async function routeCalls(request: Request, env: Env): Promise<Response |
       }
       throw e;
     }
-    // Signed out everywhere since the token was issued (api #81): refused like an invalid token.
+    // Signed out everywhere (api #81) or the device removed (api #92) since the token was issued: refused like an
+    // invalid token.
     try {
       if (await revoked(env, who)) {
         console.log(JSON.stringify({ msg: "token rejected", reason: "revoked" }));
-        return error(401, "invalid_token", "This chat token was revoked (signed out everywhere). Sign in again.", {
-          "www-authenticate": "Bearer",
-        });
+        return error(
+          401,
+          "invalid_token",
+          "This chat token was revoked (signed out, or this device was removed). Sign in again.",
+          {
+            "www-authenticate": "Bearer",
+          },
+        );
       }
     } catch (e) {
       if (e instanceof ChatUnavailable) return chatUnavailable(e);

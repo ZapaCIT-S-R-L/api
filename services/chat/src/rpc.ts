@@ -8,11 +8,11 @@
 // Observers (a kid's parents reading the chat, api #73) are not members for calls: they can't start or join one,
 // they aren't rung and they never get the call key. `observer: true` lets the calls service show them the call log.
 import { WorkerEntrypoint } from "cloudflare:workers";
-import { ACCOUNT_ID, CONVERSATION_ID } from "./body";
+import { ACCOUNT_ID, CONVERSATION_ID, isDeviceId } from "./body";
 import { devicesOf, isObserver, membersOf } from "./conversations";
 import type { Env } from "./env";
 import type { Role } from "./graph";
-import { revokedBefore } from "./membership";
+import { deviceRemovedSince, revokedBefore } from "./membership";
 
 export interface CallMember {
   accountId: string;
@@ -71,12 +71,33 @@ export async function revoked(env: Env, accountId: unknown, sep: unknown): Promi
   return sep < (await revokedBefore(env, accountId));
 }
 
+// Whether a chat token for the account's device, issued at `iat` (seconds) at session epoch `sep`, is revoked: by a
+// logout-all (api #81) or because the device was removed since (api #92). The calls service asks on every request,
+// before every relayed key and once a minute for every participant of a live call. Malformed input counts as revoked.
+export async function tokenRevoked(
+  env: Env,
+  accountId: unknown,
+  deviceId: unknown,
+  sep: unknown,
+  iat: unknown,
+): Promise<boolean> {
+  if (await revoked(env, accountId, sep)) return true;
+  if (!isDeviceId(deviceId)) return true;
+  if (typeof iat !== "number" || !Number.isInteger(iat) || iat < 0) return true;
+  return deviceRemovedSince(env, accountId as string, deviceId, iat);
+}
+
 export class ChatMembership extends WorkerEntrypoint<Env> {
   async member(conversationId: string, accountId: string): Promise<Membership | null> {
     return membership(this.env, conversationId, accountId);
   }
 
+  // Calls Workers from before api #92 ask this one; newer ones ask tokenRevoked.
   async revoked(accountId: string, sep: number): Promise<boolean> {
     return revoked(this.env, accountId, sep);
+  }
+
+  async tokenRevoked(accountId: string, deviceId: number, sep: number, iat: number): Promise<boolean> {
+    return tokenRevoked(this.env, accountId, deviceId, sep, iat);
   }
 }

@@ -11,8 +11,9 @@ Audio is never stored; the call log in D1 (EU) is metadata only.
   ids, so it is not used to authorize: on every start, join and view the Worker asks the chat service
   (`ChatMembership.member`, `services/chat/src/rpc.ts`) over the `CHAT` service binding (Workers RPC, never public
   HTTP) whether the caller is a current member, and which members' devices to ring (`src/chat.ts`). On every request
-  it also asks `ChatMembership.revoked(accountId, sep)` whether the token's session epoch (`sep`) was revoked by a
-  logout-all at the account API; a live call re-asks for each participant every minute and before every relayed
+  it also asks `ChatMembership.tokenRevoked(accountId, deviceId, sep, iat)` whether the token was revoked: its
+  session epoch (`sep`) by a logout-all at the account API, or its device removed after `iat` (a kid's phone
+  revoked by a parent or signed out, api #92); a live call re-asks for each participant every minute and before every relayed
   key, and drops the ones revoked (`left` with reason `revoked`, socket closed with `4401`). Tests and the local
   e2e run play the chat service with `test/chat-stub`.
 - Node 24 (`../../.nvmrc`). In this folder: `npm ci --ignore-scripts`, then
@@ -32,9 +33,9 @@ own workflows ignore `services/`. The token needs `Queues: Edit` (root README) f
 The `CHAT` binding needs the chat Worker of the same environment (`zapakid-chat-staging`, `zapakid-chat-production`)
 deployed with its `ChatMembership` entrypoint first; otherwise the calls deploy fails. Deploy order: chat before
 calls, enforced. Each calls stage first waits (up to 30 minutes, before migrations or the deploy) until the chat
-Worker of that environment lists every method calls uses (`CHAT_RPC` in the workflow: `member`, `revoked`) in the
+Worker of that environment lists every method calls uses (`CHAT_RPC` in the workflow: `member`, `tokenRevoked`) in the
 `rpc` field of its `/health` (`scripts/wait-for-rpc.js`); if it doesn't, the stage fails without changing anything:
-deploy chat, then re-run. Should calls still meet a chat Worker without `revoked` (a chat rollback), every request
+deploy chat, then re-run. Should calls still meet a chat Worker without `tokenRevoked` (a chat rollback), every request
 gets a retryable 503 `chat_unavailable` with `Retry-After: 30`, logged as `chat outdated`; a token is never let
 through unchecked. The conversation events
 queues (`zapakid-conversation-events-<env>` and `…-dlq`) are created by `scripts/resources.js` if missing, as the
