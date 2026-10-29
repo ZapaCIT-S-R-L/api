@@ -34,7 +34,8 @@
     "APNS_ENVIRONMENT": "sandbox",
   },
   // Secrets (the bootstrap-secrets workflow, never vars): REALTIME_APP_ID, REALTIME_APP_SECRET, TURN_KEY_ID,
-  // TURN_KEY_API_TOKEN; and APNS_AUTH_KEY (the APNs .p8 key; not imported by the workflow yet, api #102). Locally:
+  // TURN_KEY_API_TOKEN; and the push credentials, set by hand until the workflow imports them: APNS_AUTH_KEY (the
+  // APNs .p8 key, api #102) and FCM_CREDENTIALS_JSON (the Firebase service-account JSON, android #57). Locally:
   // --var on wrangler dev with fake values (scripts/check.sh), or .dev.vars.
   "durable_objects": { "bindings": [{ "name": "CALL", "class_name": "CallRoom" }] },
   // Conversation membership: the chat Worker of the same environment, over Workers RPC (never public HTTP). Locally
