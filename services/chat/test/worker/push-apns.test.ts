@@ -50,15 +50,26 @@ function decode(part: string): Record<string, unknown> {
   return JSON.parse(atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4))) as Record<string, unknown>;
 }
 
+function record(input: string | URL | Request, init?: RequestInit): void {
+  const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+  const body = typeof init?.body === "string" ? init.body : "";
+  sent.push({ url, headers: new Headers(init?.headers), body });
+}
+
+function first(): Sent {
+  const s = sent[0];
+  if (!s) throw new Error("no request was sent");
+  return s;
+}
+
 beforeEach(async () => {
   await makeKey();
   sent = [];
   logged = [];
   vi.stubGlobal(
     "fetch",
-    vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
-      const headers = new Headers(init?.headers);
-      sent.push({ url: String(input), headers, body: String(init?.body) });
+    vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      record(input, init);
       return Promise.resolve(new Response(null, { status: 200 }));
     }),
   );
@@ -77,7 +88,7 @@ describe("APNs wake-up request", () => {
     await apnsProvider(secrets()).wake([target(TOKEN_A)]);
 
     expect(sent).toHaveLength(1);
-    const [req] = sent;
+    const req = first();
     expect(req.url).toBe(`https://api.push.apple.com/3/device/${TOKEN_A}`);
     expect(req.headers.get("apns-push-type")).toBe("background");
     expect(req.headers.get("apns-priority")).toBe("5");
@@ -88,12 +99,12 @@ describe("APNs wake-up request", () => {
 
   it("uses the sandbox host when APNS_ENVIRONMENT is sandbox", async () => {
     await apnsProvider({ ...secrets(), APNS_ENVIRONMENT: "sandbox" }).wake([target(TOKEN_A)]);
-    expect(sent[0].url).toBe(`https://api.sandbox.push.apple.com/3/device/${TOKEN_A}`);
+    expect(first().url).toBe(`https://api.sandbox.push.apple.com/3/device/${TOKEN_A}`);
   });
 
   it("uses the production host for any other APNS_ENVIRONMENT", async () => {
     await apnsProvider({ ...secrets(), APNS_ENVIRONMENT: "production" }).wake([target(TOKEN_A)]);
-    expect(sent[0].url).toBe(`https://api.push.apple.com/3/device/${TOKEN_A}`);
+    expect(first().url).toBe(`https://api.push.apple.com/3/device/${TOKEN_A}`);
   });
 
   it("sends one request per iPhone and skips FCM targets", async () => {
@@ -106,8 +117,8 @@ describe("APNs wake-up request", () => {
 
   it("signs an ES256 provider token with the key id and team id", async () => {
     await apnsProvider(secrets()).wake([target(TOKEN_A)]);
-    const jwt = (sent[0].headers.get("authorization") ?? "").replace(/^bearer /, "");
-    const [h, p, s] = jwt.split(".");
+    const jwt = (first().headers.get("authorization") ?? "").replace(/^bearer /, "");
+    const [h = "", p = "", s = ""] = jwt.split(".");
     expect(decode(h)).toEqual({ alg: "ES256", kid: "68239BP2QT" });
     expect(decode(p)).toMatchObject({ iss: "TEAMID1234" });
     const b64 = s.replace(/-/g, "+").replace(/_/g, "/");
@@ -122,13 +133,16 @@ describe("APNs wake-up request", () => {
   });
 
   it("never logs the key or the provider token", async () => {
-    vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify({ reason: "BadDeviceToken" }), { status: 400 }));
+    vi.mocked(fetch).mockImplementationOnce((input, init) => {
+      record(input, init);
+      return Promise.resolve(new Response(JSON.stringify({ reason: "BadDeviceToken" }), { status: 400 }));
+    });
     await apnsProvider(secrets()).wake([target(TOKEN_A)]);
-    const jwt = (sent[0].headers.get("authorization") ?? "").replace(/^bearer /, "");
+    const jwt = (first().headers.get("authorization") ?? "").replace(/^bearer /, "");
     const everything = logged.join("\n");
     expect(everything).toContain("BadDeviceToken");
     expect(everything).not.toContain(jwt);
-    expect(everything).not.toContain(pem.split("\n")[1]);
+    expect(everything).not.toContain(pem.split("\n")[1] ?? "");
     expect(everything).not.toContain(TOKEN_A);
   });
 });
