@@ -9,7 +9,12 @@ const alex: ChatMember = {
   push: [{ deviceId: 3, provider: "apns", token: "ab12" }],
 };
 const mum: ChatMember = { accountId: "mum", role: "parent", devices: [1], push: [] };
-const me: ChatMember = { accountId: "me", role: "parent", devices: [1, 2], push: [{ deviceId: 1, provider: "apns", token: "zz" }] };
+const me: ChatMember = {
+  accountId: "me",
+  role: "parent",
+  devices: [1, 2],
+  push: [{ deviceId: 1, provider: "apns", token: "zz" }],
+};
 
 describe("ringTargets", () => {
   it("rings every other member's device; a device with a push target carries it", () => {
