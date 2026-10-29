@@ -36,8 +36,16 @@ export async function handleCreatePairing(
     return error(404, "not_found", "No such kid.");
   }
   // No body is fine, and so is an empty one: the iOS app sends Content-Length: 0 without a Content-Type.
-  if (request.body && request.headers.get("content-length") !== "0")
-    onlyFields(await readJson(request), [], "the body");
+  // { replacePhones: true }: when this phone pairs, the kid's other phones are signed out (a replaced phone).
+  let replacePhones = false;
+  if (request.body && request.headers.get("content-length") !== "0") {
+    const body = await readJson(request);
+    onlyFields(body, ["replacePhones"], "the body");
+    if (body.replacePhones !== undefined) {
+      if (typeof body.replacePhones !== "boolean") throw invalid("replacePhones must be true or false.");
+      replacePhones = body.replacePhones;
+    }
+  }
 
   const now = new Date();
   const nowIso = now.toISOString();
@@ -55,10 +63,10 @@ export async function handleCreatePairing(
   const code = `zkp_${randomBase64Url(32)}`;
   const expiresAt = new Date(now.getTime() + PAIRING_TTL_SECONDS * 1000).toISOString();
   await env.DB.prepare(
-    `INSERT INTO kid_pairings (code_hash, kid_id, family_id, created_by, created_at, expires_at)
-     VALUES (?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO kid_pairings (code_hash, kid_id, family_id, created_by, created_at, expires_at, replaces_phones)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
   )
-    .bind(await sha256Hex(code), kidId, familyId, session.parentId, nowIso, expiresAt)
+    .bind(await sha256Hex(code), kidId, familyId, session.parentId, nowIso, expiresAt, replacePhones ? 1 : 0)
     .run();
   const kid = await loadKid(env, kidId);
   return json({ code, expiresAt, kid }, 201);
@@ -78,10 +86,10 @@ export async function handleRedeemPairing(request: Request, env: Env): Promise<R
 
   const nowIso = new Date().toISOString();
   const pairing = await env.DB.prepare(
-    "SELECT kid_id, family_id, created_by FROM kid_pairings WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?",
+    "SELECT kid_id, family_id, created_by, replaces_phones FROM kid_pairings WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?",
   )
     .bind(codeHash, nowIso)
-    .first<{ kid_id: string; family_id: string; created_by: string }>();
+    .first<{ kid_id: string; family_id: string; created_by: string; replaces_phones: number }>();
   if (!pairing) return gone();
 
   // Staging ("allowlist"): without attestation only codes made by an allowlisted test parent work.
@@ -97,12 +105,33 @@ export async function handleRedeemPairing(request: Request, env: Env): Promise<R
   const token = `zkk_${randomBase64Url(32)}`;
   const tokenHash = await hashToken(token);
   const expiresAt = new Date(Date.now() + KID_SESSION_TTL_SECONDS * 1000).toISOString();
+  // Everything after the claim is guarded by it (the code's session_hash is this redemption's token): the
+  // replaced phones go before the new session is inserted.
+  const redeemed = {
+    sql: "EXISTS (SELECT 1 FROM kid_pairings WHERE code_hash = ? AND session_hash = ?)",
+    binds: [codeHash, tokenHash],
+  };
+  const replaced: D1PreparedStatement[] =
+    pairing.replaces_phones === 1
+      ? [
+          deviceRemovedEvents(env, `account_id = ? AND ${redeemed.sql}`, [pairing.kid_id, ...redeemed.binds]),
+          env.DB.prepare(`DELETE FROM devices WHERE account_id = ? AND ${redeemed.sql}`).bind(
+            pairing.kid_id,
+            ...redeemed.binds,
+          ),
+          env.DB.prepare(`DELETE FROM kid_sessions WHERE kid_id = ? AND ${redeemed.sql}`).bind(
+            pairing.kid_id,
+            ...redeemed.binds,
+          ),
+        ]
+      : [];
   // One transaction: use up the code (only if still open), then create the session only for this redemption.
   const [claim] = await env.DB.batch([
     env.DB.prepare(
       `UPDATE kid_pairings SET used_at = ?, session_hash = ?
        WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?`,
     ).bind(nowIso, tokenHash, codeHash, nowIso),
+    ...replaced,
     // `id` names the session to parents (GET .../kids/{kidId}/sessions) without exposing the token hash.
     env.DB.prepare(
       `INSERT INTO kid_sessions (token_hash, kid_id, created_at, expires_at, id, last_seen_at)

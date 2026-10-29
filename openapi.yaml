@@ -857,16 +857,56 @@ paths:
                   families: { type: array, maxItems: 1, items: { $ref: "#/components/schemas/Family" } }
         "401": { $ref: "#/components/responses/Unauthorized" }
 
+  /v1/families/{familyId}/parents/{accountId}:
+    delete:
+      tags: [Families]
+      operationId: removeParent
+      summary: Remove another parent from the family, with their sessions and phones.
+      description: |
+        Any parent of the family may remove another parent. Their sessions are signed out (`account.sessions_revoked`),
+        their devices removed (`device.removed` for each), and `family.member_removed` tells the chat service to take
+        them out of the family's conversations. Their account stays and they can join another family. A parent can't
+        remove themselves (`409 cannot_remove_self`), and a family keeps at least one parent. A non-member caller, or a
+        target that isn't a parent of the family, gets `404`.
+      parameters:
+        [
+          { $ref: "#/components/parameters/familyId" },
+          { name: accountId, in: path, required: true, schema: { type: string, format: uuid } },
+        ]
+      responses:
+        "204": { description: "Removed." }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: "`cannot_remove_self`, or `last_parent`."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /v1/families/{familyId}/parents/invitations:
     post:
       tags: [Families]
       operationId: inviteCoParent
-      summary: A one-time code that lets another parent join the family.
+      summary: A one-time code that lets another parent join the family, or replaces a parent's phone.
       description: |
         Show it as a QR code or share it as a link (`https://zapakid.ro/join#<code>`; the fragment never reaches a
         server log). Valid for 72 hours, single use. At most 5 open invitations per family. Only the SHA-256 of the
         code is stored. Invitations by email come later. A non-member gets `404`.
+
+        With `replaces` (a parent of the family), the code replaces that parent's phone: that parent redeems it on the
+        new phone with `POST /v1/families/join`. Then their other sessions and devices are removed (`device.removed`),
+        and the current session stays. Only that parent can redeem it (`403 invitation_for_other_account` for anyone
+        else; the code stays usable).
       parameters: [{ $ref: "#/components/parameters/familyId" }]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                replaces: { type: string, format: uuid, description: The parent whose phone this code replaces. }
       responses:
         "201":
           description: Invitation created.
@@ -914,6 +954,11 @@ paths:
               schema: { $ref: "#/components/schemas/Family" }
         "400": { $ref: "#/components/responses/InvalidRequest" }
         "401": { $ref: "#/components/responses/Unauthorized" }
+        "403":
+          description: "`invitation_for_other_account`: the code replaces another parent's phone."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
         "409":
           description: "`already_in_family`: the caller's own family has kids or another parent."
           content:
@@ -966,6 +1011,17 @@ paths:
       tags: [Kid pairing]
       operationId: createKidPairing
       summary: A one-time code that pairs a phone with this kid, shown as a QR code.
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                replacePhones:
+                  type: boolean
+                  description: "When this phone pairs, the kid's other phones are signed out (their sessions and devices removed, `device.removed` for each). For a replaced phone."
       description: |
         For a new kid, add the kid first (`POST /v1/families/{familyId}/kids`) and then pair. For an existing kid
         (a new or replaced phone), pair again: the new phone gets its own kid session, and the kid's chats come back
