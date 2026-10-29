@@ -21,69 +21,69 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  production:
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    environment:
-      name: production
-    # The Cloudflare token goes only to the steps that run wrangler (step env), never to npm ci or the tests.
-    env:
-      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      VERSION: ${{ inputs.version }}
-    steps:
-      - name: Check the version is a release tag
-        run: |
-          if ! [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "::error::Not a release tag: $VERSION"; exit 1; fi
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: refs/tags/${{ inputs.version }}
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version-file: .nvmrc
-      - run: npm ci --ignore-scripts
-      - run: npm test
-      - run: npx wrangler deploy --dry-run --env production --outdir dist
-
-      - name: D1 database (EU) and migrations
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          node scripts/d1-database.js production
-          npx wrangler d1 migrations apply DB --env production --remote
-
-      - name: Deploy
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          VERSION_URL: https://github.com/${{ github.repository }}/tree/${{ inputs.version }}
-        run: >-
-          npx wrangler deploy --env production --tag "$VERSION" --message "deploy $VERSION"
-          --var "VERSION:$VERSION" --var "VERSION_URL:$VERSION_URL"
-
-      - name: End-to-end tests against production
-        id: e2e
-        if: vars.PRODUCTION_URL != ''
-        env:
-          API_URL: ${{ vars.PRODUCTION_URL }}
-          LIVE: "1"
-        run: |
-          node scripts/wait-for-version.js "$API_URL" "$VERSION"
-          npm run test:e2e || { sleep 30; npm run test:e2e; }
-
-      - name: Roll back to the previous version
-        if: failure() && steps.e2e.conclusion == 'failure'
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        # The e2e step has already failed the job; this step only reports what happened to the live version.
-        # On a first deploy there is nothing to roll back to: the failing version stays live, said loudly.
-        run: |
-          if out=$(npx wrangler rollback --env production --yes --message "e2e failed after deploy of $VERSION" 2>&1); then
-            echo "$out"
-            echo "::error::e2e failed after deploying $VERSION; rolled back to the previous version." | tee -a "$GITHUB_STEP_SUMMARY"
-          elif grep -q "Could not find stable Worker Version" <<<"$out"; then
-            echo "$out"
-            echo "::error::e2e failed after deploying $VERSION, and it is the first version of the production Worker: nothing to roll back to, $VERSION stays live. Fix forward." | tee -a "$GITHUB_STEP_SUMMARY"
-          else
-            echo "$out"
-            echo "::error::e2e failed after deploying $VERSION, and the rollback failed too: check the production Worker now." | tee -a "$GITHUB_STEP_SUMMARY"
-          fi
-          exit 1
+#   production:
+#     runs-on: ubuntu-latest
+#     timeout-minutes: 15
+#     environment:
+#       name: production
+#     # The Cloudflare token goes only to the steps that run wrangler (step env), never to npm ci or the tests.
+#     env:
+#       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+#       VERSION: ${{ inputs.version }}
+#     steps:
+#       - name: Check the version is a release tag
+#         run: |
+#           if ! [[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then echo "::error::Not a release tag: $VERSION"; exit 1; fi
+#       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+#         with:
+#           ref: refs/tags/${{ inputs.version }}
+#       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+#         with:
+#           node-version-file: .nvmrc
+#       - run: npm ci --ignore-scripts
+#       - run: npm test
+#       - run: npx wrangler deploy --dry-run --env production --outdir dist
+# 
+#       - name: D1 database (EU) and migrations
+#         env:
+#           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+#         run: |
+#           node scripts/d1-database.js production
+#           npx wrangler d1 migrations apply DB --env production --remote
+# 
+#       - name: Deploy
+#         env:
+#           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+#           VERSION_URL: https://github.com/${{ github.repository }}/tree/${{ inputs.version }}
+#         run: >-
+#           npx wrangler deploy --env production --tag "$VERSION" --message "deploy $VERSION"
+#           --var "VERSION:$VERSION" --var "VERSION_URL:$VERSION_URL"
+# 
+#       - name: End-to-end tests against production
+#         id: e2e
+#         if: vars.PRODUCTION_URL != ''
+#         env:
+#           API_URL: ${{ vars.PRODUCTION_URL }}
+#           LIVE: "1"
+#         run: |
+#           node scripts/wait-for-version.js "$API_URL" "$VERSION"
+#           npm run test:e2e || { sleep 30; npm run test:e2e; }
+# 
+#       - name: Roll back to the previous version
+#         if: failure() && steps.e2e.conclusion == 'failure'
+#         env:
+#           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+#         # The e2e step has already failed the job; this step only reports what happened to the live version.
+#         # On a first deploy there is nothing to roll back to: the failing version stays live, said loudly.
+#         run: |
+#           if out=$(npx wrangler rollback --env production --yes --message "e2e failed after deploy of $VERSION" 2>&1); then
+#             echo "$out"
+#             echo "::error::e2e failed after deploying $VERSION; rolled back to the previous version." | tee -a "$GITHUB_STEP_SUMMARY"
+#           elif grep -q "Could not find stable Worker Version" <<<"$out"; then
+#             echo "$out"
+#             echo "::error::e2e failed after deploying $VERSION, and it is the first version of the production Worker: nothing to roll back to, $VERSION stays live. Fix forward." | tee -a "$GITHUB_STEP_SUMMARY"
+#           else
+#             echo "$out"
+#             echo "::error::e2e failed after deploying $VERSION, and the rollback failed too: check the production Worker now." | tee -a "$GITHUB_STEP_SUMMARY"
+#           fi
+#           exit 1
