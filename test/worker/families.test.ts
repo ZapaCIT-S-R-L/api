@@ -337,3 +337,114 @@ describe("POST /v1/families/{familyId}/kids", () => {
     expect((await call(`/v1/families/${family.id}/kids`, { headers: ana.auth })).status).toBe(405);
   });
 });
+
+describe("replacing an adult's phone: an invitation for that parent", () => {
+  it("a member creates a code for a parent of the family; 404 for a non-member parent", async () => {
+    const ana = await signInParent(apple, "ana", "Ana");
+    const family = await createFamily(ana.auth);
+    const bob = await signInParent(apple, "bob", "Bob");
+    const outsider = await signInParent(apple, "eve", "Eve");
+    expect((await send(`/v1/families/${family.id}/parents/invitations`, ana.auth, { replaces: bob.id })).status).toBe(
+      404,
+    );
+    const res = await send(`/v1/families/${family.id}/parents/invitations`, ana.auth, { replaces: outsider.id });
+    expect(res.status).toBe(404);
+  });
+
+  it("the parent joins on the new phone with the code: the old sessions and devices go, the new session stays", async () => {
+    const ana = await signInParent(apple, "ana", "Ana");
+    const family = await createFamily(ana.auth);
+    const bob = await signInParent(apple, "bob", "Bob");
+    // Bob joins first; then his phone is replaced.
+    const code = await invite(ana.auth, family.id);
+    expect((await send("/v1/families/join", bob.auth, { code: code.code })).status).toBe(200);
+
+    const created = await send(`/v1/families/${family.id}/parents/invitations`, ana.auth, { replaces: bob.id });
+    expect(created.status).toBe(201);
+    const { code: replacement } = await created.json<{ code: string }>();
+
+    const newPhone = await signInParent(apple, "bob", "Bob");
+    const joined = await send("/v1/families/join", newPhone.auth, { code: replacement });
+    expect(joined.status).toBe(200);
+    expect((await joined.json<Family>()).parents.map((p) => p.id).sort()).toEqual([ana.id, bob.id].sort());
+    expect((await call("/v1/families", { headers: bob.auth })).status).toBe(401);
+    expect((await call("/v1/families", { headers: newPhone.auth })).status).toBe(200);
+    expect((await call("/v1/families", { headers: ana.auth })).status).toBe(200);
+  });
+
+  it("another parent's session can't use a replacement code → 403, the code stays usable", async () => {
+    const ana = await signInParent(apple, "ana", "Ana");
+    const family = await createFamily(ana.auth);
+    const bob = await signInParent(apple, "bob", "Bob");
+    await send("/v1/families/join", bob.auth, { code: (await invite(ana.auth, family.id)).code });
+    const { code } = await (
+      await send(`/v1/families/${family.id}/parents/invitations`, ana.auth, { replaces: bob.id })
+    ).json<{ code: string }>();
+    const carl = await signInParent(apple, "carl", "Carl");
+    const res = await send("/v1/families/join", carl.auth, { code });
+    expect(res.status).toBe(403);
+    expect(await errorCode(res)).toBe("invitation_for_other_account");
+    expect((await send("/v1/families/join", bob.auth, { code })).status).toBe(200);
+  });
+});
+
+describe("DELETE /v1/families/{familyId}/parents/{accountId}", () => {
+  async function twoParents() {
+    const ana = await signInParent(apple, "ana", "Ana");
+    const family = await createFamily(ana.auth);
+    const bob = await signInParent(apple, "bob", "Bob");
+    expect((await send("/v1/families/join", bob.auth, { code: (await invite(ana.auth, family.id)).code })).status).toBe(
+      200,
+    );
+    return { ana, bob, family };
+  }
+
+  it("a parent removes the other parent: 204; the removed parent's sessions are gone, the family stays", async () => {
+    const { ana, bob, family } = await twoParents();
+    const bobSecond = await signInParent(apple, "bob", "Bob");
+    const res = await send(`/v1/families/${family.id}/parents/${bob.id}`, ana.auth, undefined, "DELETE");
+    expect(res.status).toBe(204);
+    expect((await call("/v1/families", { headers: bob.auth })).status).toBe(401);
+    expect((await call("/v1/families", { headers: bobSecond.auth })).status).toBe(401);
+    const mine = await (await call("/v1/families", { headers: ana.auth })).json<{ families: Family[] }>();
+    expect(mine.families[0]?.parents.map((p) => p.id)).toEqual([ana.id]);
+    // The removed parent has no family now; the account itself stays and can sign in again.
+    const again = await signInParent(apple, "bob", "Bob");
+    const fresh = await (await call("/v1/families", { headers: again.auth })).json<{ families: Family[] }>();
+    expect(fresh.families).toEqual([]);
+  });
+
+  it("a parent can't remove themselves → 409 cannot_remove_self, nothing changes", async () => {
+    const { ana, family } = await twoParents();
+    const res = await send(`/v1/families/${family.id}/parents/${ana.id}`, ana.auth, undefined, "DELETE");
+    expect(res.status).toBe(409);
+    expect(await errorCode(res)).toBe("cannot_remove_self");
+    expect((await call("/v1/families", { headers: ana.auth })).status).toBe(200);
+  });
+
+  it("a non-member caller, or a target that isn't a parent of the family → 404", async () => {
+    const { ana, bob, family } = await twoParents();
+    const outsider = await signInParent(apple, "eve", "Eve");
+    expect((await send(`/v1/families/${family.id}/parents/${bob.id}`, outsider.auth, undefined, "DELETE")).status).toBe(
+      404,
+    );
+    expect((await send(`/v1/families/${family.id}/parents/${outsider.id}`, ana.auth, undefined, "DELETE")).status).toBe(
+      404,
+    );
+  });
+
+  it("without a session → 401", async () => {
+    const { bob, family } = await twoParents();
+    expect((await call(`/v1/families/${family.id}/parents/${bob.id}`, { method: "DELETE" })).status).toBe(401);
+  });
+
+  it("the removed parent's family events are sent (family.member_removed, and sessions revoked)", async () => {
+    const { ana, bob, family } = await twoParents();
+    await send(`/v1/families/${family.id}/parents/${bob.id}`, ana.auth, undefined, "DELETE");
+    const { results } = await env.DB.prepare("SELECT body FROM membership_outbox ORDER BY seq").all<{ body: string }>();
+    const events = results.map((r) => JSON.parse(r.body) as { type: string; accountId?: string });
+    expect(events).toContainEqual(expect.objectContaining({ type: "family.member_removed", accountId: bob.id }));
+    expect(events).toContainEqual(expect.objectContaining({ type: "account.sessions_revoked", accountId: bob.id }));
+    expect(await count("family_parents")).toBe(1);
+  });
+});

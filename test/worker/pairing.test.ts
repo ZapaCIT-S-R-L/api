@@ -273,3 +273,15 @@ describe("app attestation on redeem", () => {
     expect(allowed.status).toBe(200);
   });
 });
+
+describe("replacing a kid's phone: POST .../pairing with { replacePhones: true }", () => {
+  it("an empty object is the same as no body; the flag must be a boolean → 400", async () => {
+    const { parent, family, kid } = await parentWithKid();
+    const ok = await send(`/v1/families/${family.id}/kids/${kid.id}/pairing`, parent.auth, { replacePhones: true });
+    expect(ok.status).toBe(201);
+    const bad = await send(`/v1/families/${family.id}/kids/${kid.id}/pairing`, parent.auth, { replacePhones: "yes" });
+    expect(bad.status).toBe(400);
+    const unknown = await send(`/v1/families/${family.id}/kids/${kid.id}/pairing`, parent.auth, { all: true });
+    expect(unknown.status).toBe(400);
+  });
+});
