@@ -1,8 +1,9 @@
 // Conversations and the family rules: parents and kids start them, kids' parents read along as observers (unless
 // oversight is off for that kid), other families' kids only when shared through a connection.
 import { env } from "cloudflare:workers";
-import { beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { MAX_MEMBERS, MAX_OBSERVERS, MAX_REQUESTED_MEMBERS } from "../../src/conversations";
+import { usePushProvider, type PushTarget } from "../../src/push";
 import { noRooms } from "../../src/rooms";
 import {
   ALEX,
@@ -322,5 +323,87 @@ describe("GET and DELETE /v1/conversations/{id}", () => {
     const res = await as(await token(MUM), "/v1/conversations", { method: "PUT" });
     expect(res.status).toBe(405);
     expect(res.headers.get("allow")).toBe("POST, GET");
+  });
+});
+
+// Stefan, 2026-10-29: when a parent makes a group with other people, every other member learns it exists without
+// creating it locally, and the same group made again by another member is the one that already exists.
+describe("group create: dedupe and notify", () => {
+  let pushed: PushTarget[][];
+
+  beforeEach(async () => {
+    await seedFamilies();
+    pushed = [];
+    usePushProvider({
+      wake: (targets) => {
+        pushed.push(targets);
+        return Promise.resolve();
+      },
+    });
+    await apply(
+      noRooms,
+      {
+        type: "device.upserted",
+        accountId: ALEX,
+        deviceId: 1,
+        registrationId: 101,
+        push: { provider: "apns", token: "alex-1" },
+      },
+      {
+        type: "device.upserted",
+        accountId: MARIA,
+        deviceId: 1,
+        registrationId: 103,
+        push: { provider: "fcm", token: "maria-1" },
+      },
+      {
+        type: "device.upserted",
+        accountId: MUM,
+        deviceId: 1,
+        registrationId: 100,
+        push: { provider: "apns", token: "mum-1" },
+      },
+    );
+  });
+
+  afterEach(() => {
+    usePushProvider(null);
+  });
+
+  it("the same group made by another member is returned (200), not duplicated", async () => {
+    const first = await create(MUM, [ALEX, MARIA]);
+    expect(first.status).toBe(201);
+    const firstBody = await first.json<ConversationBody>();
+    const again = await create(ALEX, [MUM, MARIA]);
+    expect(again.status).toBe(200);
+    expect((await again.json<ConversationBody>()).id).toBe(firstBody.id);
+    const count = await env.DB.prepare("SELECT count(*) AS n FROM conversations WHERE kind = 'group'").first<{
+      n: number;
+    }>();
+    expect(count?.n).toBe(1);
+  });
+
+  it("a group with a different member set is a new group", async () => {
+    const first = await (await create(MUM, [ALEX, MARIA])).json<ConversationBody>();
+    const other = await create(MUM, [ALEX, ANA]);
+    expect(other.status).toBe(201);
+    expect((await other.json<ConversationBody>()).id).not.toBe(first.id);
+  });
+
+  it("a new group wakes the other writers' devices with push targets; observers and the creator are not woken", async () => {
+    const res = await create(MUM, [ALEX, MARIA]);
+    expect(res.status).toBe(201);
+    const woken = pushed
+      .flat()
+      .map((t) => t.accountId)
+      .sort();
+    expect(woken).toEqual([ALEX, MARIA]);
+  });
+
+  it("a group found again does not wake anyone a second time", async () => {
+    await create(MUM, [ALEX, MARIA]);
+    pushed = [];
+    await create(ALEX, [MUM, MARIA]);
+    expect(pushed).toEqual([]);
   });
 });
