@@ -84,3 +84,7 @@ the `chat-staging` and `chat` custom domains. No secrets: the service has none.
 
 Cloudflare Queues have no EU jurisdiction setting; the events carry only ids (accounts, families, devices, push
 tokens), which goes in the DPIA.
+
+"Typing..." signals (api #98) are metadata too, for the DPIA and privacy notice: while a member types, the service relays
+"account X is typing" to the other members' open streams. It is held in memory only for the moment of delivery, never
+stored or logged, has no content and doesn't survive the connection.

@@ -59,6 +59,9 @@ export const CLOSE_NOT_A_MEMBER = 4403;
 const IDEMPOTENCY_MS = 7 * 24 * 60 * 60 * 1000;
 const QUEUED_PAGE = 100;
 
+// "Typing..." signals: at most one relayed per device in this window; the rest are dropped.
+const TYPING_MIN_INTERVAL_MS = 3000;
+
 const deviceTag = (accountId: string, deviceId: number) => `d:${accountId}:${deviceId}`;
 const accountTag = (accountId: string) => `a:${accountId}`;
 
@@ -74,6 +77,8 @@ interface CopyRow extends Record<string, SqlStorageValue> {
 
 export class ConversationRoom extends DurableObject<Env> {
   private readonly sql: SqlStorage;
+  // When each device's last typing signal was relayed (memory only: ephemeral, reset when the object is evicted).
+  private readonly typingAt = new Map<string, number>();
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -261,9 +266,31 @@ export class ConversationRoom extends DurableObject<Env> {
       return;
     }
     const f = frame as { type?: unknown; envelopeIds?: unknown };
+    if (f.type === "typing") {
+      this.relayTyping(info);
+      return;
+    }
     if (f.type === "ack" && Array.isArray(f.envelopeIds) && f.envelopeIds.length <= 100) {
       const ids = f.envelopeIds.filter((id): id is string => typeof id === "string");
       this.ack(info.accountId, info.deviceId, ids);
+    }
+  }
+
+  // Ephemeral and content-free: sent to the other accounts' streams, never stored, never echoed to the sender's
+  // account, dropped when the device already signalled within TYPING_MIN_INTERVAL_MS.
+  private relayTyping(from: SocketInfo): void {
+    const key = deviceTag(from.accountId, from.deviceId);
+    const now = Date.now();
+    const last = this.typingAt.get(key);
+    if (last !== undefined && now - last < TYPING_MIN_INTERVAL_MS) return;
+    this.typingAt.set(key, now);
+    if (this.typingAt.size > 256) {
+      for (const [k, at] of this.typingAt) if (now - at >= TYPING_MIN_INTERVAL_MS) this.typingAt.delete(k);
+    }
+    const frame = JSON.stringify({ type: "typing", accountId: from.accountId, deviceId: from.deviceId });
+    for (const ws of this.ctx.getWebSockets()) {
+      const info = ws.deserializeAttachment() as SocketInfo | null;
+      if (info && info.accountId !== from.accountId) this.trySend(ws, frame);
     }
   }
 
