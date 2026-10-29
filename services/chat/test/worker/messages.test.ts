@@ -274,13 +274,13 @@ describe("retention of delivery copies", () => {
 });
 
 describe("GET /v1/conversations/{id}/stream", () => {
-  async function connect(c: ConversationBody, account: string, lifetime = 600, sep?: number) {
+  async function connect(c: ConversationBody, account: string, lifetime = 600, sep?: number, dev = 1) {
     const token = await issuer.sign(
       {
         iss: "http://localhost:8787",
         aud: "chat.localhost",
         sub: account,
-        dev: 1,
+        dev,
         role: "parent",
         ...(sep === undefined ? {} : { sep }),
       },
@@ -290,7 +290,7 @@ describe("GET /v1/conversations/{id}/stream", () => {
     expect(res.status).toBe(101);
     const ws = res.webSocket;
     if (!ws) throw new Error("no websocket");
-    const frames: { type: string; envelope?: { id: string; content: string }; event?: { kind: string } }[] = [];
+    const frames: { type: string; accountId?: string; deviceId?: number; envelope?: { id: string; content: string }; event?: { kind: string } }[] = [];
     const closed: { code: number }[] = [];
     ws.addEventListener("message", (m) => frames.push(JSON.parse(m.data as string) as (typeof frames)[number]));
     ws.addEventListener("close", (e) => closed.push({ code: e.code }));
@@ -316,6 +316,40 @@ describe("GET /v1/conversations/{id}/stream", () => {
     await settle();
     expect((await queued(c, ALEX)).envelopes).toHaveLength(0);
     alex.ws.close();
+  });
+
+  // api #98 (ios #62): "Typing..." is ephemeral: relayed live, never stored, never echoed, rate limited per device.
+  it("typing is relayed to the other members' streams, not echoed, not stored, and rate limited (1 per 3 s)", async () => {
+    const c = await conversation(MUM, [ALEX]);
+    const mum = await connect(c, MUM);
+    const alex = await connect(c, ALEX);
+    await settle();
+    mum.ws.send(JSON.stringify({ type: "typing" }));
+    mum.ws.send(JSON.stringify({ type: "typing" }));
+    await settle();
+    expect(alex.frames).toEqual([{ type: "typing", accountId: MUM, deviceId: 1 }]);
+    expect(mum.frames).toEqual([]);
+    expect((await queued(c, ALEX)).envelopes).toHaveLength(0);
+    expect(await roomOf(env, c.id).pendingCount()).toBe(0);
+    mum.ws.close();
+    alex.ws.close();
+  });
+
+  it("a second device of the same account does not get its own account's typing", async () => {
+    await applyEvent(
+      env,
+      durableRooms(env),
+      event({ type: "device.upserted", accountId: MUM, deviceId: 2, registrationId: 222 }),
+    );
+    const c = await conversation(MUM, [ALEX]);
+    const mum = await connect(c, MUM);
+    const mumOther = await connect(c, MUM, 600, undefined, 2);
+    await settle();
+    mum.ws.send(JSON.stringify({ type: "typing" }));
+    await settle();
+    expect(mumOther.frames).toEqual([]);
+    mum.ws.close();
+    mumOther.ws.close();
   });
 
   it("not a WebSocket: 426; not a member: 404", async () => {
