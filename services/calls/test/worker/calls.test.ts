@@ -187,6 +187,9 @@ describe("join, leave, decline and the roster", () => {
     expect(body.iceServers.length).toBeGreaterThan(0);
     expect(await row(call.callId)).toMatchObject({ peak_participants: 2 });
     expect((await row(call.callId))?.answered_at).not.toBeNull();
+    // Both phones start the call clock at the server's answer time, so their timers agree.
+    expect(call.answeredAt).toBeNull();
+    expect(body.call.answeredAt).toBe((await row(call.callId))?.answered_at);
   });
 
   it("joining twice from the same device changes nothing", async () => {

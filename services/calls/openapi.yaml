@@ -505,13 +505,30 @@ components:
     Call:
       type: object
       required:
-        [callId, conversationId, state, createdAt, ringDeadline, epoch, keyLeader, participants, declined, endReason]
+        [
+          callId,
+          conversationId,
+          state,
+          createdAt,
+          ringDeadline,
+          answeredAt,
+          epoch,
+          keyLeader,
+          participants,
+          declined,
+          endReason,
+        ]
       properties:
         callId: { $ref: "#/components/schemas/CallId" }
         conversationId: { $ref: "#/components/schemas/Id" }
         state: { type: string, enum: [ringing, active, ended] }
         createdAt: { type: string, format: date-time }
         ringDeadline: { type: string, format: date-time }
+        answeredAt:
+          description: >-
+            When the first other participant joined; null while ringing. Every phone starts the call clock here, so
+            the timers agree.
+          oneOf: [{ type: string, format: date-time }, { type: "null" }]
         epoch:
           type: integer
           minimum: 1
