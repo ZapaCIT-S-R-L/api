@@ -8,11 +8,14 @@ import { durableRooms, roomOf } from "../../src/room";
 import {
   ALEX,
   ANA,
+  apply,
   as,
+  call,
   DAD,
   event,
   makeIssuer,
   MUM,
+  recordingRooms,
   seedFamilies,
   stubJwks,
   tokenFor,
@@ -375,5 +378,54 @@ describe("GET /v1/conversations/{id}/stream", () => {
     // The object's alarm closes it at the token's expiry; the app reconnects with a fresh token.
     await new Promise((resolve) => setTimeout(resolve, 1600));
     expect(alex.closed).toEqual([{ code: 4401 }]);
+  });
+});
+
+// api #99 (ios #65): a phone learns about a new conversation while the app is open, so it can open the conversation's
+// stream and get the first messages (and incoming-call rings) without a restart.
+describe("GET /v1/events", () => {
+  async function listen(account: string, dev = 1) {
+    const res = await as(await tok(account, dev), "/v1/events", { headers: { upgrade: "websocket" } });
+    expect(res.status).toBe(101);
+    const ws = res.webSocket;
+    if (!ws) throw new Error("no websocket");
+    const frames: { type: string; conversationId?: string }[] = [];
+    ws.addEventListener("message", (m) => frames.push(JSON.parse(m.data as string) as (typeof frames)[number]));
+    ws.accept();
+    return { ws, frames };
+  }
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
+
+  it("tells every member (observers too) when a conversation is created, and nobody else", async () => {
+    const alex = await listen(ALEX);
+    const dad = await listen(DAD);
+    const ana = await listen(ANA);
+    const c = await conversation(MUM, [ALEX]);
+    await settle();
+    expect(alex.frames).toEqual([{ type: "conversation_added", conversationId: c.id }]);
+    expect(dad.frames).toEqual([{ type: "conversation_added", conversationId: c.id }]);
+    expect(ana.frames).toEqual([]);
+    for (const l of [alex, dad, ana]) l.ws.close();
+  });
+
+  it("an existing 1:1 (200) is not announced again", async () => {
+    await conversation(MUM, [ALEX]);
+    const alex = await listen(ALEX);
+    await conversation(MUM, [ALEX]);
+    await settle();
+    expect(alex.frames).toEqual([]);
+    alex.ws.close();
+  });
+
+  it("a parent added as observer later is told too", async () => {
+    const c = await conversation(ALEX, [MARIA]);
+    const rooms = recordingRooms();
+    await apply(rooms, { type: "family.member_added", familyId: "fam1", accountId: "acc_step", role: "parent" });
+    expect(rooms.log).toContain(`conversationAdded ${c.id} acc_step`);
+  });
+
+  it("not a WebSocket: 426; no token: 401", async () => {
+    expect((await as(await tok(MUM), "/v1/events")).status).toBe(426);
+    expect((await call("/v1/events", { headers: { upgrade: "websocket" } })).status).toBe(401);
   });
 });

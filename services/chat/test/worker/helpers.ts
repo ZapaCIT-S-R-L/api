@@ -162,6 +162,14 @@ export function recordingRooms(): Rooms & { log: string[] } {
       log.push(`revokeSessions ${id} ${account} ${epoch}`);
       return Promise.resolve();
     },
+    conversationAdded: (id, account) => {
+      log.push(`conversationAdded ${id} ${account}`);
+      return Promise.resolve();
+    },
+    revokeAccountSessions: (account, epoch) => {
+      log.push(`revokeAccountSessions ${account} ${epoch}`);
+      return Promise.resolve();
+    },
     purge: (id) => {
       log.push(`purge ${id}`);
       return Promise.resolve();
