@@ -338,6 +338,9 @@ describe("POST /v1/families/{familyId}/kids", () => {
   });
 });
 
+const outboxSize = async (): Promise<number> =>
+  (await env.DB.prepare("SELECT count(*) AS n FROM membership_outbox").first<number>("n")) ?? 0;
+
 describe("PATCH /v1/families/{familyId}/kids/{kidId}", () => {
   async function familyWithKid(sub: string) {
     const parent = await signInParent(apple, sub, sub.toUpperCase());
@@ -429,9 +432,9 @@ describe("PATCH /v1/families/{familyId}/kids/{kidId}", () => {
 
   it("writes no membership event (the chat service doesn't know names)", async () => {
     const { parent, path } = await familyWithKid("ana");
-    const before = await count("membership_outbox");
+    const before = await outboxSize();
     await send(path, parent.auth, { nickname: "Lia" }, "PATCH");
-    expect(await count("membership_outbox")).toBe(before);
+    expect(await outboxSize()).toBe(before);
   });
 
   it("DELETE still works, other methods → 405", async () => {

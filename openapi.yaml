@@ -979,6 +979,35 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
 
   /v1/families/{familyId}/kids/{kidId}:
+    patch:
+      tags: [Families]
+      operationId: updateKid
+      summary: Rename a kid or change its avatar.
+      description: |
+        Send `nickname`, `avatar` or both, with the same rules as when adding a kid (`grade` can't be changed here).
+        Any parent of the family; a kid gets `401`, a parent of another family `404`. Emits no membership event: the
+        chat service doesn't know names or avatars.
+      parameters: [{ $ref: "#/components/parameters/familyId" }, { $ref: "#/components/parameters/kidId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              additionalProperties: false
+              properties:
+                nickname: { type: string, minLength: 1, maxLength: 40, description: Trimmed; one line. }
+                avatar: { $ref: "#/components/schemas/Avatar" }
+      responses:
+        "200":
+          description: The kid, as updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Kid" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
     delete:
       tags: [Families]
       operationId: removeKid
