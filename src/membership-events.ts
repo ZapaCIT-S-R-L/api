@@ -16,6 +16,7 @@ export type MembershipEvent = { v: 1; id: string; occurredAt: string } & (
   | { type: "connection.kid_unshared"; connectionId: string; kidAccountId: string }
   | { type: "device.upserted"; accountId: string; deviceId: number; registrationId: number }
   | { type: "device.removed"; accountId: string; deviceId: number }
+  | { type: "kid.oversight_changed"; kidAccountId: string; enabled: boolean }
   | { type: "account.deleted"; accountId: string }
 );
 
