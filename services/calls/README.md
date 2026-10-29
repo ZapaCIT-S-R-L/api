@@ -74,16 +74,16 @@ DNS records on the first deploy.
   the ringing phone learns the end from the events WebSocket. Without `APNS_AUTH_KEY` (tests, local dev) nothing is
   sent. Not live yet: the device push tokens don't reach this service (`ChatMembership.member` lists device ids
   only), so only targets that carry a token are rung. Android (FCM) is `src/push-fcm.ts`.
-- `src/push-fcm.ts`: ringing Android phones. One high-priority FCM data message per device (`android.priority:
-  high`, `android.ttl: 0s`, no `notification` block), whose `data` is exactly what the app parses
-  (`ro.zapakid.calls.ring.CallPush`): `type: "call"` with `callId` and `conversationId`, or `type: "call_cancel"`
-  with `callId`. Unlike APNs, a cancel is sent, because that is what stops an Android phone ringing. FCM's v1 API
-  takes an OAuth 2.0 access token minted from the `FCM_CREDENTIALS_JSON` secret — an RS256 JWT bearer grant, the
-  same one `src/play-integrity.ts` makes in the accounts Worker — cached until a minute before it expires. A failed
-  push is logged with its status and FCM reason, never the registration token, the key or the access token, and
-  never fails the call. Without the secret (tests, local dev) nothing is sent. Not registered yet: the composite in
-  `src/push.ts` picks a provider per target, and the device push tokens still don't reach this service
-  (android #57).
+- `src/push-fcm.ts`: ringing Android phones. One high-priority FCM data message per device, with
+  `android: { priority: "high", ttl: "0s" }` and no `notification` block, whose `data` is exactly what the app
+  parses (`ro.zapakid.calls.ring.CallPush`): `type: "call"` with `callId` and `conversationId`, or
+  `type: "call_cancel"` with `callId`. Unlike APNs, a cancel is sent, because that is what stops an Android phone
+  ringing. FCM's v1 API takes an OAuth 2.0 access token minted from the `FCM_CREDENTIALS_JSON` secret — an RS256
+  JWT bearer grant, the same one `src/play-integrity.ts` makes in the accounts Worker — cached until a minute
+  before it expires. A failed push is logged with its status and FCM reason, never the registration token, the key
+  or the access token, and never fails the call. Without the secret (tests, local dev) nothing is sent. Not
+  registered yet: the composite in `src/push.ts` picks a provider per target, and the device push tokens still
+  don't reach this service (android #57).
 - Limits: 8 participants, and 10 calls started and 30 joins a minute per account (rate limiting binding).
 
 ## Secrets

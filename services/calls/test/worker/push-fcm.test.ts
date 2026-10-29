@@ -182,11 +182,7 @@ describe("FCM ring", () => {
 
   it("skips a registration token that is not printable ASCII", async () => {
     await fcmProvider(config()).ring(
-      call([
-        android("acc-1", 1, "line\nbreak"),
-        android("acc-2", 1, "x".repeat(4097)),
-        android("acc-3", 1, DEVICE_A),
-      ]),
+      call([android("acc-1", 1, "line\nbreak"), android("acc-2", 1, "x".repeat(4097)), android("acc-3", 1, DEVICE_A)]),
     );
 
     expect(sends()).toHaveLength(1);
@@ -246,9 +242,7 @@ describe("FCM failures never fail the call", () => {
   it("drops the cached access token when FCM refuses it, so the next ring mints one", async () => {
     const fcm = fcmProvider(config());
     answer = (url) =>
-      url === TOKEN_URL
-        ? tokenAnswer()
-        : Response.json({ error: { status: "UNAUTHENTICATED" } }, { status: 401 });
+      url === TOKEN_URL ? tokenAnswer() : Response.json({ error: { status: "UNAUTHENTICATED" } }, { status: 401 });
     await fcm.ring(call([android("acc-1", 1, DEVICE_A)]));
     expect(grants()).toHaveLength(1);
 
