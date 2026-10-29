@@ -87,4 +87,4 @@ tokens), which goes in the DPIA.
 
 The account events stream (`GET /v1/events`, `src/account-hub.ts`, api #100) holds one Durable Object per account (EU
 jurisdiction when deployed, migration `v2`). It carries conversation ids only, to the account's own devices, and stores
-nothing.
+nothing. Logout-all (`account.sessions_revoked`) closes the account's events sockets opened with older tokens (4401).

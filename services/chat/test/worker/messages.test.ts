@@ -425,6 +425,34 @@ describe("GET /v1/events", () => {
     expect(rooms.log).toContain(`conversationAdded ${c.id} acc_step`);
   });
 
+  // Review of #100: after logout-all an events socket opened with an older token is closed (4401), a newer one stays.
+  it("account.sessions_revoked closes the account's older events sockets (4401), not newer ones", async () => {
+    const open = async (sep: number) => {
+      const token = await issuer.sign(
+        { iss: "http://localhost:8787", aud: "chat.localhost", sub: MUM, dev: 1, role: "parent", sep },
+        { lifetime: 600 },
+      );
+      const res = await as(token, "/v1/events", { headers: { upgrade: "websocket" } });
+      const ws = res.webSocket;
+      if (!ws) throw new Error("no websocket");
+      const closed: number[] = [];
+      ws.addEventListener("close", (e) => closed.push(e.code));
+      ws.accept();
+      return { ws, closed };
+    };
+    const older = await open(0);
+    const newer = await open(2);
+    await applyEvent(
+      env,
+      durableRooms(env),
+      event({ type: "account.sessions_revoked", accountId: MUM, epoch: 2 }),
+    );
+    await settle();
+    expect(older.closed).toEqual([4401]);
+    expect(newer.closed).toEqual([]);
+    newer.ws.close();
+  });
+
   it("not a WebSocket: 426; no token: 401", async () => {
     expect((await as(await tok(MUM), "/v1/events")).status).toBe(426);
     expect((await call("/v1/events", { headers: { upgrade: "websocket" } })).status).toBe(401);
