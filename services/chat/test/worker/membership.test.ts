@@ -109,6 +109,12 @@ describe("queue consumer", () => {
       parseEvent(event({ type: "device.upserted", accountId: "a", deviceId: 200, registrationId: 1 })),
     ).toThrow();
     expect(() => parseEvent(event({ type: "kid.oversight_changed", kidAccountId: "a", enabled: "no" }))).toThrow();
+    // Oversight changes are ordered by occurredAt too (api #99): it must be a date.
+    const undatedOversight = {
+      ...event({ type: "kid.oversight_changed", kidAccountId: "a", enabled: true }),
+      occurredAt: "soon",
+    };
+    expect(() => parseEvent(undatedOversight)).toThrow();
     // Device events are ordered by occurredAt (api #90): it must be a date.
     const undated = { ...event({ type: "device.removed", accountId: "a", deviceId: 2 }), occurredAt: "soon" };
     expect(() => parseEvent(undated)).toThrow();
