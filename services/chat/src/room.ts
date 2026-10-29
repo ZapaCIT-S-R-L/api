@@ -48,6 +48,9 @@ interface SocketInfo {
   exp: number;
   // The chat token's session epoch (`sep`); 0 for tokens without one. Missing on sockets from before api #81.
   sep?: number;
+  // False for an observing parent (read-only, api #73): its typing signals are refused. Missing on sockets from before
+  // api #98, which never relayed typing anyway: treated as a writer only when set.
+  writer?: boolean;
 }
 
 // Close codes the apps act on: reconnect with a fresh token (expired or revoked: after a logout-all the account
@@ -236,11 +239,12 @@ export class ConversationRoom extends DurableObject<Env> {
     const deviceId = Number(request.headers.get("x-chat-device"));
     const exp = Number(request.headers.get("x-chat-exp"));
     const sep = Number(request.headers.get("x-chat-sep") ?? "0");
+    const writer = request.headers.get("x-chat-writer") === "1";
     if (!conversationId || !accountId || !Number.isInteger(deviceId) || !Number.isFinite(exp) || !Number.isInteger(sep))
       return new Response(null, { status: 400 });
     const { 0: client, 1: server } = new WebSocketPair();
     this.ctx.acceptWebSocket(server, [deviceTag(accountId, deviceId), accountTag(accountId)]);
-    const info: SocketInfo = { accountId, deviceId, exp, sep };
+    const info: SocketInfo = { accountId, deviceId, exp, sep, writer };
     server.serializeAttachment(info);
     await this.scheduleExpiry(exp);
     // What is queued for this device, right away (the oldest 1000; the rest via GET .../messages after acking);
@@ -267,7 +271,7 @@ export class ConversationRoom extends DurableObject<Env> {
     }
     const f = frame as { type?: unknown; envelopeIds?: unknown };
     if (f.type === "typing") {
-      this.relayTyping(info);
+      if (info.writer === true) this.relayTyping(info);
       return;
     }
     if (f.type === "ack" && Array.isArray(f.envelopeIds) && f.envelopeIds.length <= 100) {
