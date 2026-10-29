@@ -51,6 +51,7 @@ interface SocketInfo {
   // False for an observing parent (read-only, api #73): its typing signals are refused. Missing on sockets from before
   // api #98, which never relayed typing anyway: treated as a writer only when set.
   writer?: boolean;
+  conversationId?: string;
 }
 
 // Close codes the apps act on: reconnect with a fresh token (expired or revoked: after a logout-all the account
@@ -244,7 +245,7 @@ export class ConversationRoom extends DurableObject<Env> {
       return new Response(null, { status: 400 });
     const { 0: client, 1: server } = new WebSocketPair();
     this.ctx.acceptWebSocket(server, [deviceTag(accountId, deviceId), accountTag(accountId)]);
-    const info: SocketInfo = { accountId, deviceId, exp, sep, writer };
+    const info: SocketInfo = { accountId, deviceId, exp, sep, writer, conversationId };
     server.serializeAttachment(info);
     await this.scheduleExpiry(exp);
     // What is queued for this device, right away (the oldest 1000; the rest via GET .../messages after acking);
@@ -255,7 +256,7 @@ export class ConversationRoom extends DurableObject<Env> {
     return new Response(null, { status: 101, webSocket: client });
   }
 
-  override webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): void {
+  override async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     const info = ws.deserializeAttachment() as SocketInfo | null;
     if (!info) return;
     if (info.exp * 1000 <= Date.now()) {
@@ -271,7 +272,7 @@ export class ConversationRoom extends DurableObject<Env> {
     }
     const f = frame as { type?: unknown; envelopeIds?: unknown };
     if (f.type === "typing") {
-      if (info.writer === true) this.relayTyping(info);
+      if (info.writer === true) await this.relayTyping(info);
       return;
     }
     if (f.type === "ack" && Array.isArray(f.envelopeIds) && f.envelopeIds.length <= 100) {
@@ -282,7 +283,7 @@ export class ConversationRoom extends DurableObject<Env> {
 
   // Ephemeral and content-free: sent to the other accounts' streams, never stored, never echoed to the sender's
   // account, dropped when the device already signalled within TYPING_MIN_INTERVAL_MS.
-  private relayTyping(from: SocketInfo): void {
+  private async relayTyping(from: SocketInfo): Promise<void> {
     const key = deviceTag(from.accountId, from.deviceId);
     const now = Date.now();
     const last = this.typingAt.get(key);
@@ -291,6 +292,13 @@ export class ConversationRoom extends DurableObject<Env> {
     if (this.typingAt.size > 256) {
       for (const [k, at] of this.typingAt) if (now - at >= TYPING_MIN_INTERVAL_MS) this.typingAt.delete(k);
     }
+    // The role can change while the stream is open (at most one read per device per 3 s, as the signal is limited).
+    const row = await this.env.DB.prepare(
+      "SELECT guardian, deleted_at FROM conversation_members WHERE conversation_id = ?1 AND account_id = ?2",
+    )
+      .bind(from.conversationId ?? "", from.accountId)
+      .first<{ guardian: number; deleted_at: number | null }>();
+    if (!row || row.guardian === 1 || row.deleted_at !== null) return;
     const frame = JSON.stringify({ type: "typing", accountId: from.accountId, deviceId: from.deviceId });
     for (const ws of this.ctx.getWebSockets()) {
       const info = ws.deserializeAttachment() as SocketInfo | null;
