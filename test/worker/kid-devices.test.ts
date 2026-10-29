@@ -743,8 +743,9 @@ describe("replacing a phone revokes the old phone when the new one pairs", () =>
     const { parent, familyId, kidId } = await family("ana");
     const one = await pairKid(parent.auth, familyId, kidId);
     const two = await pairKid(parent.auth, familyId, kidId);
-    await registered(one.auth, deviceKeys());
-    await registered(two.auth, deviceKeys());
+    const identityKey = ec();
+    await registered(one.auth, deviceKeys(identityKey));
+    await registered(two.auth, deviceKeys(identityKey));
     const res = await send(`/v1/families/${familyId}/kids/${kidId}`, parent.auth, undefined, "DELETE");
     expect(res.status).toBe(204);
     expect((await get("/v1/families", one.auth)).status).toBe(401);
@@ -762,7 +763,13 @@ describe("replacing a phone revokes the old phone when the new one pairs", () =>
     const { parent, familyId } = await family("ana");
     const bob = await signInParent(apple, "bob", "Bob");
     expect(
-      (await send("/v1/families/join", bob.auth, { code: (await (await send(`/v1/families/${familyId}/parents/invitations`, parent.auth)).json<{ code: string }>()).code })).status,
+      (
+        await send("/v1/families/join", bob.auth, {
+          code: (
+            await (await send(`/v1/families/${familyId}/parents/invitations`, parent.auth)).json<{ code: string }>()
+          ).code,
+        })
+      ).status,
     ).toBe(200);
     await registered(bob.auth, deviceKeys());
     expect(await count("devices")).toBe(1);
