@@ -85,6 +85,6 @@ the `chat-staging` and `chat` custom domains. No secrets: the service has none.
 Cloudflare Queues have no EU jurisdiction setting; the events carry only ids (accounts, families, devices, push
 tokens), which goes in the DPIA.
 
-The account events stream (`GET /v1/events`, `src/account-hub.ts`, api #99) holds one Durable Object per account (EU
+The account events stream (`GET /v1/events`, `src/account-hub.ts`, api #100) holds one Durable Object per account (EU
 jurisdiction when deployed, migration `v2`). It carries conversation ids only, to the account's own devices, and stores
 nothing.

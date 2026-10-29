@@ -382,7 +382,7 @@ describe("GET /v1/conversations/{id}/stream", () => {
   });
 });
 
-// api #99 (ios #65): a phone learns about a new conversation while the app is open, so it can open the conversation's
+// api #100 (ios #65): a phone learns about a new conversation while the app is open, so it can open the conversation's
 // stream and get the first messages (and incoming-call rings) without a restart.
 describe("GET /v1/events", () => {
   async function listen(account: string, dev = 1) {
