@@ -34,7 +34,11 @@ type Authed = (
 
 // Method + path pattern → handler. Every route except /health needs a chat token.
 const ROUTES: { method: string; pattern: RegExp; handler: Authed }[] = [
-  { method: "POST", pattern: /^\/v1\/conversations$/, handler: (r, env, c) => handleCreate(r, env, c) },
+  {
+    method: "POST",
+    pattern: /^\/v1\/conversations$/,
+    handler: (r, env, c, _p, ctx) => handleCreate(r, env, c, ctx),
+  },
   { method: "GET", pattern: /^\/v1\/conversations$/, handler: (r, env, c) => handleList(r, env, c) },
   { method: "GET", pattern: /^\/v1\/contacts$/, handler: (_r, env, c) => handleContacts(env, c) },
   {

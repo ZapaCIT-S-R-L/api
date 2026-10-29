@@ -13,6 +13,7 @@ import { allowedTogether, contactsOf, loadFamilies, missingObservers, observersO
 import { empty, HttpError, invalid, json, notAllowed, notFound } from "./http";
 import { purgeConversationAttachments } from "./attachments";
 import { limit } from "./limits";
+import { pushProvider, pushTargets } from "./push";
 import type { Rooms } from "./rooms";
 
 export const MAX_REQUESTED_MEMBERS = 31;
@@ -143,7 +144,12 @@ async function present(env: Env, conversation: ConversationRow, members: MemberR
   };
 }
 
-export async function handleCreate(request: Request, env: Env, caller: Caller): Promise<Response> {
+export async function handleCreate(
+  request: Request,
+  env: Env,
+  caller: Caller,
+  ctx: ExecutionContext,
+): Promise<Response> {
   await limit(env.CREATE_LIMITER, `create:${caller.accountId}`);
   const body = await readJson(request);
   onlyFields(body, ["members"]);
@@ -173,13 +179,18 @@ export async function handleCreate(request: Request, env: Env, caller: Caller): 
 
   const kind = members.length === 1 ? "direct" : "group";
   const directKey = kind === "direct" ? [...requested].sort().join(" ") : null;
-  if (directKey) {
+  // A group with exactly the same members (caller plus requested) is the open one that already exists (Stefan,
+  // 2026-10-29: a second copy was made when the other members had not yet seen the first).
+  const groupKey = kind === "group" ? [...requested].sort().join(" ") : null;
+  const existingKey = directKey ?? groupKey;
+  if (existingKey) {
+    const column = directKey ? "direct_key" : "group_key";
     const existing = await env.DB.prepare(
       `SELECT c.id, c.kind, c.state, c.created_at, c.closed_at FROM conversations c
        JOIN conversation_members m ON m.conversation_id = c.id AND m.account_id = ?2
-       WHERE c.direct_key = ?1 AND c.state = 'open' AND m.deleted_at IS NULL LIMIT 1`,
+       WHERE c.${column} = ?1 AND c.state = 'open' AND m.deleted_at IS NULL LIMIT 1`,
     )
-      .bind(directKey, caller.accountId)
+      .bind(existingKey, caller.accountId)
       .first<ConversationRow>();
     if (existing) return json(await present(env, existing, await membersOf(env, existing.id)), 200);
   }
@@ -189,14 +200,32 @@ export async function handleCreate(request: Request, env: Env, caller: Caller): 
   const observerSet = new Set(observers);
   await env.DB.batch([
     env.DB.prepare(
-      "INSERT INTO conversations (id, kind, direct_key, state, created_by, created_at) VALUES (?1, ?2, ?3, 'open', ?4, ?5)",
-    ).bind(id, kind, directKey, caller.accountId, now),
+      "INSERT INTO conversations (id, kind, direct_key, group_key, state, created_by, created_at) VALUES (?1, ?2, ?3, ?4, 'open', ?5, ?6)",
+    ).bind(id, kind, directKey, groupKey, caller.accountId, now),
     ...all.map((account) =>
       env.DB.prepare(
         "INSERT INTO conversation_members (conversation_id, account_id, role, guardian, joined_at) VALUES (?1, ?2, ?3, ?4, ?5)",
       ).bind(id, account, roleOf(graph, account), observerSet.has(account) ? 1 : 0, now),
     ),
   ]);
+  // A new group: the other writers' devices are woken (content-free) so they learn it exists and fetch the list,
+  // without anyone creating it locally. Observers aren't woken (as for messages); with push disabled this is a no-op.
+  if (kind === "group") {
+    const writers = all.filter((a) => a !== caller.accountId && !observerSet.has(a));
+    ctx.waitUntil(
+      devicesOf(env, writers)
+        .then((byAccount) =>
+          pushTargets(
+            env,
+            [...byAccount].flatMap(([accountId, devices]) => devices.map((d) => ({ accountId, deviceId: d.deviceId }))),
+          ),
+        )
+        .then((targets) => pushProvider(env).wake(targets))
+        .catch((e: unknown) => {
+          console.error(JSON.stringify({ msg: "push_failed", err: String(e) }));
+        }),
+    );
+  }
   const conversation: ConversationRow = { id, kind, state: "open", created_at: now, closed_at: null };
   return json(await present(env, conversation, await membersOf(env, id)), 201);
 }
