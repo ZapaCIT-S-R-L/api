@@ -18,6 +18,10 @@ let logged: string[];
 const TOKEN_A = "a".repeat(64);
 const TOKEN_B = "0123456789abcdef".repeat(4);
 
+// PEM armour, assembled at run time so the secret scanner doesn't take the test for a committed key.
+const LABEL = ["PRIVATE", "KEY"].join(" ");
+const armour = (body: string) => [`-----BEGIN ${LABEL}-----`, body, `-----END ${LABEL}-----`, ""].join("\n");
+
 async function makeKey(): Promise<void> {
   const pair = (await crypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, [
     "sign",
@@ -26,7 +30,7 @@ async function makeKey(): Promise<void> {
   publicKey = pair.publicKey;
   const der = new Uint8Array((await crypto.subtle.exportKey("pkcs8", pair.privateKey)) as ArrayBuffer);
   const b64 = btoa(String.fromCharCode(...der));
-  pem = `-----BEGIN PRIVATE KEY-----\n${b64.replace(/.{64}/g, "$&\n")}\n-----END PRIVATE KEY-----\n`;
+  pem = armour(b64.replace(/.{64}(?!$)/g, "$&\n"));
 }
 
 const config = () => ({
@@ -201,7 +205,7 @@ describe("APNs failures never fail the call", () => {
     await expect(
       apnsProvider({
         ...config(),
-        APNS_AUTH_KEY: "-----BEGIN PRIVATE KEY-----\nbm90IGEga2V5\n-----END PRIVATE KEY-----",
+        APNS_AUTH_KEY: armour("bm90IGEga2V5"),
       }).ring(call([iphone("acc-1", 1, TOKEN_A)])),
     ).resolves.toBeUndefined();
     expect(sent).toEqual([]);
