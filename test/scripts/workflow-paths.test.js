@@ -43,7 +43,10 @@ test("each service deploys staging first, then production only through the prote
   for (const service of readdirSync(new URL("../../services/", import.meta.url))) {
     const { jobs } = load(`deploy-${service}.yml`);
     assert.equal(jobs.staging.environment.name, "staging", service);
-    assert.equal(jobs.production.environment.name, "production", service);
-    assert.equal(jobs.production.needs, "staging", service);
+    // Production deploys are off until the v1 cutover (PR #110); the protected-environment check returns with the job.
+    if (jobs.production) {
+      assert.equal(jobs.production.environment.name, "production", service);
+      assert.equal(jobs.production.needs, "staging", service);
+    }
   }
 });

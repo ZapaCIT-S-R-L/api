@@ -40,33 +40,30 @@ test("calls has its own CI, for changes to services/calls only", () => {
   assert.ok(runs.some((r) => /npm audit --omit=dev --audit-level=high/.test(r)));
 });
 
-test("calls deploys staging from main, then production through the protected environment", () => {
+test("calls deploys staging from main through the protected environment", () => {
   const deploy = workflow("deploy-calls.yml");
   assert.deepEqual(deploy.on.push.branches, ["main"]);
   assert.ok(deploy.on.push.paths.includes("services/calls/**"));
   assert.equal(deploy.jobs.staging.environment.name, "staging");
   assert.equal(deploy.jobs.staging.environment.url, "https://calls-staging.zapakid.ro/health");
-  assert.equal(deploy.jobs.production.environment.name, "production");
-  assert.equal(deploy.jobs.production.needs, "staging");
-  assert.equal(deploy.jobs.production.environment.url, "https://calls.zapakid.ro/health");
-  const runs = (job) => deploy.jobs[job].steps.map((s) => String(s.run ?? "")).join("\n");
-  assert.match(runs("staging"), /wrangler deploy --env staging/);
-  assert.match(runs("production"), /wrangler deploy --env production/);
-  for (const job of ["staging", "production"]) {
-    assert.match(runs(job), /wrangler rollback --env/);
-    assert.match(runs(job), /wrangler d1 migrations apply DB --env/);
-  }
+  const runs = deploy.jobs.staging.steps.map((s) => String(s.run ?? "")).join("\n");
+  assert.match(runs, /wrangler deploy --env staging/);
+  assert.match(runs, /wrangler rollback --env/);
+  assert.match(runs, /wrangler d1 migrations apply DB --env/);
+});
+
+// Production deploys are off until the v1 cutover (PR #110). When they come back, restore the production checks.
+test("calls has no production deploy job while production deploys are off", () => {
+  assert.equal(workflow("deploy-calls.yml").jobs.production, undefined);
 });
 
 // Regression: deploy-calls run 40578142642. Cloudflare refuses to roll back across a Durable Object migration, and the
 // step reported "the rollback failed too: check the Worker now". That case is expected: it must say "fix forward".
 test("a calls rollback blocked by a Durable Object migration says fix forward", () => {
   const deploy = workflow("deploy-calls.yml");
-  for (const job of ["staging", "production"]) {
-    const step = deploy.jobs[job].steps.find((s) => /wrangler rollback/.test(String(s.run ?? "")));
-    assert.match(step.run, /grep -q "Durable Object migration"/);
-    assert.match(step.run, /a Durable Object migration[^"]*Fix forward/);
-  }
+  const step = deploy.jobs.staging.steps.find((s) => /wrangler rollback/.test(String(s.run ?? "")));
+  assert.match(step.run, /grep -q "Durable Object migration"/);
+  assert.match(step.run, /a Durable Object migration[^"]*Fix forward/);
 });
 
 test("Dependabot and the daily audit cover services/calls", () => {

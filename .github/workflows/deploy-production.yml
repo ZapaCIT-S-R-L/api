@@ -43,14 +43,14 @@ jobs:
 #       - run: npm ci --ignore-scripts
 #       - run: npm test
 #       - run: npx wrangler deploy --dry-run --env production --outdir dist
-# 
+#
 #       - name: D1 database (EU) and migrations
 #         env:
 #           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 #         run: |
 #           node scripts/d1-database.js production
 #           npx wrangler d1 migrations apply DB --env production --remote
-# 
+#
 #       - name: Deploy
 #         env:
 #           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -58,7 +58,7 @@ jobs:
 #         run: >-
 #           npx wrangler deploy --env production --tag "$VERSION" --message "deploy $VERSION"
 #           --var "VERSION:$VERSION" --var "VERSION_URL:$VERSION_URL"
-# 
+#
 #       - name: End-to-end tests against production
 #         id: e2e
 #         if: vars.PRODUCTION_URL != ''
@@ -68,7 +68,7 @@ jobs:
 #         run: |
 #           node scripts/wait-for-version.js "$API_URL" "$VERSION"
 #           npm run test:e2e || { sleep 30; npm run test:e2e; }
-# 
+#
 #       - name: Roll back to the previous version
 #         if: failure() && steps.e2e.conclusion == 'failure'
 #         env:

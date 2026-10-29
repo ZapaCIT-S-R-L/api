@@ -140,19 +140,19 @@ jobs:
 #           node-version-file: .nvmrc
 #       - run: npm ci --ignore-scripts
 #       - run: npx wrangler deploy --dry-run --env production --outdir dist
-# 
+#
 #       - name: Wait for a compatible chat Worker (production)
 #         run: |
 #           # shellcheck disable=SC2086 # one argument per method
 #           node ../../scripts/wait-for-rpc.js https://chat.zapakid.ro $CHAT_RPC
-# 
+#
 #       - name: D1 database (EU), queues and migrations
 #         env:
 #           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
 #         run: |
 #           node scripts/resources.js production
 #           npx wrangler d1 migrations apply DB --env production --remote
-# 
+#
 #       - name: Deploy
 #         env:
 #           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -160,7 +160,7 @@ jobs:
 #         run: >-
 #           npx wrangler deploy --env production --tag "$RELEASE" --message "deploy $RELEASE"
 #           --var "VERSION:$RELEASE" --var "VERSION_URL:$VERSION_URL"
-# 
+#
 #       - name: End-to-end tests against production
 #         id: e2e
 #         env:
@@ -169,7 +169,7 @@ jobs:
 #         run: |
 #           node ../../scripts/wait-for-version.js "$CALLS_URL" "$RELEASE"
 #           npm run test:e2e || { sleep 30; npm run test:e2e; }
-# 
+#
 #       - name: Roll back to the previous version
 #         if: failure() && steps.e2e.conclusion == 'failure'
 #         env:
