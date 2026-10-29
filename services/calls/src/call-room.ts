@@ -86,6 +86,8 @@ export interface CallView {
   state: State;
   createdAt: string;
   ringDeadline: string;
+  /** When the first other participant joined (the call clock's start on every phone); null while ringing. */
+  answeredAt: string | null;
   epoch: number;
   keyLeader: { accountId: string; deviceId: number } | null;
   participants: {
@@ -802,6 +804,7 @@ export class CallRoom extends DurableObject<Env> {
       state: call.state,
       createdAt: new Date(call.createdAt).toISOString(),
       ringDeadline: new Date(call.createdAt + ring * 1000).toISOString(),
+      answeredAt: call.answeredAt === null ? null : new Date(call.answeredAt).toISOString(),
       epoch: call.epoch,
       keyLeader: leader ? { accountId: leader.accountId, deviceId: leader.deviceId } : null,
       participants: call.participants.map((p) => ({
