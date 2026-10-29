@@ -25,6 +25,13 @@ export interface Env {
   // Local only ("on"): POST /__e2e/membership, loopback requests only. Never set when deployed.
   E2E_HOOKS?: string;
   MEMBERSHIP_E2E?: Queue;
+  // iOS wake-ups (src/apns.ts): Worker secrets, never vars and never logged. All three must be set.
+  APNS_AUTH_KEY?: string;
+  APNS_KEY_ID?: string;
+  APNS_TEAM_ID?: string;
+  // Optional: the bundle id (default ro.zapakid.app) and "sandbox" for development builds.
+  APNS_TOPIC?: string;
+  APNS_ENVIRONMENT?: string;
 }
 
 type AppEnv = Env;

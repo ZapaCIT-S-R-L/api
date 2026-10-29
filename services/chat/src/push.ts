@@ -1,7 +1,9 @@
 // Content-free wake-ups for devices without an open stream. A push never carries content, names or ids beyond
 // "something is waiting": the app wakes, fetches its envelopes and decrypts them on the phone.
-// The real APNs (iOS) and FCM (Android) providers come once Stefan provides their credentials (ios #27, android #25);
-// until then pushes are switched off and devices fetch when the app opens.
+// iOS goes through APNs (src/apns.ts) once the APNS_AUTH_KEY, APNS_KEY_ID and APNS_TEAM_ID secrets are set. Android
+// (FCM) is not here yet (android #25); until then, and without the secrets, pushes are switched off and devices fetch
+// when the app opens.
+import { apnsConfigured, providerFor } from "./apns";
 import type { Env } from "./env";
 
 export interface PushTarget {
@@ -24,8 +26,9 @@ export function usePushProvider(provider: PushProvider | null): void {
   override = provider;
 }
 
-export function pushProvider(_env: Env): PushProvider {
-  return override ?? pushDisabled;
+export function pushProvider(env: Env): PushProvider {
+  if (override) return override;
+  return apnsConfigured(env) ? providerFor(env) : pushDisabled;
 }
 
 // Push targets for these devices (only those with a push token).
