@@ -28,7 +28,7 @@
     "CALL_LOG_RETENTION_DAYS": "365",
     // APNs VoIP pushes (src/push.ts): the key id, the team and the app's bundle id (pushes go to "<topic>.voip").
     // Only used when the APNS_AUTH_KEY secret is set; locally it isn't, so nothing is sent.
-    "APNS_KEY_ID": "",
+    "APNS_KEY_ID": "68239BP2QT",
     "APNS_TEAM_ID": "9572LYGZ7S",
     "APNS_TOPIC": "ro.zapakid.app",
     "APNS_ENVIRONMENT": "sandbox",
@@ -94,7 +94,7 @@
         "CALL_LOG_RETENTION_DAYS": "365",
         // APNs VoIP pushes (src/push.ts). APNS_KEY_ID comes with the key (api #102); TestFlight and App Store
         // builds both use the production APNs host.
-        "APNS_KEY_ID": "",
+        "APNS_KEY_ID": "68239BP2QT",
         "APNS_TEAM_ID": "9572LYGZ7S",
         "APNS_TOPIC": "ro.zapakid.app",
         "APNS_ENVIRONMENT": "production",
@@ -156,7 +156,7 @@
         "CALL_LOG_RETENTION_DAYS": "365",
         // APNs VoIP pushes (src/push.ts). APNS_KEY_ID comes with the key (api #102); TestFlight and App Store
         // builds both use the production APNs host.
-        "APNS_KEY_ID": "",
+        "APNS_KEY_ID": "68239BP2QT",
         "APNS_TEAM_ID": "9572LYGZ7S",
         "APNS_TOPIC": "ro.zapakid.app",
         "APNS_ENVIRONMENT": "production",
