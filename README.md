@@ -119,7 +119,7 @@ needs nothing on Google's side.
 2. Workload Identity: pool `cloudflare-workers`, OIDC provider per environment (staging: `zapakid-api-staging`,
    issuer `https://api-staging.zapakid.ro`, default audience, attribute mapping `google.subject=assertion.sub`,
    condition `assertion.sub == "play-integrity"`). Grant `principal://iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/cloudflare-workers/subject/play-integrity`
-   the role `roles/iam.serviceAccountTokenCreator` on that service account only.
+   the role `roles/iam.workloadIdentityUser` on that service account only.
 3. Set `PLAY_INTEGRITY_WIF_AUDIENCE` (`//iam.googleapis.com/…/providers/<id>`) and `PLAY_INTEGRITY_SERVICE_ACCOUNT`
    per environment in `wrangler.jsonc`, in a PR.
 4. Set `PLAY_CERT_SHA256` per environment to the app signing key's SHA-256 as Play Integrity reports it
