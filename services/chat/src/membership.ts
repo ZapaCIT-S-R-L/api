@@ -220,19 +220,27 @@ export async function applyEvent(env: Env, rooms: Rooms, event: MembershipEvent)
     // or backfilled upsert can't bring back a removed device. A removal always applies.
     case "device.upserted": {
       const at = Date.parse(event.occurredAt);
-      // A slot the event leaves out (its key is absent) keeps what the row has; `null` clears it.
+      // A slot the event leaves out (its key is absent) keeps what the row has; `null` clears it. Each push slot is
+      // ordered on its own (push_occurred_at, alert_occurred_at): a newer change to one slot doesn't make an older
+      // change to the other stale. The registration id follows the row's newest event (occurred_at).
       const { meta } = await db
         .prepare(
-          `INSERT INTO devices (account_id, device_id, registration_id, push_provider, push_token, alert_push_token, occurred_at)
-           SELECT ?1, ?2, ?3, ?4, ?5, ?7, ?6 WHERE NOT EXISTS (
+          `INSERT INTO devices (account_id, device_id, registration_id, push_provider, push_token, alert_push_token,
+                                occurred_at, push_occurred_at, alert_occurred_at)
+           SELECT ?1, ?2, ?3, ?4, ?5, ?7, ?6, CASE WHEN ?8 THEN ?6 ELSE 0 END, CASE WHEN ?9 THEN ?6 ELSE 0 END
+           WHERE NOT EXISTS (
              SELECT 1 FROM device_tombstones WHERE account_id = ?1 AND device_id = ?2 AND last_seen_at >= ?6)
            ON CONFLICT (account_id, device_id) DO UPDATE
-             SET registration_id = ?3,
-                 push_provider = CASE WHEN ?8 THEN ?4 ELSE devices.push_provider END,
-                 push_token = CASE WHEN ?8 THEN ?5 ELSE devices.push_token END,
-                 alert_push_token = CASE WHEN ?9 THEN ?7 ELSE devices.alert_push_token END,
-                 occurred_at = ?6
-             WHERE devices.occurred_at <= ?6`,
+             SET registration_id = CASE WHEN devices.occurred_at <= ?6 THEN ?3 ELSE devices.registration_id END,
+                 push_provider = CASE WHEN ?8 AND devices.push_occurred_at <= ?6 THEN ?4 ELSE devices.push_provider END,
+                 push_token = CASE WHEN ?8 AND devices.push_occurred_at <= ?6 THEN ?5 ELSE devices.push_token END,
+                 push_occurred_at = CASE WHEN ?8 AND devices.push_occurred_at <= ?6 THEN ?6 ELSE devices.push_occurred_at END,
+                 alert_push_token = CASE WHEN ?9 AND devices.alert_occurred_at <= ?6 THEN ?7 ELSE devices.alert_push_token END,
+                 alert_occurred_at = CASE WHEN ?9 AND devices.alert_occurred_at <= ?6 THEN ?6 ELSE devices.alert_occurred_at END,
+                 occurred_at = MAX(devices.occurred_at, ?6)
+             WHERE devices.occurred_at <= ?6
+                OR (?8 AND devices.push_occurred_at <= ?6)
+                OR (?9 AND devices.alert_occurred_at <= ?6)`,
         )
         .bind(
           event.accountId,
