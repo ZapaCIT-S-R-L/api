@@ -394,7 +394,9 @@ paths:
       tags: [Sign-in]
       operationId: logout
       summary: End this session.
-      description: Deletes the session the token belongs to. Other sessions of the same parent stay valid.
+      description: |
+        Deletes the session and clears both push targets of its registered device (calls and chat alerts).
+        Emits device.upserted with null targets. Other devices and sessions of the same parent stay valid.
       responses:
         "204": { description: "Signed out. The token no longer works." }
         "401": { $ref: "#/components/responses/Unauthorized" }
@@ -1155,6 +1157,37 @@ paths:
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
 
+  /v1/families/{familyId}/kids/{kidId}/oversight:
+    put:
+      tags: [Families]
+      operationId: setKidOversight
+      summary: Turn parent oversight on or off for one kid.
+      description: |
+        Oversight is on by default: the kid's parents are read-only observers in the kid's chats. Any parent of the
+        family may change it (for all the parents); a kid gets `401`, a parent of another family `404`. Repeating the
+        current value is a no-op. Emits `kid.oversight_changed` in the same transaction, only when the value
+        changed.
+      parameters: [{ $ref: "#/components/parameters/familyId" }, { $ref: "#/components/parameters/kidId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              additionalProperties: false
+              properties:
+                enabled: { type: boolean }
+      responses:
+        "200":
+          description: The kid, with its current `oversight`.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Kid" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+
   /v1/pairing/redeem:
     post:
       tags: [Kid pairing]
@@ -1847,13 +1880,18 @@ components:
       description: "-1 kindergarten, 0 preparatory class, 1-12 school grade, null not set."
     Kid:
       type: object
-      required: [id, nickname, avatar, grade, createdAt]
+      required: [id, nickname, avatar, grade, createdAt, oversight]
       properties:
         id: { type: string, format: uuid, description: Also the kid's account id. }
         nickname: { type: string }
         avatar: { $ref: "#/components/schemas/Avatar" }
         grade: { $ref: "#/components/schemas/Grade" }
         createdAt: { type: string, format: date-time }
+        oversight:
+          type: boolean
+          description: |
+            Whether the kid's parents observe its chats (read-only). On by default. Everyone who sees the kid (its
+            parents and the kid's own app) sees the value, so the kid's app can show it.
     KidSessionId:
       type: string
       pattern: "^[0-9a-f]{32}$"
