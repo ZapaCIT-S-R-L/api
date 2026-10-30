@@ -190,7 +190,7 @@ describe("POST /v1/conversations/{id}/messages", () => {
           accountId,
           deviceId: 1,
           registrationId,
-          push: { provider: "fcm", token: `tok-${accountId}` },
+          alertPush: { provider: "apns", token: `tok-${accountId}` },
         }),
       );
     }
@@ -230,7 +230,7 @@ describe("POST /v1/conversations/{id}/messages", () => {
     expect(await closed.json()).toMatchObject({ error: { code: "conversation_closed" } });
   });
 
-  it("pushes only to offline devices with a push token, without content", async () => {
+  it("pushes only to offline devices with an alert token, without content", async () => {
     await applyEvent(
       env,
       durableRooms(env),
@@ -239,7 +239,7 @@ describe("POST /v1/conversations/{id}/messages", () => {
         accountId: ALEX,
         deviceId: 1,
         registrationId: 102,
-        push: { provider: "apns", token: "tok-alex" },
+        alertPush: { provider: "apns", token: "tok-alex" },
       }),
     );
     const c = await conversation(MUM, [ALEX]);
@@ -247,6 +247,45 @@ describe("POST /v1/conversations/{id}/messages", () => {
     expect(res.status).toBe(202);
     await new Promise((resolve) => setTimeout(resolve, 50));
     expect(pushed).toEqual([[{ accountId: ALEX, deviceId: 1, provider: "apns", token: "tok-alex" }]]);
+  });
+
+  it("a VoIP token alone gets no message alert: APNs refuses alerts sent to a VoIP token", async () => {
+    await applyEvent(
+      env,
+      durableRooms(env),
+      event({
+        type: "device.upserted",
+        accountId: ALEX,
+        deviceId: 1,
+        registrationId: 102,
+        push: { provider: "apns", token: "voip-alex" },
+      }),
+    );
+    const c = await conversation(MUM, [ALEX]);
+    expect((await send(c, MUM, { messageId: crypto.randomUUID(), envelopes: envelopesFor(c, MUM) })).status).toBe(202);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(pushed.flat()).toEqual([]);
+  });
+
+  it("an event that leaves a slot out keeps it; alertPush null clears only the alert token", async () => {
+    const rooms = durableRooms(env);
+    const upsert = (fields: Record<string, unknown>) =>
+      applyEvent(
+        env,
+        rooms,
+        event({ type: "device.upserted", accountId: ALEX, deviceId: 1, registrationId: 102, ...fields }),
+      );
+    const stored = () =>
+      env.DB.prepare(
+        "SELECT push_provider, push_token, alert_push_token FROM devices WHERE account_id = ? AND device_id = 1",
+      )
+        .bind(ALEX)
+        .first<{ push_provider: string | null; push_token: string | null; alert_push_token: string | null }>();
+    await upsert({ alertPush: { provider: "apns", token: "alert-1" } });
+    await upsert({ push: { provider: "apns", token: "voip-1" } });
+    expect(await stored()).toEqual({ push_provider: "apns", push_token: "voip-1", alert_push_token: "alert-1" });
+    await upsert({ alertPush: null });
+    expect(await stored()).toEqual({ push_provider: "apns", push_token: "voip-1", alert_push_token: null });
   });
 
   it("a new message brings the conversation back for a member who deleted it", async () => {

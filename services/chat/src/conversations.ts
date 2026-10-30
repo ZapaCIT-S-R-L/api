@@ -77,6 +77,32 @@ export async function devicesOf(env: Env, accountIds: string[]): Promise<Map<str
   return devices;
 }
 
+// Push targets (provider and token) of these accounts' devices, for ringing. Only the calls service reads them, through
+// the ChatMembership binding; they never go in a conversation's public device list.
+export interface PushDevice {
+  deviceId: number;
+  provider: "apns" | "fcm";
+  token: string;
+}
+
+export async function pushesOf(env: Env, accountIds: string[]): Promise<Map<string, PushDevice[]>> {
+  const pushes = new Map<string, PushDevice[]>();
+  if (accountIds.length === 0) return pushes;
+  const rows = await env.DB.prepare(
+    `SELECT account_id, device_id, push_provider, push_token FROM devices
+     WHERE account_id IN (SELECT value FROM json_each(?1)) AND push_token IS NOT NULL AND push_provider IS NOT NULL
+     ORDER BY account_id, device_id`,
+  )
+    .bind(JSON.stringify(accountIds))
+    .all<{ account_id: string; device_id: number; push_provider: "apns" | "fcm"; push_token: string }>();
+  for (const row of rows.results) {
+    const list = pushes.get(row.account_id) ?? [];
+    list.push({ deviceId: row.device_id, provider: row.push_provider, token: row.push_token });
+    pushes.set(row.account_id, list);
+  }
+  return pushes;
+}
+
 // The conversation if the caller's account is a member that hasn't deleted it, else 404.
 export async function requireMembership(
   env: Env,

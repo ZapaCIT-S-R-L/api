@@ -9,7 +9,7 @@
 // they aren't rung and they never get the call key. `observer: true` lets the calls service show them the call log.
 import { WorkerEntrypoint } from "cloudflare:workers";
 import { ACCOUNT_ID, CONVERSATION_ID, isDeviceId } from "./body";
-import { devicesOf, isObserver, membersOf } from "./conversations";
+import { devicesOf, isObserver, membersOf, pushesOf, type PushDevice } from "./conversations";
 import type { Env } from "./env";
 import type { Role } from "./graph";
 import { deviceRemovedSince, revokedBefore } from "./membership";
@@ -19,6 +19,8 @@ export interface CallMember {
   role: Role;
   // libsignal device ids (1-127), ascending.
   devices: number[];
+  // The devices that have a push target (iOS: the PushKit VoIP token), for ringing; never shown to clients.
+  push: PushDevice[];
 }
 
 export interface Membership {
@@ -47,10 +49,8 @@ export async function membership(env: Env, conversationId: unknown, accountId: u
   if (!me) return NOT_A_MEMBER;
   if (isObserver(me)) return OBSERVER;
   const callers = current.filter((m) => !isObserver(m));
-  const devices = await devicesOf(
-    env,
-    callers.map((m) => m.account_id),
-  );
+  const accountIds = callers.map((m) => m.account_id);
+  const [devices, pushes] = await Promise.all([devicesOf(env, accountIds), pushesOf(env, accountIds)]);
   return {
     member: true,
     observer: false,
@@ -58,6 +58,7 @@ export async function membership(env: Env, conversationId: unknown, accountId: u
       accountId: m.account_id,
       role: m.role,
       devices: (devices.get(m.account_id) ?? []).map((d) => d.deviceId),
+      push: pushes.get(m.account_id) ?? [],
     })),
   };
 }
