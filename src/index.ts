@@ -8,6 +8,8 @@ import {
   handleGetIdentity,
   handleRegisterDevice,
   handleRemoveDevice,
+  handleSetDevicePush,
+  handleSetDevicePushAlert,
 } from "./devices";
 import { handleChatToken, handleJwks } from "./chat-token";
 import { handleHealth } from "./health";
@@ -59,6 +61,8 @@ const PATTERN_ROUTES: {
   handler: (r: Request, e: Env, ...p: string[]) => Promise<Response>;
 }[] = [
   { pattern: /^\/v1\/devices\/([^/]+)$/, method: "DELETE", handler: handleRemoveDevice },
+  { pattern: /^\/v1\/devices\/([^/]+)\/push$/, method: "PUT", handler: handleSetDevicePush },
+  { pattern: /^\/v1\/devices\/([^/]+)\/alert-push$/, method: "PUT", handler: handleSetDevicePushAlert },
   { pattern: /^\/v1\/accounts\/([^/]+)\/identity$/, method: "GET", handler: handleGetIdentity },
   {
     pattern: /^\/v1\/keys\/([^/]+)\/([^/]+)$/,

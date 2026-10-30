@@ -53,10 +53,23 @@ describe("ChatMembership.member", () => {
       member: true,
       observer: false,
       members: [
-        { accountId: ALEX, role: "kid", devices: [1, 3] },
-        { accountId: MUM, role: "parent", devices: [1] },
+        { accountId: ALEX, role: "kid", devices: [1, 3], push: [] },
+        { accountId: MUM, role: "parent", devices: [1], push: [] },
       ],
     });
+  });
+
+  it("a device with a push target lists it (provider and token) for ringing, and only that device", async () => {
+    await apply(noRooms, {
+      type: "device.upserted",
+      accountId: ALEX,
+      deviceId: 3,
+      registrationId: 777,
+      push: { provider: "apns", token: "ab12" },
+    });
+    const c = await create(MUM, [ALEX]);
+    const alex = (await member(c.id, MUM))?.members.find((m) => m.accountId === ALEX);
+    expect(alex?.push).toEqual([{ deviceId: 3, provider: "apns", token: "ab12" }]);
   });
 
   it("a cross-family group: both families' writers, no observers", async () => {
@@ -123,6 +136,7 @@ describe("ChatMembership.member", () => {
       accountId: ALEX,
       role: "kid",
       devices: [],
+      push: [],
     });
   });
 
