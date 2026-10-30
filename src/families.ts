@@ -25,6 +25,7 @@ export interface Kid {
   avatar: string;
   grade: number | null;
   createdAt: string;
+  oversight: boolean;
 }
 
 export interface Family {
@@ -66,6 +67,11 @@ export async function routeFamilies(request: Request, env: Env, path: string): P
     if (request.method === "PATCH") return handleUpdateKid(request, env, familyId, kidId);
     if (request.method === "DELETE") return handleRemoveKid(request, env, familyId, kidId);
     return error(405, "method_not_allowed", "Use PATCH or DELETE.", { allow: "PATCH, DELETE" });
+  }
+  if ((match = /^\/v1\/families\/([^/]+)\/kids\/([^/]+)\/oversight$/.exec(path))) {
+    return request.method === "PUT"
+      ? handleSetOversight(request, env, match[1] ?? "", match[2] ?? "")
+      : error(405, "method_not_allowed", "Use PUT.", { allow: "PUT" });
   }
   if ((match = /^\/v1\/families\/([^/]+)\/kids\/([^/]+)\/sessions$/.exec(path))) {
     return request.method === "GET"
@@ -125,7 +131,7 @@ export async function loadFamily(env: Env, familyId: string): Promise<Family | n
        WHERE fp.family_id = ? ORDER BY fp.joined_at, p.id`,
     ).bind(familyId),
     env.DB.prepare(
-      "SELECT id, nickname, avatar, grade, created_at FROM kids WHERE family_id = ? ORDER BY created_at, id",
+      "SELECT id, nickname, avatar, grade, created_at, oversight FROM kids WHERE family_id = ? ORDER BY created_at, id",
     ).bind(familyId),
   ]);
   const family = families?.results[0] as { id: string; name: string | null; created_at: string } | undefined;
@@ -148,17 +154,25 @@ interface KidRow {
   avatar: string;
   grade: number | null;
   created_at: string;
+  oversight: number;
 }
 
 export async function loadKid(env: Env, kidId: string): Promise<Kid | null> {
-  const row = await env.DB.prepare("SELECT id, nickname, avatar, grade, created_at FROM kids WHERE id = ?")
+  const row = await env.DB.prepare("SELECT id, nickname, avatar, grade, created_at, oversight FROM kids WHERE id = ?")
     .bind(kidId)
     .first<KidRow>();
   return row ? toKid(row) : null;
 }
 
 function toKid(row: KidRow): Kid {
-  return { id: row.id, nickname: row.nickname, avatar: row.avatar, grade: row.grade, createdAt: row.created_at };
+  return {
+    id: row.id,
+    nickname: row.nickname,
+    avatar: row.avatar,
+    grade: row.grade,
+    createdAt: row.created_at,
+    oversight: row.oversight === 1,
+  };
 }
 
 // The family when this parent is a member of it, else null (the caller answers 404).
@@ -346,7 +360,7 @@ async function handleAddKid(request: Request, env: Env, familyId: string): Promi
   ]);
   if (result?.meta.changes !== 1) return error(409, "too_many_kids", `A family has at most ${MAX_KIDS} kids.`);
   await flushMembershipEvents(env);
-  return json({ id, nickname, avatar, grade, createdAt: now } satisfies Kid, 201);
+  return json({ id, nickname, avatar, grade, createdAt: now, oversight: true } satisfies Kid, 201);
 }
 
 // DELETE /v1/families/{familyId}/kids/{kidId}: the kid account goes, with its phones (sessions, devices, keys,
@@ -370,6 +384,36 @@ async function handleRemoveKid(request: Request, env: Env, familyId: string, kid
   if (!results.at(-1)?.results.length) return error(404, "not_found", "No such kid.");
   await flushMembershipEvents(env);
   return empty(204);
+}
+
+// PUT /v1/families/{familyId}/kids/{kidId}/oversight: any parent of the family turns parent oversight on or off for
+// the kid. The event is written (before the update, so it sees the old value) only when the value changes.
+async function handleSetOversight(request: Request, env: Env, familyId: string, kidId: string): Promise<Response> {
+  const session = await authenticate(request, env);
+  if (!session) return unauthorized();
+  if (!(await kidInParentsFamily(env, session.parentId, familyId, kidId))) {
+    return error(404, "not_found", "No such kid.");
+  }
+  const body = await readJson(request);
+  onlyFields(body, ["enabled"], "the body");
+  if (typeof body.enabled !== "boolean") throw invalid("enabled must be true or false.");
+  const value = body.enabled ? 1 : 0;
+  await env.DB.batch([
+    membershipEvent(
+      env,
+      { type: "kid.oversight_changed", kidAccountId: kidId, enabled: body.enabled },
+      {
+        sql: "EXISTS (SELECT 1 FROM kids WHERE id = ? AND family_id = ? AND oversight != ?)",
+        binds: [kidId, familyId, value],
+      },
+    ),
+    env.DB.prepare(
+      "UPDATE kids SET oversight = ?, updated_at = ? WHERE id = ? AND family_id = ? AND oversight != ?",
+    ).bind(value, new Date().toISOString(), kidId, familyId, value),
+  ]);
+  await flushMembershipEvents(env);
+  const kid = await loadKid(env, kidId);
+  return kid ? json(kid) : error(404, "not_found", "No such kid.");
 }
 
 // PATCH /v1/families/{familyId}/kids/{kidId}: rename the kid or change its avatar (at least one of them). Any parent
