@@ -85,7 +85,14 @@ tags:
       Server → client text frames: `{"type":"envelope","envelope":Envelope}` and
       `{"type":"event","event":{"kind":"members_changed"|"devices_changed"|"conversation_closed","conversationId":"…"}}`.
       Client → server: `{"type":"ack","envelopeIds":["…"]}` (deletes delivery copies) and `ping` (answered `pong`
-      without waking the object). The server closes the socket with code `4401` when the chat token expires or is
+      without waking the object).
+
+      **Typing.** A client sends `{"type":"typing"}` while its user types (at most about every 3 s). The server
+      relays `{"type":"typing","accountId":"…","deviceId":1}` to the streams of the *other accounts* in the
+      conversation (not to any device of the sender's account). Observers (read-only parents) can't send it: their
+      frames are ignored, but they receive the others'. It is ephemeral and has no content: never stored,
+      never queued, no push. At most one signal per device per 3 s is relayed; extra ones are dropped silently.
+      Receivers treat a signal as fresh for about 5 s and hide the indicator when a message from that account arrives. The server closes the socket with code `4401` when the chat token expires or is
       revoked (the account signed out everywhere) and `4403` when the account leaves the conversation; reconnect
       with a fresh token. Queued envelopes are sent right after connecting.
   - name: Account events

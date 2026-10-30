@@ -173,7 +173,7 @@ export async function handleStream(
   caller: Caller,
   conversationId: string,
 ): Promise<Response> {
-  await requireMembership(env, caller, conversationId);
+  const { me } = await requireMembership(env, caller, conversationId);
   if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
     throw new HttpError(426, "upgrade_required", "Open a WebSocket.", {}, { upgrade: "websocket" });
   }
@@ -181,6 +181,7 @@ export async function handleStream(
   await limit(env.CONNECT_LIMITER, `connect:${key(caller.accountId, caller.deviceId)}`);
   const headers = new Headers({
     upgrade: "websocket",
+    "x-chat-writer": isObserver(me) ? "0" : "1",
     "x-chat-conversation": conversationId,
     "x-chat-account": caller.accountId,
     "x-chat-device": String(caller.deviceId),
