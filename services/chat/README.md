@@ -84,3 +84,13 @@ the `chat-staging` and `chat` custom domains. No secrets: the service has none.
 
 Cloudflare Queues have no EU jurisdiction setting; the events carry only ids (accounts, families, devices, push
 tokens), which goes in the DPIA.
+
+The account events stream (`GET /v1/events`, `src/account-hub.ts`, api #100) holds one Durable Object per account (EU
+jurisdiction when deployed, migration `v2`). It carries conversation ids only, to the account's own devices, and stores
+nothing. Logout-all (`account.sessions_revoked`) closes the account's events sockets opened with older tokens (4401).
+
+"Typing..." signals (api #98) are metadata too, for the DPIA and privacy notice: while a member types, the service relays
+"account X is typing" to the other members' open streams. It is held in memory only for the moment of delivery, never
+stored or logged, has no content and doesn't survive the connection. Observing parents (read-only) can't send it, but
+they see the kids' and the other writers' typing, like everything else in the chat (an oversight decision: if
+oversight is off for a kid, the parents are not in the chat and see nothing).

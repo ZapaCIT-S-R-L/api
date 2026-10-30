@@ -146,7 +146,11 @@ describe("graph changes and existing conversations", () => {
     after = await get(MUM, c.id);
     expect(memberIds(after as ConversationBody)).toEqual([ALEX, ANA, DAD, MARIA, MUM].sort());
     expect(after?.members.find((m) => m.accountId === MUM)?.role).toBe("observer");
-    expect(rooms.log).toEqual([`notify ${c.id} members_changed`]);
+    expect(rooms.log).toEqual([
+      `notify ${c.id} members_changed`,
+      `conversationAdded ${c.id} ${DAD}`,
+      `conversationAdded ${c.id} ${MUM}`,
+    ]);
   });
 
   it("oversight off keeps a parent who is a writer; the chat stays open", async () => {
@@ -294,18 +298,54 @@ describe("graph changes and existing conversations", () => {
     expect(await anaDevices()).toEqual([{ deviceId: 1, registrationId: 103 }]);
   });
 
+  // api #112 review: the VoIP target (push) and the alert target (alertPush) change in separate events, each ordered on
+  // its own; a newer change to one slot must not make an older change to the other look stale.
+  it("devices: the push and alert slots are ordered independently", async () => {
+    await seedFamilies();
+    const rooms = recordingRooms();
+    const at = (iso: string, body: Record<string, unknown>) =>
+      applyEvent(env, rooms, { ...event(body), occurredAt: iso });
+    const slots = () =>
+      env.DB.prepare("SELECT push_token, alert_push_token FROM devices WHERE account_id = ?1 AND device_id = 2")
+        .bind(ANA)
+        .first<{ push_token: string | null; alert_push_token: string | null }>();
+    const device = { type: "device.upserted", accountId: ANA, deviceId: 2, registrationId: 500 };
+    const voip = (token: string | null) => ({ ...device, push: token ? { provider: "apns", token } : null });
+    const alert = (token: string | null) => ({ ...device, alertPush: token ? { provider: "apns", token } : null });
+
+    await at("2026-10-30T10:00:01.000Z", { ...device, push: null, alertPush: null }); // the registration
+    // Reversed delivery: the alert token (t=4) arrives before the VoIP token (t=3). Both must stick.
+    await at("2026-10-30T10:00:04.000Z", alert("a1"));
+    await at("2026-10-30T10:00:03.000Z", voip("v1"));
+    expect(await slots()).toEqual({ push_token: "v1", alert_push_token: "a1" });
+
+    // Reversed again: a VoIP change (t=6) arrives before an alert clear (t=5). The clear still applies.
+    await at("2026-10-30T10:00:06.000Z", voip("v2"));
+    await at("2026-10-30T10:00:05.000Z", alert(null));
+    expect(await slots()).toEqual({ push_token: "v2", alert_push_token: null });
+
+    // Each slot still ignores an older change to itself.
+    await at("2026-10-30T10:00:02.000Z", voip("stale"));
+    await at("2026-10-30T10:00:02.000Z", alert("stale"));
+    expect(await slots()).toEqual({ push_token: "v2", alert_push_token: null });
+
+    // A newer registration clears both slots.
+    await at("2026-10-30T10:00:07.000Z", { ...device, registrationId: 600, push: null, alertPush: null });
+    expect(await slots()).toEqual({ push_token: null, alert_push_token: null });
+  });
+
   // api #81: after a logout-all, the account's chat tokens from before the new epoch are refused.
   it("account.sessions_revoked keeps the highest epoch and closes the account's older streams", async () => {
     await seedFamilies();
     const c = await create(MUM, [ALEX]);
     const rooms = recordingRooms();
     await apply(rooms, { type: "account.sessions_revoked", accountId: MUM, epoch: 2 });
-    expect(rooms.log).toEqual([`revokeSessions ${c.id} ${MUM} 2`]);
+    expect(rooms.log).toEqual([`revokeSessions ${c.id} ${MUM} 2`, `revokeAccountSessions ${MUM} 2`]);
     expect(await revokedBefore(env, MUM)).toBe(2);
     // Out of order: an older event never lowers the epoch.
     await apply(rooms, { type: "account.sessions_revoked", accountId: MUM, epoch: 1 });
     expect(await revokedBefore(env, MUM)).toBe(2);
-    expect(rooms.log.at(-1)).toBe(`revokeSessions ${c.id} ${MUM} 2`);
+    expect(rooms.log.at(-1)).toBe(`revokeAccountSessions ${MUM} 2`);
     await apply(rooms, { type: "account.sessions_revoked", accountId: MUM, epoch: 3 });
     expect(await revokedBefore(env, MUM)).toBe(3);
     expect(await revokedBefore(env, DAD)).toBe(0);

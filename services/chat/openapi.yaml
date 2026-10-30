@@ -85,9 +85,25 @@ tags:
       Server → client text frames: `{"type":"envelope","envelope":Envelope}` and
       `{"type":"event","event":{"kind":"members_changed"|"devices_changed"|"conversation_closed","conversationId":"…"}}`.
       Client → server: `{"type":"ack","envelopeIds":["…"]}` (deletes delivery copies) and `ping` (answered `pong`
-      without waking the object). The server closes the socket with code `4401` when the chat token expires or is
+      without waking the object).
+
+      **Typing.** A client sends `{"type":"typing"}` while its user types (at most about every 3 s). The server
+      relays `{"type":"typing","accountId":"…","deviceId":1}` to the streams of the *other accounts* in the
+      conversation (not to any device of the sender's account). Observers (read-only parents) can't send it: their
+      frames are ignored, but they receive the others'. It is ephemeral and has no content: never stored,
+      never queued, no push. At most one signal per device per 3 s is relayed; extra ones are dropped silently.
+      Receivers treat a signal as fresh for about 5 s and hide the indicator when a message from that account arrives. The server closes the socket with code `4401` when the chat token expires or is
       revoked (the account signed out everywhere) and `4403` when the account leaves the conversation; reconnect
       with a fresh token. Queued envelopes are sent right after connecting.
+  - name: Account events
+    description: |
+      A second WebSocket per phone, for the account as a whole (one Durable Object per account, hibernating while
+      idle). Open it next to the conversation streams. Server → client text frames, ids only, never stored:
+      `{"type":"conversation_added","conversationId":"…"}` when the account joined a conversation (a new chat, or a
+      parent becoming an observer of a kid's chat). The phone then loads the conversation (`GET
+      /v1/conversations/{id}`) and opens its stream. A phone that was offline lists its conversations when it starts,
+      so a missed frame costs nothing. Client → server: only `ping` (answered `pong`). Closes with `4401` when the
+      chat token expires or is revoked; reconnect with a fresh token.
   - name: Conversation events
     description: |
       Not HTTP: the queue messages this service sends to the calls service when members are removed from a
@@ -366,6 +382,19 @@ paths:
         "101": { description: Switching protocols. }
         "401": { $ref: "#/components/responses/Unauthorized" }
         "404": { $ref: "#/components/responses/NotFound" }
+        "426": { description: "`upgrade_required`: not a WebSocket request." }
+        "429": { $ref: "#/components/responses/RateLimited" }
+
+  /v1/events:
+    get:
+      tags: [Account events]
+      operationId: accountEvents
+      summary: WebSocket for account events such as `conversation_added` (see the `Account events` tag).
+      parameters:
+        - { name: Upgrade, in: header, required: true, schema: { type: string, const: websocket } }
+      responses:
+        "101": { description: Switching protocols. }
+        "401": { $ref: "#/components/responses/Unauthorized" }
         "426": { description: "`upgrade_required`: not a WebSocket request." }
         "429": { $ref: "#/components/responses/RateLimited" }
 
@@ -737,6 +766,13 @@ components:
               required: [provider, token]
               properties:
                 provider: { type: string, enum: [apns, fcm] }
+                token: { type: string, maxLength: 4096 }
+            alertPush:
+              type: [object, "null"]
+              description: The iPhone's APNs token for the message alert; `null` = none. A left-out key keeps the receiver's value. A new registration sends both targets as `null`.
+              required: [provider, token]
+              properties:
+                provider: { type: string, enum: [apns] }
                 token: { type: string, maxLength: 4096 }
         - title: device.removed
           required: [type, accountId, deviceId]

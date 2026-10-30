@@ -27,8 +27,10 @@ test("CHAT_RPC lists every ChatMembership method calls uses", () => {
   assert.ok(listed.includes("tokenRevoked"));
 });
 
-// Production is off until the v1 cutover (PR #110); add ["production", "https://chat.zapakid.ro"] back with it.
-for (const [name, chatUrl] of [["staging", "https://chat-staging.zapakid.ro"]]) {
+for (const [name, chatUrl] of [
+  ["staging", "https://chat-staging.zapakid.ro"],
+  ["production", "https://chat.zapakid.ro"],
+]) {
   test(`${name}: waits for the ${name} chat Worker's RPC before migrations and the deploy`, () => {
     const steps = job(name);
     const wait = steps.indexOf(`node ../../scripts/wait-for-rpc.js ${chatUrl} $CHAT_RPC`);

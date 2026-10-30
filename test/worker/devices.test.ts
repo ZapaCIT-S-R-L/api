@@ -697,3 +697,81 @@ describe("PUT /v1/devices/{id}/push", () => {
     expect(await storedPush(a.parent.id, 1)).toEqual({ push_provider: null, push_token: null });
   });
 });
+
+describe("PUT /v1/devices/{id}/alert-push", () => {
+  const setPush = (token: string, deviceId: number, body: unknown) =>
+    call(`/v1/devices/${deviceId}/push`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", ...bearer(token) },
+      body: JSON.stringify(body),
+    });
+
+  const setAlert = (token: string, deviceId: number, body: unknown) =>
+    call(`/v1/devices/${deviceId}/alert-push`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", ...bearer(token) },
+      body: JSON.stringify(body),
+    });
+
+  const stored = (accountId: string, deviceId: number) =>
+    env.DB.prepare(
+      "SELECT push_provider, push_token, alert_push_token FROM devices WHERE account_id = ? AND device_id = ?",
+    )
+      .bind(accountId, deviceId)
+      .first<{ push_provider: string | null; push_token: string | null; alert_push_token: string | null }>();
+
+  it("without a session → 401", async () => {
+    const res = await call("/v1/devices/1/alert-push", {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+      body: '{"provider":"apns","token":"ab"}',
+    });
+    expect(res.status).toBe(401);
+  });
+
+  it("sets the alert token only, and sends device.upserted carrying it; the VoIP token is untouched", async () => {
+    const a = await signIn();
+    await register(a.session.token, deviceKeys());
+    const voip = "c".repeat(64);
+    await setPush(a.session.token, 1, { provider: "apns", token: voip });
+    const alert = "d".repeat(64);
+    expect((await setAlert(a.session.token, 1, { provider: "apns", token: alert })).status).toBe(204);
+    expect(await stored(a.parent.id, 1)).toEqual({
+      push_provider: "apns",
+      push_token: voip,
+      alert_push_token: alert,
+    });
+    expect((await outboxEvents()).at(-1)).toMatchObject({
+      type: "device.upserted",
+      deviceId: 1,
+      alertPush: { provider: "apns", token: alert },
+    });
+    expect((await outboxEvents()).at(-1)).not.toHaveProperty("push");
+  });
+
+  it("only apns: an fcm target is refused", async () => {
+    const a = await signIn();
+    await register(a.session.token, deviceKeys());
+    await expectError(await setAlert(a.session.token, 1, { provider: "fcm", token: "ab" }), 400, "invalid_request");
+    expect((await stored(a.parent.id, 1))?.alert_push_token).toBeNull();
+  });
+
+  it("null clears the alert token; the event says so", async () => {
+    const a = await signIn();
+    await register(a.session.token, deviceKeys());
+    await setAlert(a.session.token, 1, { provider: "apns", token: "d".repeat(64) });
+    expect((await setAlert(a.session.token, 1, { provider: null, token: null })).status).toBe(204);
+    expect((await stored(a.parent.id, 1))?.alert_push_token).toBeNull();
+    expect((await outboxEvents()).at(-1)).toMatchObject({ type: "device.upserted", alertPush: null });
+  });
+
+  it("another device of the account → 404, nothing changes", async () => {
+    const identityKey = ec();
+    const a = await signIn();
+    await register(a.session.token, deviceKeys(identityKey));
+    const b = await signIn();
+    expect((await register(b.session.token, deviceKeys(identityKey))).status).toBe(201);
+    await expectError(await setAlert(a.session.token, 2, { provider: "apns", token: "ab" }), 404, "not_found");
+    expect((await stored(a.parent.id, 2))?.alert_push_token).toBeNull();
+  });
+});
