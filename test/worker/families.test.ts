@@ -518,7 +518,122 @@ describe("DELETE /v1/families/{familyId}/parents/{accountId}", () => {
     expect(events).toContainEqual(expect.objectContaining({ type: "account.sessions_revoked", accountId: bob.id }));
     expect(await count("family_parents")).toBe(1);
   });
+
+  // PR #108 review: removing a parent revokes the family capabilities they hold, not only their sessions.
+  it("a removed parent can't rejoin with an open invitation they created before removal → 410", async () => {
+    const { ana, bob, family } = await twoParents();
+    const { code } = await invite(bob.auth, family.id);
+    const replacement = await send(`/v1/families/${family.id}/parents/invitations`, ana.auth, { replaces: bob.id });
+    const { code: replacementCode } = await replacement.json<{ code: string }>();
+    expect((await send(`/v1/families/${family.id}/parents/${bob.id}`, ana.auth, undefined, "DELETE")).status).toBe(204);
+
+    const again = await signInParent(apple, "bob", "Bob");
+    const own = await createFamily(again.auth);
+    for (const c of [code, replacementCode]) {
+      const res = await send("/v1/families/join", again.auth, { code: c });
+      expect(res.status, c).toBe(410);
+      expect(await errorCode(res)).toBe("invitation_invalid");
+    }
+    // The removed parent's open codes are gone; the used one that admitted them stays (used).
+    expect(await countWhere("family_invitations", "used_at IS NULL")).toBe(0);
+    const mine = await (await call("/v1/families", { headers: again.auth })).json<{ families: Family[] }>();
+    expect(mine.families.map((f) => f.id)).toEqual([own.id]);
+    const anas = await (await call("/v1/families", { headers: ana.auth })).json<{ families: Family[] }>();
+    expect(anas.families[0]?.parents.map((p) => p.id)).toEqual([ana.id]);
+  });
+
+  it("replaying the used invitation that admitted a removed parent → 410, no family data", async () => {
+    const ana = await signInParent(apple, "ana", "Ana");
+    const family = await createFamily(ana.auth);
+    await send(`/v1/families/${family.id}/kids`, ana.auth, { nickname: "Mia", avatar: "robot-1" });
+    const bob = await signInParent(apple, "bob", "Bob");
+    const { code } = await invite(ana.auth, family.id);
+    expect((await send("/v1/families/join", bob.auth, { code })).status).toBe(200);
+    // While a member, a retried join answers with the family (documented idempotent retry).
+    expect((await send("/v1/families/join", bob.auth, { code })).status).toBe(200);
+    expect((await send(`/v1/families/${family.id}/parents/${bob.id}`, ana.auth, undefined, "DELETE")).status).toBe(204);
+
+    const again = await signInParent(apple, "bob", "Bob");
+    for (const auth of [again.auth, (await signInParent(apple, "eve", "Eve")).auth]) {
+      const res = await send("/v1/families/join", auth, { code });
+      expect(res.status).toBe(410);
+      const text = await res.text();
+      expect(JSON.parse(text)).toMatchObject({ error: { code: "invitation_invalid" } });
+      expect(text).not.toContain(family.id);
+      expect(text).not.toContain("Mia");
+    }
+    expect(await countWhere("family_parents", "family_id = ?", family.id)).toBe(1);
+  });
+
+  it("an invitation whose creator is no longer a parent of the family can't be used → 410", async () => {
+    // An invite that raced the removal: inserted after the removal's batch, so the removal didn't revoke it.
+    const { ana, bob, family } = await twoParents();
+    const { code } = await invite(bob.auth, family.id);
+    await env.DB.prepare("DELETE FROM family_parents WHERE parent_id = ?").bind(bob.id).run();
+    const carol = await signInParent(apple, "carol", "Carol");
+    const res = await send("/v1/families/join", carol.auth, { code });
+    expect(res.status).toBe(410);
+    expect(await errorCode(res)).toBe("invitation_invalid");
+    expect(await countWhere("family_parents", "family_id = ?", family.id)).toBe(1);
+    expect((await call("/v1/families", { headers: ana.auth })).status).toBe(200);
+  });
+
+  it("the creator is removed between the join's lookup and its claim → 410, nobody joins, no event", async () => {
+    const { ana, bob, family } = await twoParents();
+    const { code } = await invite(bob.auth, family.id);
+    const carol = await signInParent(apple, "carol", "Carol");
+    await env.DB.prepare("DELETE FROM membership_outbox").run();
+    const batch = env.DB.batch.bind(env.DB);
+    vi.spyOn(env.DB, "batch").mockImplementationOnce(async (statements) => {
+      // Only the parent row goes here (the invitation stays), so the claim's own creator check is what refuses it.
+      await env.DB.prepare("DELETE FROM family_parents WHERE parent_id = ?").bind(bob.id).run();
+      return batch(statements);
+    });
+    const res = await send("/v1/families/join", carol.auth, { code });
+    expect(res.status).toBe(410);
+    expect(await countWhere("family_parents", "family_id = ?", family.id)).toBe(1);
+    expect(await countWhere("family_invitations", "used_at IS NULL")).toBe(1);
+    expect(await outboxSize()).toBe(0);
+    expect((await call("/v1/families", { headers: ana.auth })).status).toBe(200);
+  });
+
+  it("a replacement code whose parent was removed between lookup and claim deletes nothing → 410", async () => {
+    const { ana, bob, family } = await twoParents();
+    const created = await send(`/v1/families/${family.id}/parents/invitations`, ana.auth, { replaces: bob.id });
+    const { code } = await created.json<{ code: string }>();
+    const newPhone = await signInParent(apple, "bob", "Bob");
+    const sessions = await countWhere("sessions", "parent_id = ?", bob.id);
+    await env.DB.prepare("DELETE FROM membership_outbox").run();
+    const batch = env.DB.batch.bind(env.DB);
+    vi.spyOn(env.DB, "batch").mockImplementationOnce(async (statements) => {
+      await env.DB.prepare("DELETE FROM family_parents WHERE parent_id = ?").bind(bob.id).run();
+      return batch(statements);
+    });
+    const res = await send("/v1/families/join", newPhone.auth, { code });
+    expect(res.status).toBe(410);
+    expect(await countWhere("sessions", "parent_id = ?", bob.id)).toBe(sessions);
+    expect(await outboxSize()).toBe(0);
+  });
+
+  it("removal revokes the removed parent's open kid pairing and connection codes", async () => {
+    const { ana, bob, family } = await twoParents();
+    const kid = await (
+      await send(`/v1/families/${family.id}/kids`, ana.auth, { nickname: "Mia", avatar: "robot-1" })
+    ).json<Kid>();
+    expect((await send(`/v1/families/${family.id}/kids/${kid.id}/pairing`, bob.auth)).status).toBe(201);
+    expect((await send(`/v1/families/${family.id}/kids/${kid.id}/pairing`, ana.auth)).status).toBe(201);
+    expect((await send("/v1/connections/invitations", bob.auth)).status).toBe(201);
+    expect((await send(`/v1/families/${family.id}/parents/${bob.id}`, ana.auth, undefined, "DELETE")).status).toBe(204);
+    expect(await countWhere("kid_pairings", "created_by = ?", bob.id)).toBe(0);
+    expect(await countWhere("kid_pairings", "created_by = ?", ana.id)).toBe(1);
+    expect(await countWhere("connection_invitations", "created_by = ?", bob.id)).toBe(0);
+  });
 });
+
+const countWhere = async (table: string, where: string, ...binds: unknown[]): Promise<number> =>
+  (await env.DB.prepare(`SELECT count(*) AS n FROM ${table} WHERE ${where}`)
+    .bind(...binds)
+    .first<number>("n")) ?? 0;
 
 const outboxSize = async (): Promise<number> =>
   (await env.DB.prepare("SELECT count(*) AS n FROM membership_outbox").first<number>("n")) ?? 0;

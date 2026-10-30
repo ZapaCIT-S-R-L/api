@@ -906,8 +906,9 @@ paths:
       description: |
         Any parent of the family may remove another parent. Their sessions are signed out (`account.sessions_revoked`),
         their devices removed (`device.removed` for each), and `family.member_removed` tells the chat service to take
-        them out of the family's conversations. Their account stays and they can join another family. A parent can't
-        remove themselves (`409 cannot_remove_self`), and a family keeps at least one parent. A non-member caller, or a
+        them out of the family's conversations. The open codes they made (parent invitations, kid pairing codes,
+        connection codes) and open replacement codes for their phone stop working. Their account stays and they can
+        join another family. A parent can't remove themselves (`409 cannot_remove_self`), and a family keeps at least one parent. A non-member caller, or a
         target that isn't a parent of the family, gets `404`.
       parameters:
         [
@@ -975,8 +976,10 @@ paths:
       description: |
         Uses up the code. A parent who is alone in a family without kids (for example, one who already called
         `POST /v1/families`) moves over, and the empty family is deleted. A parent whose family has kids or another
-        parent gets `409 already_in_family`, and the code stays unused. Repeating the call (already a member) returns
-        the family again.
+        parent gets `409 already_in_family`, and the code stays unused. Repeating the call (still a member) returns
+        the family again; a used code is otherwise `410`, also after the parent left or was removed. A code only
+        works while the parent who made it (and, for a replacement code, the parent it replaces) is still a parent of
+        the family.
       requestBody:
         required: true
         content:
