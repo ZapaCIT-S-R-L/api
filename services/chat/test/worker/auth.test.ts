@@ -119,6 +119,8 @@ describe("chat token", () => {
     it("after device.removed, tokens for that device issued before it are refused everywhere", async () => {
       const token = await issuer.sign(claims(ALEX, { role: "kid" }));
       expect(await status(token)).toBe(200);
+      // The second of the removal, read before it: the edge checks below don't depend on how long the requests take.
+      const removedAt = now();
       await apply(noRooms, { type: "device.removed", accountId: ALEX, deviceId: 1 });
       for (const [method, path] of [
         ["GET", "/v1/conversations"],
@@ -135,8 +137,8 @@ describe("chat token", () => {
         expect((await res.json<{ error: { message: string } }>()).error.message).toMatch(/removed/);
       }
       // A token issued just before or in the second after the removal is still refused (no race at the edge).
-      expect(await status(await issuer.sign(claims(ALEX, { role: "kid" }), { iat: now() - 60 }))).toBe(401);
-      expect(await status(await issuer.sign(claims(ALEX, { role: "kid" }), { iat: now() + 1 }))).toBe(401);
+      expect(await status(await issuer.sign(claims(ALEX, { role: "kid" }), { iat: removedAt - 60 }))).toBe(401);
+      expect(await status(await issuer.sign(claims(ALEX, { role: "kid" }), { iat: removedAt + 1 }))).toBe(401);
     });
 
     it("other devices and accounts are not affected; a token issued after the device registers again works", async () => {
