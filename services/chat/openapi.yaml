@@ -745,6 +745,13 @@ components:
               properties:
                 provider: { type: string, enum: [apns, fcm] }
                 token: { type: string, maxLength: 4096 }
+            alertPush:
+              type: [object, "null"]
+              description: The iPhone's APNs token for the message alert; `null` = none. A left-out key keeps the receiver's value. A new registration sends both targets as `null`.
+              required: [provider, token]
+              properties:
+                provider: { type: string, enum: [apns] }
+                token: { type: string, maxLength: 4096 }
         - title: device.removed
           required: [type, accountId, deviceId]
           properties:
