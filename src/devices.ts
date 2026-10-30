@@ -362,20 +362,26 @@ async function setPushTarget(request: Request, env: Env, rawId: string, slot: "v
       alert_push_token: string | null;
     }>();
   if (!row) return error(404, "not_found", "No such device on this account.");
+  // An update authenticated before logout must not restore a target after logout has cleared it.
+  const { table, owner } = sessionTable(session);
+  const liveSession = `EXISTS (SELECT 1 FROM ${table} WHERE token_hash = ? AND ${owner} = ?
+    AND device_id = ? AND expires_at > ?)`;
+  const liveBinds = [session.tokenHash, session.id, deviceId, new Date().toISOString()];
+  let updated: D1Result | undefined;
   // The event is written only when the update happened (the same batch, so the row is still the one we wrote).
   if (slot === "voip") {
     const provider = target?.provider ?? null;
     const token = target?.token ?? null;
-    await env.DB.batch([
+    [updated] = await env.DB.batch([
       env.DB.prepare(
-        "UPDATE devices SET push_provider = ?, push_token = ? WHERE account_id = ? AND device_id = ?",
-      ).bind(provider, token, session.id, deviceId),
+        `UPDATE devices SET push_provider = ?, push_token = ? WHERE account_id = ? AND device_id = ? AND ${liveSession}`,
+      ).bind(provider, token, session.id, deviceId, ...liveBinds),
       membershipEvent(
         env,
         { type: "device.upserted", accountId: session.id, deviceId, registrationId: row.registration_id, push: target },
         {
-          sql: "EXISTS (SELECT 1 FROM devices WHERE account_id = ? AND device_id = ? AND push_provider IS ? AND push_token IS ?)",
-          binds: [session.id, deviceId, provider, token],
+          sql: `EXISTS (SELECT 1 FROM devices WHERE account_id = ? AND device_id = ? AND push_provider IS ? AND push_token IS ?) AND ${liveSession}`,
+          binds: [session.id, deviceId, provider, token, ...liveBinds],
         },
       ),
     ]);
@@ -383,12 +389,10 @@ async function setPushTarget(request: Request, env: Env, rawId: string, slot: "v
     // Validated above: the alert slot takes APNs only.
     const alertTarget = target?.provider === "apns" ? { provider: "apns" as const, token: target.token } : null;
     const token = alertTarget?.token ?? null;
-    await env.DB.batch([
-      env.DB.prepare("UPDATE devices SET alert_push_token = ? WHERE account_id = ? AND device_id = ?").bind(
-        token,
-        session.id,
-        deviceId,
-      ),
+    [updated] = await env.DB.batch([
+      env.DB.prepare(
+        `UPDATE devices SET alert_push_token = ? WHERE account_id = ? AND device_id = ? AND ${liveSession}`,
+      ).bind(token, session.id, deviceId, ...liveBinds),
       membershipEvent(
         env,
         {
@@ -399,12 +403,13 @@ async function setPushTarget(request: Request, env: Env, rawId: string, slot: "v
           alertPush: alertTarget,
         },
         {
-          sql: "EXISTS (SELECT 1 FROM devices WHERE account_id = ? AND device_id = ? AND alert_push_token IS ?)",
-          binds: [session.id, deviceId, token],
+          sql: `EXISTS (SELECT 1 FROM devices WHERE account_id = ? AND device_id = ? AND alert_push_token IS ?) AND ${liveSession}`,
+          binds: [session.id, deviceId, token, ...liveBinds],
         },
       ),
     ]);
   }
+  if (!updated?.meta.changes) return unauthorized();
   await flushMembershipEvents(env);
   return empty(204);
 }
