@@ -7,6 +7,7 @@ import {
   count,
   makeIssuer,
   resetJwksCache,
+  sha256Hex,
   signInParent,
   stubJwks,
   type ErrorBody,
@@ -386,6 +387,54 @@ describe("replacing an adult's phone: an invitation for that parent", () => {
     expect(await errorCode(res)).toBe("invitation_for_other_account");
     expect((await send("/v1/families/join", bob.auth, { code })).status).toBe(200);
   });
+
+  // PR #108 review: two sessions of the parent redeem the same code in the same millisecond. The loser's claim
+  // changes nothing, and nothing else in its batch may run: the winner's new session and device stay.
+  it("a losing concurrent redemption (same millisecond) can't remove the winner's session or device", async () => {
+    const ana = await signInParent(apple, "ana", "Ana");
+    const family = await createFamily(ana.auth);
+    const bob = await signInParent(apple, "bob", "Bob");
+    await send("/v1/families/join", bob.auth, { code: (await invite(ana.auth, family.id)).code });
+    const { code } = await (
+      await send(`/v1/families/${family.id}/parents/invitations`, ana.auth, { replaces: bob.id })
+    ).json<{ code: string }>();
+    const winner = await signInParent(apple, "bob", "Bob");
+    const loser = await signInParent(apple, "bob", "Bob");
+    const now = new Date().toISOString();
+    await env.DB.prepare(
+      `INSERT INTO devices (account_id, device_id, registration_id, signed_prekey_id, signed_prekey,
+         signed_prekey_signature, pq_last_resort_id, pq_last_resort_key, pq_last_resort_signature, created_at, last_seen_at)
+       VALUES (?, 7, 1, 1, 'k', 's', 1, 'k', 's', ?, ?)`,
+    )
+      .bind(bob.id, now, now)
+      .run();
+    await env.DB.prepare("UPDATE sessions SET device_id = 7 WHERE token_hash = ?")
+      .bind(await sha256Hex(winner.token))
+      .run();
+    await env.DB.prepare("DELETE FROM membership_outbox").run();
+
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() });
+    // The loser has passed its checks; the winner redeems before the loser's batch runs, in the same millisecond.
+    const batch = env.DB.batch.bind(env.DB);
+    let won: Response | undefined;
+    vi.spyOn(env.DB, "batch").mockImplementationOnce(async (statements) => {
+      won = await send("/v1/families/join", winner.auth, { code });
+      return batch(statements);
+    });
+    const lost = await send("/v1/families/join", loser.auth, { code });
+    vi.useRealTimers();
+
+    expect(won?.status).toBe(200);
+    expect(lost.status).toBe(410);
+    expect((await call("/v1/families", { headers: winner.auth })).status).toBe(200);
+    expect(await env.DB.prepare("SELECT count(*) AS n FROM devices WHERE account_id = ?").bind(bob.id).first("n")).toBe(
+      1,
+    );
+    const { results } = await env.DB.prepare("SELECT body FROM membership_outbox").all<{ body: string }>();
+    expect(results.map((r) => JSON.parse(r.body) as { type: string; deviceId?: number })).not.toContainEqual(
+      expect.objectContaining({ type: "device.removed", deviceId: 7 }),
+    );
+  });
 });
 
 describe("DELETE /v1/families/{familyId}/parents/{accountId}", () => {
@@ -431,6 +480,28 @@ describe("DELETE /v1/families/{familyId}/parents/{accountId}", () => {
     expect((await send(`/v1/families/${family.id}/parents/${outsider.id}`, ana.auth, undefined, "DELETE")).status).toBe(
       404,
     );
+  });
+
+  // PR #108 review: another removal wins between the membership checks and the batch, leaving the target as the
+  // last parent. Nothing of the batch may happen: no session or epoch change, no event at all.
+  it("the target became the last parent before the batch → 409 last_parent, nothing changes, no event", async () => {
+    const { ana, bob, family } = await twoParents();
+    const epoch = () =>
+      env.DB.prepare("SELECT session_epoch FROM parents WHERE id = ?").bind(bob.id).first("session_epoch");
+    const before = await epoch();
+    await env.DB.prepare("DELETE FROM membership_outbox").run();
+    const batch = env.DB.batch.bind(env.DB);
+    vi.spyOn(env.DB, "batch").mockImplementationOnce(async (statements) => {
+      await env.DB.prepare("DELETE FROM family_parents WHERE parent_id = ?").bind(ana.id).run();
+      return batch(statements);
+    });
+    const res = await send(`/v1/families/${family.id}/parents/${bob.id}`, ana.auth, undefined, "DELETE");
+    expect(res.status).toBe(409);
+    expect(await errorCode(res)).toBe("last_parent");
+    expect((await call("/v1/families", { headers: bob.auth })).status).toBe(200);
+    expect(await epoch()).toBe(before);
+    expect(await count("family_parents")).toBe(1);
+    expect(await outboxSize()).toBe(0);
   });
 
   it("without a session → 401", async () => {

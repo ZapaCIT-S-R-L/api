@@ -299,23 +299,15 @@ async function handleJoinFamily(request: Request, env: Env): Promise<Response> {
   }
 
   // One transaction: use up the code (only if still open), leave the empty family, join. The last two only run
-  // when this request is the one that used the code.
-  const usedByMe = "EXISTS (SELECT 1 FROM family_invitations WHERE code_hash = ? AND used_by = ? AND used_at = ?)";
-  const onlyIfUsedByMe = { sql: usedByMe, binds: [codeHash, session.parentId, nowIso] };
+  // when this request is the one that used the code (its own claim id, unique per request).
+  const { claim: claimCode, onlyIfUsedByMe } = claimInvitation(env, session, codeHash, nowIso);
+  const usedByMe = onlyIfUsedByMe.sql;
   const [claim] = await env.DB.batch([
-    env.DB.prepare(
-      `UPDATE family_invitations SET used_at = ?, used_by = ?
-       WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?`,
-    ).bind(nowIso, session.parentId, codeHash, nowIso),
-    env.DB.prepare(`DELETE FROM families WHERE id = ? AND ${usedByMe}`).bind(
-      current ?? "",
-      codeHash,
-      session.parentId,
-      nowIso,
-    ),
+    claimCode,
+    env.DB.prepare(`DELETE FROM families WHERE id = ? AND ${usedByMe}`).bind(current ?? "", ...onlyIfUsedByMe.binds),
     env.DB.prepare(
       `INSERT INTO family_parents (family_id, parent_id, joined_at) SELECT ?, ?, ? WHERE ${usedByMe}`,
-    ).bind(invitation.family_id, session.parentId, nowIso, codeHash, session.parentId, nowIso),
+    ).bind(invitation.family_id, session.parentId, nowIso, ...onlyIfUsedByMe.binds),
     ...(current
       ? [
           membershipEvent(
@@ -336,6 +328,28 @@ async function handleJoinFamily(request: Request, env: Env): Promise<Response> {
   return json(await loadFamily(env, invitation.family_id));
 }
 
+// The statement that uses up an open invitation code for this request, and the SQL condition (with its binds) that
+// holds only when this request's claim is the one that used it: a random claim id per request, so two redemptions in
+// the same millisecond by the same parent can't both match.
+function claimInvitation(
+  env: Env,
+  session: Session,
+  codeHash: string,
+  nowIso: string,
+): { claim: D1PreparedStatement; onlyIfUsedByMe: { sql: string; binds: unknown[] } } {
+  const claimId = crypto.randomUUID();
+  return {
+    claim: env.DB.prepare(
+      `UPDATE family_invitations SET used_at = ?, used_by = ?, claim_id = ?
+       WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?`,
+    ).bind(nowIso, session.parentId, claimId, codeHash, nowIso),
+    onlyIfUsedByMe: {
+      sql: "EXISTS (SELECT 1 FROM family_invitations WHERE code_hash = ? AND claim_id = ?)",
+      binds: [codeHash, claimId],
+    },
+  };
+}
+
 // A replacement code, redeemed by the parent it replaces on the new phone: the other sessions and devices of the
 // parent go (device.removed for each), the current session stays. One transaction; the code is used up only here.
 async function replacePhone(
@@ -345,13 +359,11 @@ async function replacePhone(
   codeHash: string,
   nowIso: string,
 ): Promise<Response> {
-  const usedByMe = "EXISTS (SELECT 1 FROM family_invitations WHERE code_hash = ? AND used_by = ? AND used_at = ?)";
-  const claimed = [codeHash, session.parentId, nowIso];
+  const { claim: claimCode, onlyIfUsedByMe } = claimInvitation(env, session, codeHash, nowIso);
+  const usedByMe = onlyIfUsedByMe.sql;
+  const claimed = onlyIfUsedByMe.binds;
   const [claim] = await env.DB.batch([
-    env.DB.prepare(
-      `UPDATE family_invitations SET used_at = ?, used_by = ?
-       WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?`,
-    ).bind(nowIso, session.parentId, codeHash, nowIso),
+    claimCode,
     deviceRemovedEvents(env, `account_id = ? AND (device_id IS NOT ?) AND ${usedByMe}`, [
       session.parentId,
       session.deviceId,
@@ -400,7 +412,7 @@ async function handleRemoveParent(request: Request, env: Env, familyId: string, 
       accountId,
       ...guarded,
     ),
-    sessionsRevokedEvent(env, accountId),
+    sessionsRevokedEvent(env, accountId, { sql: guard, binds: guarded }),
     membershipEvent(env, { type: "family.member_removed", familyId, accountId }, { sql: guard, binds: guarded }),
     env.DB.prepare(
       `DELETE FROM family_parents WHERE family_id = ? AND parent_id = ? AND ${guard} RETURNING parent_id`,
