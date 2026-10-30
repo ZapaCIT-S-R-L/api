@@ -68,9 +68,10 @@ export async function routeFamilies(request: Request, env: Env, path: string): P
     return error(405, "method_not_allowed", "Use POST or DELETE.", { allow: "POST, DELETE" });
   }
   if ((match = /^\/v1\/families\/([^/]+)\/kids\/([^/]+)$/.exec(path))) {
-    return request.method === "DELETE"
-      ? handleRemoveKid(request, env, match[1] ?? "", match[2] ?? "")
-      : error(405, "method_not_allowed", "Use DELETE.", { allow: "DELETE" });
+    const [, familyId = "", kidId = ""] = match;
+    if (request.method === "PATCH") return handleUpdateKid(request, env, familyId, kidId);
+    if (request.method === "DELETE") return handleRemoveKid(request, env, familyId, kidId);
+    return error(405, "method_not_allowed", "Use PATCH or DELETE.", { allow: "PATCH, DELETE" });
   }
   if ((match = /^\/v1\/families\/([^/]+)\/kids\/([^/]+)\/sessions$/.exec(path))) {
     return request.method === "GET"
@@ -100,6 +101,13 @@ function text(value: unknown, field: string, max: number): string {
     throw invalid(`${field} must be 1-${max} characters on one line.`);
   }
   return trimmed;
+}
+
+function avatarId(value: unknown): string {
+  if (typeof value !== "string" || !AVATAR_PATTERN.test(value)) {
+    throw invalid("avatar must be an avatar id: 1-32 lowercase letters, digits or dashes.");
+  }
+  return value;
 }
 
 // An optional JSON body: none at all is the same as {}.
@@ -411,9 +419,7 @@ async function handleAddKid(request: Request, env: Env, familyId: string): Promi
   const body = await readJson(request);
   onlyFields(body, ["nickname", "avatar", "grade"], "the body");
   const nickname = text(body.nickname, "nickname", 40);
-  if (typeof body.avatar !== "string" || !AVATAR_PATTERN.test(body.avatar)) {
-    throw invalid("avatar must be an avatar id: 1-32 lowercase letters, digits or dashes.");
-  }
+  const avatar = avatarId(body.avatar);
   let grade: number | null = null;
   if (body.grade !== undefined && body.grade !== null) {
     if (typeof body.grade !== "number" || !Number.isInteger(body.grade) || body.grade < -1 || body.grade > 12) {
@@ -429,7 +435,7 @@ async function handleAddKid(request: Request, env: Env, familyId: string): Promi
     env.DB.prepare(
       `INSERT INTO kids (id, family_id, nickname, avatar, grade, created_at, updated_at)
        SELECT ?, ?, ?, ?, ?, ?, ? WHERE (SELECT count(*) FROM kids WHERE family_id = ?) < ?`,
-    ).bind(id, familyId, nickname, body.avatar, grade, now, now, familyId, MAX_KIDS),
+    ).bind(id, familyId, nickname, avatar, grade, now, now, familyId, MAX_KIDS),
     membershipEvent(
       env,
       { type: "family.member_added", familyId, accountId: id, role: "kid" },
@@ -438,7 +444,7 @@ async function handleAddKid(request: Request, env: Env, familyId: string): Promi
   ]);
   if (result?.meta.changes !== 1) return error(409, "too_many_kids", `A family has at most ${MAX_KIDS} kids.`);
   await flushMembershipEvents(env);
-  return json({ id, nickname, avatar: body.avatar, grade, createdAt: now } satisfies Kid, 201);
+  return json({ id, nickname, avatar, grade, createdAt: now } satisfies Kid, 201);
 }
 
 // DELETE /v1/families/{familyId}/kids/{kidId}: the kid account goes, with its phones (sessions, devices, keys,
@@ -462,4 +468,26 @@ async function handleRemoveKid(request: Request, env: Env, familyId: string, kid
   if (!results.at(-1)?.results.length) return error(404, "not_found", "No such kid.");
   await flushMembershipEvents(env);
   return empty(204);
+}
+
+// PATCH /v1/families/{familyId}/kids/{kidId}: rename the kid or change its avatar (at least one of them). Any parent
+// of the family. No membership event: the chat service doesn't know names or avatars.
+async function handleUpdateKid(request: Request, env: Env, familyId: string, kidId: string): Promise<Response> {
+  const session = await authenticate(request, env);
+  if (!session) return unauthorized();
+  if (!(await kidInParentsFamily(env, session.parentId, familyId, kidId))) {
+    return error(404, "not_found", "No such kid.");
+  }
+  const body = await readJson(request);
+  onlyFields(body, ["nickname", "avatar"], "the body");
+  if (body.nickname === undefined && body.avatar === undefined) throw invalid("Send nickname, avatar or both.");
+  const nickname = body.nickname === undefined ? null : text(body.nickname, "nickname", 40);
+  const avatar = body.avatar === undefined ? null : avatarId(body.avatar);
+  await env.DB.prepare(
+    "UPDATE kids SET nickname = COALESCE(?, nickname), avatar = COALESCE(?, avatar), updated_at = ? WHERE id = ? AND family_id = ?",
+  )
+    .bind(nickname, avatar, new Date().toISOString(), kidId, familyId)
+    .run();
+  const kid = await loadKid(env, kidId);
+  return kid ? json(kid) : error(404, "not_found", "No such kid.");
 }
