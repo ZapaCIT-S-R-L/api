@@ -91,3 +91,17 @@ test("production deploy jobs are explicitly disabled until cutover", () => {
     if (file !== "deploy-production.yml") assert.notEqual(deploy.jobs.staging.if, false, file);
   }
 });
+
+// actionlint rejects constant conditions; the exception is only that message, only in the three paused files.
+test("the actionlint exception covers only the paused production jobs", () => {
+  const config = parse(read(".github/actionlint.yaml"));
+  assert.deepEqual(Object.keys(config), ["paths"]);
+  assert.deepEqual(Object.keys(config.paths).sort(), [
+    ".github/workflows/deploy-calls.yml",
+    ".github/workflows/deploy-chat.yml",
+    ".github/workflows/deploy-production.yml",
+  ]);
+  for (const entry of Object.values(config.paths)) {
+    assert.deepEqual(entry, { ignore: ['constant expression "false" in condition'] });
+  }
+});

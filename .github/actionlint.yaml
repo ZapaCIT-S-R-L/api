@@ -1,0 +1,12 @@
+# Production deploy jobs are paused with a literal `if: false` until the v1 cutover, so turning them back on takes a
+# reviewed change to the workflow. actionlint flags constant conditions; only that check, only in these files.
+paths:
+  .github/workflows/deploy-production.yml:
+    ignore:
+      - 'constant expression "false" in condition'
+  .github/workflows/deploy-chat.yml:
+    ignore:
+      - 'constant expression "false" in condition'
+  .github/workflows/deploy-calls.yml:
+    ignore:
+      - 'constant expression "false" in condition'
