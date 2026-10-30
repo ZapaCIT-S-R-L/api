@@ -337,3 +337,111 @@ describe("POST /v1/families/{familyId}/kids", () => {
     expect((await call(`/v1/families/${family.id}/kids`, { headers: ana.auth })).status).toBe(405);
   });
 });
+
+const outboxSize = async (): Promise<number> =>
+  (await env.DB.prepare("SELECT count(*) AS n FROM membership_outbox").first<number>("n")) ?? 0;
+
+describe("PATCH /v1/families/{familyId}/kids/{kidId}", () => {
+  async function familyWithKid(sub: string) {
+    const parent = await signInParent(apple, sub, sub.toUpperCase());
+    const family = await createFamily(parent.auth);
+    const res = await send(`/v1/families/${family.id}/kids`, parent.auth, {
+      nickname: "Mia",
+      avatar: "robot-3",
+      grade: 1,
+    });
+    const kid = await res.json<Kid>();
+    return { parent, familyId: family.id, kid, path: `/v1/families/${family.id}/kids/${kid.id}` };
+  }
+
+  it("renames the kid and changes the avatar; grade stays", async () => {
+    const { parent, familyId, kid, path } = await familyWithKid("ana");
+    const res = await send(path, parent.auth, { nickname: "  Mimi ", avatar: "robot-7" }, "PATCH");
+    expect(res.status).toBe(200);
+    expect(await res.json<Kid>()).toMatchObject({ id: kid.id, nickname: "Mimi", avatar: "robot-7", grade: 1 });
+    const { families } = await (await call("/v1/families", { headers: parent.auth })).json<{ families: Family[] }>();
+    expect(families[0]?.id).toBe(familyId);
+    expect(families[0]?.kids).toMatchObject([{ nickname: "Mimi", avatar: "robot-7", grade: 1 }]);
+  });
+
+  it("one field alone is enough", async () => {
+    const { parent, path } = await familyWithKid("ana");
+    expect(await (await send(path, parent.auth, { nickname: "Lia" }, "PATCH")).json<Kid>()).toMatchObject({
+      nickname: "Lia",
+      avatar: "robot-3",
+    });
+    expect(await (await send(path, parent.auth, { avatar: "robot-9" }, "PATCH")).json<Kid>()).toMatchObject({
+      nickname: "Lia",
+      avatar: "robot-9",
+    });
+  });
+
+  it("a second parent of the family may rename", async () => {
+    const { parent, familyId, path } = await familyWithKid("ana");
+    const dan = await signInParent(apple, "dan", "Dan");
+    const { code } = await invite(parent.auth, familyId);
+    expect((await send("/v1/families/join", dan.auth, { code })).status).toBe(200);
+    expect((await send(path, dan.auth, { nickname: "Lia" }, "PATCH")).status).toBe(200);
+  });
+
+  it("the same validation as adding a kid → 400", async () => {
+    const { parent, path } = await familyWithKid("ana");
+    for (const body of [
+      {},
+      { nickname: "" },
+      { nickname: "x".repeat(41) },
+      { nickname: "two\nlines" },
+      { nickname: 7 },
+      { avatar: "Robot 3" },
+      { avatar: "a".repeat(33) },
+      { grade: 2 },
+      { nickname: "Lia", extra: true },
+    ]) {
+      const res = await send(path, parent.auth, body, "PATCH");
+      expect([JSON.stringify(body), res.status]).toEqual([JSON.stringify(body), 400]);
+      expect(await errorCode(res)).toBe("invalid_request");
+    }
+    expect(
+      await call("/v1/families", { headers: parent.auth }).then((r) => r.json<{ families: Family[] }>()),
+    ).toMatchObject({
+      families: [{ kids: [{ nickname: "Mia", avatar: "robot-3" }] }],
+    });
+  });
+
+  it("another family's parent → 404, no session → 401, nothing changes", async () => {
+    const a = await familyWithKid("ana");
+    const b = await familyWithKid("bob");
+    expect((await send(a.path, b.parent.auth, { nickname: "Evil" }, "PATCH")).status).toBe(404);
+    expect(
+      (await send(`/v1/families/${a.familyId}/kids/${b.kid.id}`, a.parent.auth, { nickname: "Evil" }, "PATCH")).status,
+    ).toBe(404);
+    expect((await send(a.path, {}, { nickname: "Evil" }, "PATCH")).status).toBe(401);
+    expect(await env.DB.prepare("SELECT nickname FROM kids WHERE id = ?").bind(a.kid.id).first("nickname")).toBe("Mia");
+  });
+
+  it("a kid's own session → 401", async () => {
+    const { parent, familyId, kid, path } = await familyWithKid("ana");
+    const created = await send(`/v1/families/${familyId}/kids/${kid.id}/pairing`, parent.auth);
+    const { code } = await created.json<{ code: string }>();
+    const redeemed = await send("/v1/pairing/redeem", {}, { code });
+    const { session } = await redeemed.json<{ session: { token: string } }>();
+    expect((await send(path, { authorization: `Bearer ${session.token}` }, { nickname: "Me" }, "PATCH")).status).toBe(
+      401,
+    );
+  });
+
+  it("writes no membership event (the chat service doesn't know names)", async () => {
+    const { parent, path } = await familyWithKid("ana");
+    const before = await outboxSize();
+    await send(path, parent.auth, { nickname: "Lia" }, "PATCH");
+    expect(await outboxSize()).toBe(before);
+  });
+
+  it("DELETE still works, other methods → 405", async () => {
+    const { parent, path } = await familyWithKid("ana");
+    const res = await call(path, { method: "POST", headers: parent.auth });
+    expect(res.status).toBe(405);
+    expect(res.headers.get("allow")).toBe("PATCH, DELETE");
+    expect((await send(path, parent.auth, undefined, "DELETE")).status).toBe(204);
+  });
+});
