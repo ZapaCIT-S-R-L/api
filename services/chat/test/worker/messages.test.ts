@@ -290,7 +290,13 @@ describe("GET /v1/conversations/{id}/stream", () => {
     expect(res.status).toBe(101);
     const ws = res.webSocket;
     if (!ws) throw new Error("no websocket");
-    const frames: { type: string; accountId?: string; deviceId?: number; envelope?: { id: string; content: string }; event?: { kind: string } }[] = [];
+    const frames: {
+      type: string;
+      accountId?: string;
+      deviceId?: number;
+      envelope?: { id: string; content: string };
+      event?: { kind: string };
+    }[] = [];
     const closed: { code: number }[] = [];
     ws.addEventListener("message", (m) => frames.push(JSON.parse(m.data as string) as (typeof frames)[number]));
     ws.addEventListener("close", (e) => closed.push({ code: e.code }));
