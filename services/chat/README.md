@@ -18,8 +18,7 @@ only routing metadata (who is in which conversation, which device sent to which 
   turned off per kid (`kid.oversight_changed`); the server keeps that in `kid_oversight`. Kids aren't told who
   observes. A conversation has at most 64 observers besides its 64 writers; if a family change would push it over
   (`reconcile()`), nobody is added and the conversation is closed instead.
-  **Not yet produced:** the account API has no endpoint to turn oversight off and never sends
-  `kid.oversight_changed`, so oversight is always on for now; the chat side is ready for it (api #94). `GET /v1/contacts` lists who an account may chat with (ids only).
+  Produced by the account API (`PUT /v1/families/{familyId}/kids/{kidId}/oversight`, api #94); changes are ordered by `occurredAt`, so a late older one is ignored. `GET /v1/contacts` lists who an account may chat with (ids only).
 
 - **Messages:** one Durable Object per conversation (SQLite, EU) holds a delivery copy per recipient device until
   that device acknowledges it, and serves the WebSocket stream (hibernation). Devices without a stream get a
@@ -84,3 +83,13 @@ the `chat-staging` and `chat` custom domains. No secrets: the service has none.
 
 Cloudflare Queues have no EU jurisdiction setting; the events carry only ids (accounts, families, devices, push
 tokens), which goes in the DPIA.
+
+The account events stream (`GET /v1/events`, `src/account-hub.ts`, api #100) holds one Durable Object per account (EU
+jurisdiction when deployed, migration `v2`). It carries conversation ids only, to the account's own devices, and stores
+nothing. Logout-all (`account.sessions_revoked`) closes the account's events sockets opened with older tokens (4401).
+
+"Typing..." signals (api #98) are metadata too, for the DPIA and privacy notice: while a member types, the service relays
+"account X is typing" to the other members' open streams. It is held in memory only for the moment of delivery, never
+stored or logged, has no content and doesn't survive the connection. Observing parents (read-only) can't send it, but
+they see the kids' and the other writers' typing, like everything else in the chat (an oversight decision: if
+oversight is off for a kid, the parents are not in the chat and see nothing).

@@ -15,9 +15,10 @@ import type { Env } from "./env";
 import { handleHealth } from "./health";
 import { error, HttpError, isLoopback, json } from "./http";
 import { consume, purgeProcessedEvents } from "./membership";
-import { handleAck, handleFetch, handleSend, handleStream } from "./messages";
+import { handleAck, handleEvents, handleFetch, handleSend, handleStream } from "./messages";
 import { durableRooms } from "./room";
 
+export { AccountHub } from "./account-hub";
 export { ConversationRoom } from "./room";
 // Workers RPC for the calls service (its CHAT service binding); not reachable over HTTP.
 export { ChatMembership } from "./rpc";
@@ -37,7 +38,7 @@ const ROUTES: { method: string; pattern: RegExp; handler: Authed }[] = [
   {
     method: "POST",
     pattern: /^\/v1\/conversations$/,
-    handler: (r, env, c, _p, ctx) => handleCreate(r, env, c, ctx),
+    handler: (r, env, c, _p, ctx) => handleCreate(r, env, rooms(env), c, ctx),
   },
   { method: "GET", pattern: /^\/v1\/conversations$/, handler: (r, env, c) => handleList(r, env, c) },
   { method: "GET", pattern: /^\/v1\/contacts$/, handler: (_r, env, c) => handleContacts(env, c) },
@@ -72,6 +73,7 @@ const ROUTES: { method: string; pattern: RegExp; handler: Authed }[] = [
     pattern: /^\/v1\/conversations\/([^/]+)\/acks$/,
     handler: (r, env, c, [id]) => handleAck(r, env, c, id ?? ""),
   },
+  { method: "GET", pattern: /^\/v1\/events$/, handler: (r, env, c) => handleEvents(r, env, c) },
   {
     method: "GET",
     pattern: /^\/v1\/conversations\/([^/]+)\/stream$/,

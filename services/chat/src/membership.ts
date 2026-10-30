@@ -95,7 +95,7 @@ export function parseEvent(value: unknown): MembershipEvent | null {
     case "connection.kid_unshared":
       return ok(str(e.connectionId) && str(e.kidAccountId, ACCOUNT_ID));
     case "kid.oversight_changed":
-      return ok(str(e.kidAccountId, ACCOUNT_ID) && typeof e.enabled === "boolean");
+      return ok(dated(e) && str(e.kidAccountId, ACCOUNT_ID) && typeof e.enabled === "boolean");
     case "device.upserted": {
       const push = e.push as { provider?: unknown; token?: unknown } | null | undefined;
       const pushOk =
@@ -208,10 +208,15 @@ export async function applyEvent(env: Env, rooms: Rooms, event: MembershipEvent)
       return;
     case "kid.oversight_changed":
       // The kid's parents join or leave the kid's conversations as observers. When they join again, the kid's
-      // device re-seals the history to them (the server holds no plaintext to send).
+      // device re-seals the history to them (the server holds no plaintext to send). Ordered by occurredAt: a change
+      // older than the one that last wrote the row is ignored (delivery is unordered); reconciling is idempotent.
       await db
-        .prepare("INSERT OR REPLACE INTO kid_oversight (kid_account_id, enabled) VALUES (?1, ?2)")
-        .bind(event.kidAccountId, event.enabled ? 1 : 0)
+        .prepare(
+          `INSERT INTO kid_oversight (kid_account_id, enabled, occurred_at) VALUES (?1, ?2, ?3)
+           ON CONFLICT (kid_account_id) DO UPDATE SET enabled = excluded.enabled, occurred_at = excluded.occurred_at
+           WHERE excluded.occurred_at >= kid_oversight.occurred_at`,
+        )
+        .bind(event.kidAccountId, event.enabled ? 1 : 0, Date.parse(event.occurredAt))
         .run();
       await reconcileAll(env, rooms, await conversationsOf(env, [event.kidAccountId]));
       return;
@@ -278,6 +283,8 @@ export async function applyEvent(env: Env, rooms: Rooms, event: MembershipEvent)
         await rooms.forgetDevice(id, event.accountId, event.deviceId);
         await rooms.notify(id, "devices_changed", []);
       }
+      // Also when the account is in no conversation yet: the phone must not hear about the next one.
+      await rooms.forgetAccountDevice(event.accountId, event.deviceId);
       return;
     }
     case "account.deleted": {
@@ -306,6 +313,7 @@ export async function applyEvent(env: Env, rooms: Rooms, event: MembershipEvent)
       for (const id of await conversationsOf(env, [event.accountId])) {
         await rooms.revokeSessions(id, event.accountId, epoch);
       }
+      await rooms.revokeAccountSessions(event.accountId, epoch);
       return;
     }
   }

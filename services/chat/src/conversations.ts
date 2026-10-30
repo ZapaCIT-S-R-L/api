@@ -147,6 +147,7 @@ async function present(env: Env, conversation: ConversationRow, members: MemberR
 export async function handleCreate(
   request: Request,
   env: Env,
+  rooms: Rooms,
   caller: Caller,
   ctx: ExecutionContext,
 ): Promise<Response> {
@@ -212,6 +213,8 @@ export async function handleCreate(
     ]);
     if (inserted?.meta.changes === 1) break;
   }
+  // Only the winning create announces the conversation; callers finding it above return without announcing again.
+  for (const account of all) await rooms.conversationAdded(id, account);
   // A new group: the other writers' iPhones get the content-free alert (push.ts) so they learn it exists and fetch the
   // list, without anyone creating it locally. Observers aren't alerted (as for messages); with push off, a no-op.
   if (kind === "group") {
@@ -362,6 +365,7 @@ export async function reconcile(env: Env, rooms: Rooms, conversationId: string):
   for (const account of removed) await rooms.forgetAccount(conversationId, account);
   if (await purgeIfAbandoned(env, rooms, conversationId)) return;
   if (removed.length > 0 || added.length > 0) await rooms.notify(conversationId, "members_changed", removed);
+  for (const account of added) await rooms.conversationAdded(conversationId, account);
   if (close) await rooms.notify(conversationId, "conversation_closed", []);
 }
 
