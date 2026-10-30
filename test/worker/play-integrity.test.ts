@@ -1,8 +1,10 @@
 // Play Integrity on sign-in (Android): a standard integrity token in ZapaKid-Attestation whose requestHash is the
-// SHA-256 (hex) of the exact body. The server decodes it with Google's API (service account, OAuth JWT grant) and
-// checks the verdicts. Google's endpoints are served by the test with keys generated here.
+// SHA-256 (hex) of the exact body. The server decodes it with Google's API, keyless: it signs a short assertion with
+// its own key (CHAT_TOKEN_SIGNING_KEY, published at /.well-known/jwks.json), Google's STS trusts that issuer through
+// Workload Identity Federation, and the federated token impersonates the service account. Google's endpoints are
+// served by the test.
 import { env } from "cloudflare:workers";
-import { exportPKCS8, generateKeyPair, jwtVerify, type CryptoKey } from "jose";
+import { createLocalJWKSet, jwtVerify, type JSONWebKeySet } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../../src/index";
 import {
@@ -27,14 +29,15 @@ import { resetPlayIntegrityCache } from "../../src/play-integrity";
 const PACKAGE = "ro.zapakid.app";
 const CERT = "xYzSigningCertDigestBase64UrlNoPadding0123456";
 const SA_EMAIL = "play-integrity@zapakid-test.iam.gserviceaccount.com";
-const TOKEN_URL = "https://oauth2.googleapis.com/token";
+const WIF_AUDIENCE = "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/cloudflare/providers/api-test";
+const STS_URL = "https://sts.googleapis.com/v1/token";
+const IMPERSONATE_URL = `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${SA_EMAIL}:generateAccessToken`;
 const DECODE_URL = `https://playintegrity.googleapis.com/v1/${PACKAGE}:decodeIntegrityToken`;
 
 let google: TestIssuer;
 let apple: TestIssuer;
 let jwks: JwksStub;
-let saPublic: CryptoKey;
-let credentials: string;
+let issuerKeys: JSONWebKeySet;
 let verdicts: Map<string, unknown>;
 let tokenCalls: number;
 let decodeStatus: number;
@@ -45,18 +48,13 @@ beforeEach(async () => {
   google = await makeIssuer();
   apple = await makeIssuer();
   jwks = stubJwks([apple], [google]);
-  const { publicKey, privateKey } = await generateKeyPair("RS256", { extractable: true });
-  saPublic = publicKey;
-  credentials = JSON.stringify({
-    type: "service_account",
-    client_email: SA_EMAIL,
-    private_key: await exportPKCS8(privateKey),
-  });
+  issuerKeys = await (await worker.fetch(workerRequest("https://api.test/.well-known/jwks.json"), env)).json();
   verdicts = new Map();
   tokenCalls = 0;
   decodeStatus = 200;
   jwks.other = (url, init) => {
-    if (url === TOKEN_URL) return oauthToken(init);
+    if (url === STS_URL) return sts(init);
+    if (url === IMPERSONATE_URL) return impersonate(init);
     if (url === DECODE_URL) return decode(init);
     return undefined;
   };
@@ -66,22 +64,41 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-// Google's OAuth token endpoint: accepts only a JWT grant signed by the service account for Play Integrity.
-async function oauthToken(init: RequestInit | undefined): Promise<Response> {
+// Google's STS: trades an assertion from the API's own issuer (its published JWKS, the provider's audience,
+// subject "play-integrity") for a federated token.
+async function sts(init: RequestInit | undefined): Promise<Response> {
   tokenCalls++;
   const form = new URLSearchParams(init?.body as string);
-  if (form.get("grant_type") !== "urn:ietf:params:oauth:grant-type:jwt-bearer")
-    return new Response("bad grant", { status: 400 });
+  if (
+    form.get("grant_type") !== "urn:ietf:params:oauth:grant-type:token-exchange" ||
+    form.get("audience") !== WIF_AUDIENCE ||
+    form.get("subject_token_type") !== "urn:ietf:params:oauth:token-type:jwt" ||
+    form.get("requested_token_type") !== "urn:ietf:params:oauth:token-type:access_token"
+  )
+    return new Response("invalid_request", { status: 400 });
   try {
-    const { payload } = await jwtVerify(form.get("assertion") ?? "", saPublic, {
-      issuer: SA_EMAIL,
-      audience: TOKEN_URL,
+    const { payload } = await jwtVerify(form.get("subject_token") ?? "", createLocalJWKSet(issuerKeys), {
+      issuer: env.CHAT_TOKEN_ISSUER,
+      audience: `https:${WIF_AUDIENCE}`,
+      subject: "play-integrity",
+      maxTokenAge: "10m",
     });
-    if (payload.scope !== "https://www.googleapis.com/auth/playintegrity") throw new Error("scope");
+    if (!payload.exp || payload.exp - Date.now() / 1000 > 600) throw new Error("lives too long");
   } catch {
     return new Response("invalid_grant", { status: 400 });
   }
-  return Response.json({ access_token: "ya29.test-access-token", expires_in: 3600, token_type: "Bearer" });
+  return Response.json({ access_token: "federated-token", token_type: "Bearer", expires_in: 3600 });
+}
+
+// IAM Credentials: the federated principal may impersonate the service account, for the Play Integrity scope only.
+async function impersonate(init: RequestInit | undefined): Promise<Response> {
+  if (new Headers(init?.headers).get("authorization") !== "Bearer federated-token")
+    return new Response("unauthenticated", { status: 401 });
+  const { scope } = JSON.parse(init?.body as string) as { scope: string[] };
+  if (scope.join() !== "https://www.googleapis.com/auth/playintegrity")
+    return new Response("bad scope", { status: 400 });
+  const expireTime = new Date(Date.now() + 3600_000).toISOString();
+  return Response.json({ accessToken: "ya29.test-access-token", expireTime });
 }
 
 // Google's decodeIntegrityToken: the verdict the test registered for this token.
@@ -113,7 +130,8 @@ function verdict(requestHash: string, overrides: Record<string, unknown> = {}) {
 
 const REQUIRED = () => ({
   ATTESTATION_POLICY: "required",
-  PLAY_INTEGRITY_CREDENTIALS: credentials,
+  PLAY_INTEGRITY_WIF_AUDIENCE: WIF_AUDIENCE,
+  PLAY_INTEGRITY_SERVICE_ACCOUNT: SA_EMAIL,
   PLAY_CERT_SHA256: CERT,
 });
 
@@ -276,7 +294,29 @@ describe("policy required", () => {
       "/v1/auth/google",
       body,
       { "zapakid-attestation": token },
-      { ...REQUIRED(), PLAY_INTEGRITY_CREDENTIALS: undefined },
+      { ...REQUIRED(), PLAY_INTEGRITY_WIF_AUDIENCE: undefined },
+    );
+    await expectError(res, 503, "attestation_unavailable");
+  });
+
+  it("without the API's own signing key → 503 attestation_unavailable", async () => {
+    const { body, token } = await googleSignIn();
+    const res = await send(
+      "/v1/auth/google",
+      body,
+      { "zapakid-attestation": token },
+      { ...REQUIRED(), CHAT_TOKEN_SIGNING_KEY: undefined },
+    );
+    await expectError(res, 503, "attestation_unavailable");
+  });
+
+  it("Google refuses the federation (provider or binding missing) → 503 attestation_unavailable", async () => {
+    const { body, token } = await googleSignIn();
+    const res = await send(
+      "/v1/auth/google",
+      body,
+      { "zapakid-attestation": token },
+      { ...REQUIRED(), PLAY_INTEGRITY_WIF_AUDIENCE: WIF_AUDIENCE.replace("api-test", "other") },
     );
     await expectError(res, 503, "attestation_unavailable");
   });
@@ -338,7 +378,7 @@ describe("policy optional (local development only)", () => {
       "/v1/auth/google",
       body,
       { "zapakid-attestation": token },
-      { ...OPTIONAL(), PLAY_INTEGRITY_CREDENTIALS: undefined },
+      { ...OPTIONAL(), PLAY_INTEGRITY_WIF_AUDIENCE: undefined },
     );
     await expectError(res, 503, "attestation_unavailable");
   });
@@ -403,16 +443,22 @@ describe("health", () => {
   const health = (overrides: Record<string, unknown>) =>
     worker.fetch(workerRequest("https://api.test/health"), { ...env, ...overrides });
 
-  it("required without a service account → 503 naming PLAY_INTEGRITY_CREDENTIALS", async () => {
+  it("required without federation settings → 503 naming them", async () => {
     const res = await health({ ATTESTATION_POLICY: "required", PLAY_CERT_SHA256: CERT });
     expect(res.status).toBe(503);
-    expect(await res.text()).toContain("PLAY_INTEGRITY_CREDENTIALS");
+    const text = await res.text();
+    expect(text).toContain("PLAY_INTEGRITY_WIF_AUDIENCE");
+    expect(text).toContain("PLAY_INTEGRITY_SERVICE_ACCOUNT");
+  });
+
+  it("required without the API's signing key → 503 naming CHAT_TOKEN_SIGNING_KEY", async () => {
+    const res = await health({ ...REQUIRED(), CHAT_TOKEN_SIGNING_KEY: undefined });
+    expect(await res.text()).toContain("CHAT_TOKEN_SIGNING_KEY");
   });
 
   it("required without the signing certificate → 503 naming PLAY_CERT_SHA256", async () => {
     const res = await health({
-      ATTESTATION_POLICY: "required",
-      PLAY_INTEGRITY_CREDENTIALS: credentials,
+      ...REQUIRED(),
       PLAY_CERT_SHA256: "",
     });
     expect(await res.text()).toContain("PLAY_CERT_SHA256");
@@ -426,9 +472,19 @@ describe("health", () => {
     expect(await (await health({ ATTESTATION_POLICY: "maybe" })).text()).toContain("ATTESTATION_POLICY");
   });
 
-  it("required with everything set → 200, and the credentials never appear", async () => {
-    const res = await health(REQUIRED());
+  it("required with everything set → 200", async () => {
+    expect((await health(REQUIRED())).status).toBe(200);
+  });
+});
+
+// Google's WIF provider (issuer = CHAT_TOKEN_ISSUER) finds the API's public key through OIDC discovery.
+describe("OIDC discovery", () => {
+  it("names the issuer and its JWKS", async () => {
+    const res = await worker.fetch(workerRequest("https://api.test/.well-known/openid-configuration"), env);
     expect(res.status).toBe(200);
-    expect(await res.text()).not.toContain("PRIVATE KEY");
+    const doc = await res.json<Record<string, unknown>>();
+    expect(doc.issuer).toBe(env.CHAT_TOKEN_ISSUER);
+    expect(doc.jwks_uri).toBe(`${env.CHAT_TOKEN_ISSUER}/.well-known/jwks.json`);
+    expect(doc.id_token_signing_alg_values_supported).toEqual(["ES256"]);
   });
 });
