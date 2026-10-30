@@ -145,8 +145,9 @@ paths:
       operationId: createConversation
       summary: Start a 1:1 or group conversation (parents and kids).
       description: |
-        `members` are the other accounts (not the caller). One account → `direct`; a `direct` conversation with
-        the same two accounts that is still open is returned instead of creating a second one (`200`). The server
+        `members` are the other accounts (not the caller). One account → `direct`, more → `group`. An open
+        conversation with exactly the same accounts (caller plus `members`) that the caller hasn't deleted is
+        returned instead of creating a second one (`200`), also when two members create it at the same time. The server
         adds the parents of every kid's family. Every pair of families in the conversation must be connected, and
         every kid must be shared with every other family in it (`403 not_allowed` otherwise; the response doesn't
         say which account failed). Kids start conversations under the same rules: a kid reaches only their own
@@ -168,7 +169,7 @@ paths:
                   items: { $ref: "#/components/schemas/AccountId" }
       responses:
         "200":
-          description: The existing open direct conversation.
+          description: The existing open conversation with the same accounts.
           content: { application/json: { schema: { $ref: "#/components/schemas/Conversation" } } }
         "201":
           description: Created.

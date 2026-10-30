@@ -1,7 +1,7 @@
 // Conversations and the family rules: parents and kids start them, kids' parents read along as observers (unless
 // oversight is off for that kid), other families' kids only when shared through a connection.
 import { env } from "cloudflare:workers";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MAX_MEMBERS, MAX_OBSERVERS, MAX_REQUESTED_MEMBERS } from "../../src/conversations";
 import { usePushProvider, type PushTarget } from "../../src/push";
 import { noRooms } from "../../src/rooms";
@@ -348,6 +348,7 @@ describe("group create: dedupe and notify", () => {
         deviceId: 1,
         registrationId: 101,
         push: { provider: "apns", token: "alex-1" },
+        alertPush: { provider: "apns", token: "alex-alert-1" },
       },
       {
         type: "device.upserted",
@@ -362,6 +363,7 @@ describe("group create: dedupe and notify", () => {
         deviceId: 1,
         registrationId: 100,
         push: { provider: "apns", token: "mum-1" },
+        alertPush: { provider: "apns", token: "mum-alert-1" },
       },
     );
   });
@@ -390,14 +392,34 @@ describe("group create: dedupe and notify", () => {
     expect((await other.json<ConversationBody>()).id).not.toBe(first.id);
   });
 
-  it("a new group wakes the other writers' devices with push targets; observers and the creator are not woken", async () => {
+  // Alerts go to iPhones' alert tokens (#112); MARIA's phone has only an FCM wake-up token, so nothing is sent to it.
+  it("a new group alerts the other writers' iPhones; observers and the creator are not alerted", async () => {
     const res = await create(MUM, [ALEX, MARIA]);
     expect(res.status).toBe(201);
-    const woken = pushed
-      .flat()
-      .map((t) => t.accountId)
-      .sort();
-    expect(woken).toEqual([ALEX, MARIA]);
+    expect(pushed.flat().map((t) => [t.accountId, t.token])).toEqual([[ALEX, "alex-alert-1"]]);
+  });
+
+  // PR #106 review: two members create the same group at once. The second create commits while the first is between
+  // its lookup and its insert: one group persists, both get it, and only the winner notifies.
+  it("concurrent creates of the same group by two members make one group and one notification", async () => {
+    const batch = env.DB.batch.bind(env.DB);
+    let second = new Response(null, { status: 599 });
+    const spy = vi.spyOn(env.DB, "batch").mockImplementationOnce(async (statements) => {
+      second = await create(ALEX, [MUM, MARIA]);
+      return batch(statements);
+    });
+    const first = await create(MUM, [ALEX, MARIA]);
+    spy.mockRestore();
+    expect(second.status).toBe(201);
+    expect(first.status).toBe(200);
+    const winner = await second.json<ConversationBody>();
+    expect((await first.json<ConversationBody>()).id).toBe(winner.id);
+    const groups = await env.DB.prepare("SELECT id FROM conversations WHERE kind = 'group'").all<{ id: string }>();
+    expect(groups.results.map((r) => r.id)).toEqual([winner.id]);
+    const members = await env.DB.prepare("SELECT count(*) AS n FROM conversation_members").first<{ n: number }>();
+    expect(members?.n).toBe(winner.members.length);
+    expect(pushed).toHaveLength(1);
+    expect(pushed.flat().map((t) => t.accountId)).toEqual([MUM]);
   });
 
   it("a group found again does not wake anyone a second time", async () => {
