@@ -152,7 +152,11 @@ describe("graph changes and existing conversations", () => {
     after = await get(MUM, c.id);
     expect(memberIds(after as ConversationBody)).toEqual([ALEX, ANA, DAD, MARIA, MUM].sort());
     expect(after?.members.find((m) => m.accountId === MUM)?.role).toBe("observer");
-    expect(rooms.log).toEqual([`notify ${c.id} members_changed`]);
+    expect(rooms.log).toEqual([
+      `notify ${c.id} members_changed`,
+      `conversationAdded ${c.id} ${DAD}`,
+      `conversationAdded ${c.id} ${MUM}`,
+    ]);
   });
 
   // api #99 review: delivery is unordered, so an older oversight change must not overwrite a newer one.
@@ -364,12 +368,12 @@ describe("graph changes and existing conversations", () => {
     const c = await create(MUM, [ALEX]);
     const rooms = recordingRooms();
     await apply(rooms, { type: "account.sessions_revoked", accountId: MUM, epoch: 2 });
-    expect(rooms.log).toEqual([`revokeSessions ${c.id} ${MUM} 2`]);
+    expect(rooms.log).toEqual([`revokeSessions ${c.id} ${MUM} 2`, `revokeAccountSessions ${MUM} 2`]);
     expect(await revokedBefore(env, MUM)).toBe(2);
     // Out of order: an older event never lowers the epoch.
     await apply(rooms, { type: "account.sessions_revoked", accountId: MUM, epoch: 1 });
     expect(await revokedBefore(env, MUM)).toBe(2);
-    expect(rooms.log.at(-1)).toBe(`revokeSessions ${c.id} ${MUM} 2`);
+    expect(rooms.log.at(-1)).toBe(`revokeAccountSessions ${MUM} 2`);
     await apply(rooms, { type: "account.sessions_revoked", accountId: MUM, epoch: 3 });
     expect(await revokedBefore(env, MUM)).toBe(3);
     expect(await revokedBefore(env, DAD)).toBe(0);
