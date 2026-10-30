@@ -8,11 +8,15 @@ import { durableRooms, roomOf } from "../../src/room";
 import {
   ALEX,
   ANA,
+  apply,
   as,
+  call,
   DAD,
   event,
+  MARIA,
   makeIssuer,
   MUM,
+  recordingRooms,
   seedFamilies,
   stubJwks,
   tokenFor,
@@ -489,5 +493,107 @@ describe("GET /v1/conversations/{id}/stream", () => {
     // The object's alarm closes it at the token's expiry; the app reconnects with a fresh token.
     await new Promise((resolve) => setTimeout(resolve, 1600));
     expect(alex.closed).toEqual([{ code: 4401 }]);
+  });
+});
+
+// api #100 (ios #65): a phone learns about a new conversation while the app is open, so it can open the conversation's
+// stream and get the first messages (and incoming-call rings) without a restart.
+describe("GET /v1/events", () => {
+  async function listen(account: string, dev = 1) {
+    const res = await as(await tok(account, dev), "/v1/events", { headers: { upgrade: "websocket" } });
+    expect(res.status).toBe(101);
+    const ws = res.webSocket;
+    if (!ws) throw new Error("no websocket");
+    const frames: { type: string; conversationId?: string }[] = [];
+    ws.addEventListener("message", (m) => frames.push(JSON.parse(m.data as string) as (typeof frames)[number]));
+    ws.accept();
+    return { ws, frames };
+  }
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 50));
+
+  it("tells every member (observers too) when a conversation is created, and nobody else", async () => {
+    const alex = await listen(ALEX);
+    const dad = await listen(DAD);
+    const ana = await listen(ANA);
+    const c = await conversation(MUM, [ALEX]);
+    await settle();
+    expect(alex.frames).toEqual([{ type: "conversation_added", conversationId: c.id }]);
+    expect(dad.frames).toEqual([{ type: "conversation_added", conversationId: c.id }]);
+    expect(ana.frames).toEqual([]);
+    for (const l of [alex, dad, ana]) l.ws.close();
+  });
+
+  it("an existing 1:1 (200) is not announced again", async () => {
+    await conversation(MUM, [ALEX]);
+    const alex = await listen(ALEX);
+    await conversation(MUM, [ALEX]);
+    await settle();
+    expect(alex.frames).toEqual([]);
+    alex.ws.close();
+  });
+
+  it("a parent added as observer later is told too", async () => {
+    const c = await conversation(ALEX, [MARIA]);
+    const rooms = recordingRooms();
+    await apply(rooms, { type: "family.member_added", familyId: "fam1", accountId: "acc_step", role: "parent" });
+    expect(rooms.log).toContain(`conversationAdded ${c.id} acc_step`);
+  });
+
+  // Review of #100: after logout-all an events socket opened with an older token is closed (4401), a newer one stays.
+  it("account.sessions_revoked closes the account's older events sockets (4401), not newer ones", async () => {
+    const open = async (sep: number) => {
+      const token = await issuer.sign(
+        { iss: "http://localhost:8787", aud: "chat.localhost", sub: MUM, dev: 1, role: "parent", sep },
+        { lifetime: 600 },
+      );
+      const res = await as(token, "/v1/events", { headers: { upgrade: "websocket" } });
+      const ws = res.webSocket;
+      if (!ws) throw new Error("no websocket");
+      const closed: number[] = [];
+      ws.addEventListener("close", (e) => closed.push(e.code));
+      ws.accept();
+      return { ws, closed };
+    };
+    const older = await open(0);
+    const newer = await open(2);
+    await applyEvent(env, durableRooms(env), event({ type: "account.sessions_revoked", accountId: MUM, epoch: 2 }));
+    await settle();
+    expect(older.closed).toEqual([4401]);
+    expect(newer.closed).toEqual([]);
+    newer.ws.close();
+  });
+
+  // Review of #100: a removed (lost or revoked) phone loses its events socket at once, even when the account is in no
+  // conversation yet, and gets no later frames; the account's other phones keep theirs.
+  it("device.removed closes that device's events socket (4401) and no other", async () => {
+    const open = async (dev: number) => {
+      const l = await listen(MUM, dev);
+      const closed: number[] = [];
+      l.ws.addEventListener("close", (e) => closed.push(e.code));
+      return { ...l, closed };
+    };
+    await applyEvent(
+      env,
+      durableRooms(env),
+      event({ type: "device.upserted", accountId: MUM, deviceId: 2, registrationId: 200 }),
+    );
+    const lost = await open(1);
+    const kept = await open(2);
+    await applyEvent(env, durableRooms(env), event({ type: "device.removed", accountId: MUM, deviceId: 1 }));
+    await settle();
+    expect(lost.closed).toEqual([4401]);
+    expect(kept.closed).toEqual([]);
+
+    // Someone else starts a conversation with MUM: only the kept phone hears about it.
+    const c = await conversation(DAD, [MUM]);
+    await settle();
+    expect(lost.frames).toEqual([]);
+    expect(kept.frames).toEqual([{ type: "conversation_added", conversationId: c.id }]);
+    kept.ws.close();
+  });
+
+  it("not a WebSocket: 426; no token: 401", async () => {
+    expect((await as(await tok(MUM), "/v1/events")).status).toBe(426);
+    expect((await call("/v1/events", { headers: { upgrade: "websocket" } })).status).toBe(401);
   });
 });

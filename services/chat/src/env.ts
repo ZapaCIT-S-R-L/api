@@ -3,6 +3,8 @@ export interface Env {
   DB: D1Database;
   // One Durable Object per conversation: delivery copies and the stream (src/room.ts).
   ROOMS: DurableObjectNamespace<import("./room").ConversationRoom>;
+  // One Durable Object per account: the events stream (src/account-hub.ts).
+  ACCOUNTS: DurableObjectNamespace<import("./account-hub").AccountHub>;
   // "eu" when deployed: the conversation objects live in the EU jurisdiction.
   ROOMS_JURISDICTION?: string;
   // Per account per minute: conversations started. Per device per minute: sends, stream connects.
