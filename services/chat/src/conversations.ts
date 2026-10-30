@@ -13,6 +13,7 @@ import { allowedTogether, contactsOf, loadFamilies, missingObservers, observersO
 import { empty, HttpError, invalid, json, notAllowed, notFound } from "./http";
 import { purgeConversationAttachments } from "./attachments";
 import { limit } from "./limits";
+import { pushProvider, pushTargets } from "./push";
 import type { Rooms } from "./rooms";
 
 export const MAX_REQUESTED_MEMBERS = 31;
@@ -143,7 +144,13 @@ async function present(env: Env, conversation: ConversationRow, members: MemberR
   };
 }
 
-export async function handleCreate(request: Request, env: Env, rooms: Rooms, caller: Caller): Promise<Response> {
+export async function handleCreate(
+  request: Request,
+  env: Env,
+  rooms: Rooms,
+  caller: Caller,
+  ctx: ExecutionContext,
+): Promise<Response> {
   await limit(env.CREATE_LIMITER, `create:${caller.accountId}`);
   const body = await readJson(request);
   onlyFields(body, ["members"]);
@@ -173,31 +180,59 @@ export async function handleCreate(request: Request, env: Env, rooms: Rooms, cal
 
   const kind = members.length === 1 ? "direct" : "group";
   const directKey = kind === "direct" ? [...requested].sort().join(" ") : null;
-  if (directKey) {
-    const existing = await env.DB.prepare(
-      `SELECT c.id, c.kind, c.state, c.created_at, c.closed_at FROM conversations c
-       JOIN conversation_members m ON m.conversation_id = c.id AND m.account_id = ?2
-       WHERE c.direct_key = ?1 AND c.state = 'open' AND m.deleted_at IS NULL LIMIT 1`,
-    )
-      .bind(directKey, caller.accountId)
-      .first<ConversationRow>();
-    if (existing) return json(await present(env, existing, await membersOf(env, existing.id)), 200);
-  }
-
+  // A group with exactly the same members (caller plus requested) is the open one that already exists (Stefan,
+  // 2026-10-29: a second copy was made when the other members had not yet seen the first).
+  const groupKey = kind === "group" ? [...requested].sort().join(" ") : null;
+  const existingKey = directKey ?? groupKey;
+  const column = directKey ? "direct_key" : "group_key";
+  // The open conversation with this key that the caller is (still) in. Used as the lookup, and as the insert's guard
+  // in the same transaction, so two creates at once make one conversation: the later one finds the earlier.
+  const openWithKey = `SELECT c.id, c.kind, c.state, c.created_at, c.closed_at FROM conversations c
+    JOIN conversation_members m ON m.conversation_id = c.id AND m.account_id = ?2
+    WHERE c.${column} = ?1 AND c.state = 'open' AND m.deleted_at IS NULL LIMIT 1`;
   const id = randomId("c");
   const now = Date.now();
   const observerSet = new Set(observers);
-  await env.DB.batch([
-    env.DB.prepare(
-      "INSERT INTO conversations (id, kind, direct_key, state, created_by, created_at) VALUES (?1, ?2, ?3, 'open', ?4, ?5)",
-    ).bind(id, kind, directKey, caller.accountId, now),
-    ...all.map((account) =>
+  // A losing insert means another create committed first; its conversation is then found. A retry only when that
+  // one was closed or left in between.
+  for (let attempt = 0; ; attempt++) {
+    const existing = await env.DB.prepare(openWithKey).bind(existingKey, caller.accountId).first<ConversationRow>();
+    if (existing) return json(await present(env, existing, await membersOf(env, existing.id)), 200);
+    if (attempt === 3) throw new Error("conversation create kept losing to concurrent changes");
+    const [inserted] = await env.DB.batch([
       env.DB.prepare(
-        "INSERT INTO conversation_members (conversation_id, account_id, role, guardian, joined_at) VALUES (?1, ?2, ?3, ?4, ?5)",
-      ).bind(id, account, roleOf(graph, account), observerSet.has(account) ? 1 : 0, now),
-    ),
-  ]);
+        `INSERT INTO conversations (id, kind, direct_key, group_key, state, created_by, created_at)
+         SELECT ?3, ?4, ?5, ?6, 'open', ?2, ?7 WHERE NOT EXISTS (${openWithKey})`,
+      ).bind(existingKey, caller.accountId, id, kind, directKey, groupKey, now),
+      ...all.map((account) =>
+        env.DB.prepare(
+          `INSERT INTO conversation_members (conversation_id, account_id, role, guardian, joined_at)
+           SELECT ?1, ?2, ?3, ?4, ?5 WHERE EXISTS (SELECT 1 FROM conversations WHERE id = ?1)`,
+        ).bind(id, account, roleOf(graph, account), observerSet.has(account) ? 1 : 0, now),
+      ),
+    ]);
+    if (inserted?.meta.changes === 1) break;
+  }
+  // Only the winning create announces the conversation; callers finding it above return without announcing again.
   for (const account of all) await rooms.conversationAdded(id, account);
+  // A new group: the other writers' iPhones get the content-free alert (push.ts) so they learn it exists and fetch the
+  // list, without anyone creating it locally. Observers aren't alerted (as for messages); with push off, a no-op.
+  if (kind === "group") {
+    const writers = all.filter((a) => a !== caller.accountId && !observerSet.has(a));
+    ctx.waitUntil(
+      devicesOf(env, writers)
+        .then((byAccount) =>
+          pushTargets(
+            env,
+            [...byAccount].flatMap(([accountId, devices]) => devices.map((d) => ({ accountId, deviceId: d.deviceId }))),
+          ),
+        )
+        .then((targets) => pushProvider(env).wake(targets))
+        .catch((e: unknown) => {
+          console.error(JSON.stringify({ msg: "push_failed", err: String(e) }));
+        }),
+    );
+  }
   const conversation: ConversationRow = { id, kind, state: "open", created_at: now, closed_at: null };
   return json(await present(env, conversation, await membersOf(env, id)), 201);
 }
