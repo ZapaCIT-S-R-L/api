@@ -177,6 +177,23 @@ export async function handleLogoutAll(request: Request, env: Env): Promise<Respo
 export async function handleLogout(request: Request, env: Env): Promise<Response> {
   const session = await authenticate(request, env);
   if (!session) return unauthorized();
-  await env.DB.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(session.tokenHash).run();
+  const at = new Date().toISOString();
+  await env.DB.batch([
+    // Read the device and record the clears in the same transaction as logout. Other phones keep their targets.
+    env.DB.prepare(
+      `INSERT INTO membership_outbox (body, created_at)
+       SELECT json_object('v', 1, 'id', ?1, 'type', 'device.upserted', 'occurredAt', ?2,
+         'accountId', account_id, 'deviceId', device_id, 'registrationId', registration_id,
+         'push', NULL, 'alertPush', NULL), ?2
+       FROM devices WHERE account_id = ?3 AND device_id = ?4
+         AND EXISTS (SELECT 1 FROM sessions WHERE token_hash = ?5)`,
+    ).bind(crypto.randomUUID(), at, session.parentId, session.deviceId, session.tokenHash),
+    env.DB.prepare(
+      `UPDATE devices SET push_provider = NULL, push_token = NULL, alert_push_token = NULL
+       WHERE account_id = ? AND device_id = ? AND EXISTS (SELECT 1 FROM sessions WHERE token_hash = ?)`,
+    ).bind(session.parentId, session.deviceId, session.tokenHash),
+    env.DB.prepare("DELETE FROM sessions WHERE token_hash = ?").bind(session.tokenHash),
+  ]);
+  await flushMembershipEvents(env);
   return empty(204);
 }
