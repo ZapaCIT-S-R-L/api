@@ -704,3 +704,80 @@ describe("deleting a family removes its kids' devices (no foreign key to parents
     expect(await count("one_time_prekeys")).toBe(0);
   });
 });
+
+describe("replacing a phone revokes the old phone when the new one pairs", () => {
+  it("replacePhones: redeeming the new code signs the old phone out and removes its device, with device.removed", async () => {
+    const { parent, familyId, kidId } = await family("ana");
+    const old = await pairKid(parent.auth, familyId, kidId);
+    await registered(old.auth, deviceKeys());
+    expect(await count("devices")).toBe(1);
+
+    const created = await send(`/v1/families/${familyId}/kids/${kidId}/pairing`, parent.auth, { replacePhones: true });
+    expect(created.status).toBe(201);
+    const { code } = await created.json<{ code: string }>();
+    // Old phone still works until the new one pairs.
+    expect((await get("/v1/families", old.auth)).status).toBe(200);
+    const redeemed = await send("/v1/pairing/redeem", {}, { code });
+    expect(redeemed.status).toBe(200);
+    const fresh = await redeemed.json<{ session: { token: string } }>();
+
+    expect((await get("/v1/families", old.auth)).status).toBe(401);
+    expect((await get("/v1/families", bearer(fresh.session.token))).status).toBe(200);
+    expect(await count("devices")).toBe(0);
+    expect(await count("kid_sessions")).toBe(1);
+    const removed = (await deviceEvents()).filter((e) => e.type === "device.removed");
+    expect(removed.map((e) => [e.accountId, e.deviceId])).toEqual([[kidId, 1]]);
+  });
+
+  it("without replacePhones the other phone stays paired (the device too)", async () => {
+    const { parent, familyId, kidId } = await family("ana");
+    const first = await pairKid(parent.auth, familyId, kidId);
+    await registered(first.auth, deviceKeys());
+    await pairKid(parent.auth, familyId, kidId);
+    expect((await get("/v1/families", first.auth)).status).toBe(200);
+    expect(await count("devices")).toBe(1);
+    expect(await count("kid_sessions")).toBe(2);
+  });
+
+  it("removing a kid signs out and removes every phone; the family gets member_removed and account.deleted", async () => {
+    const { parent, familyId, kidId } = await family("ana");
+    const one = await pairKid(parent.auth, familyId, kidId);
+    const two = await pairKid(parent.auth, familyId, kidId);
+    const identityKey = ec();
+    await registered(one.auth, deviceKeys(identityKey));
+    await registered(two.auth, deviceKeys(identityKey));
+    const res = await send(`/v1/families/${familyId}/kids/${kidId}`, parent.auth, undefined, "DELETE");
+    expect(res.status).toBe(204);
+    expect((await get("/v1/families", one.auth)).status).toBe(401);
+    expect((await get("/v1/families", two.auth)).status).toBe(401);
+    expect(await count("devices")).toBe(0);
+    expect(await count("kid_sessions")).toBe(0);
+    expect(await count("kids")).toBe(0);
+    const types = (await outbox()).map((e) => e.type);
+    expect(types).toContain("family.member_removed");
+    expect(types).toContain("account.deleted");
+    expect((await deviceEvents()).filter((e) => e.type === "device.removed")).toHaveLength(2);
+  });
+
+  it("removing a parent (DELETE .../parents/{accountId}) removes that parent's devices, with device.removed", async () => {
+    const { parent, familyId } = await family("ana");
+    const bob = await signInParent(apple, "bob", "Bob");
+    expect(
+      (
+        await send("/v1/families/join", bob.auth, {
+          code: (
+            await (await send(`/v1/families/${familyId}/parents/invitations`, parent.auth)).json<{ code: string }>()
+          ).code,
+        })
+      ).status,
+    ).toBe(200);
+    await registered(bob.auth, deviceKeys());
+    expect(await count("devices")).toBe(1);
+    const res = await send(`/v1/families/${familyId}/parents/${bob.id}`, parent.auth, undefined, "DELETE");
+    expect(res.status).toBe(204);
+    expect(await count("devices")).toBe(0);
+    expect(await count("sessions")).toBe(1);
+    const removed = (await deviceEvents()).filter((e) => e.type === "device.removed");
+    expect(removed.map((e) => e.accountId)).toEqual([bob.id]);
+  });
+});

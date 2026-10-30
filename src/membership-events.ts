@@ -58,8 +58,12 @@ export function membershipEvent(
 
 // The outbox insert for an account.sessions_revoked event, to put in the batch right after the statement that
 // increments parents.session_epoch: `epoch` is read from the row in the same transaction, so the event always
-// carries the epoch the increment produced.
-export function sessionsRevokedEvent(env: Env, accountId: string): D1PreparedStatement {
+// carries the epoch the increment produced. `onlyIf` as for membershipEvent.
+export function sessionsRevokedEvent(
+  env: Env,
+  accountId: string,
+  onlyIf?: { sql: string; binds: unknown[] },
+): D1PreparedStatement {
   const now = new Date().toISOString();
   const body = JSON.stringify({
     v: 1,
@@ -70,8 +74,9 @@ export function sessionsRevokedEvent(env: Env, accountId: string): D1PreparedSta
     occurredAt: now,
   });
   return env.DB.prepare(
-    "INSERT INTO membership_outbox (body, created_at) SELECT json_set(?, '$.epoch', session_epoch), ? FROM parents WHERE id = ?",
-  ).bind(body, now, accountId);
+    `INSERT INTO membership_outbox (body, created_at) SELECT json_set(?, '$.epoch', session_epoch), ? FROM parents
+     WHERE id = ?${onlyIf ? ` AND (${onlyIf.sql})` : ""}`,
+  ).bind(body, now, accountId, ...(onlyIf?.binds ?? []));
 }
 
 // A random UUID (version 4) in SQL, evaluated per row, for events written by INSERT ... SELECT.

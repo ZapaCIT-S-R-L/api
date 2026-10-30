@@ -7,14 +7,15 @@ import { randomBase64Url, sha256Hex } from "./crypto";
 import type { Env } from "./env";
 import { empty, error, json } from "./http";
 import { handleListKidSessions, handleRevokeKidSession } from "./kid-sessions";
-import { flushMembershipEvents, membershipEvent } from "./membership-events";
+import { deviceRemovedEvents, flushMembershipEvents, membershipEvent, sessionsRevokedEvent } from "./membership-events";
 import { handleCreatePairing, handleUnpair, kidInParentsFamily, revokeKidPhones } from "./pairing";
-import { authenticate } from "./sessions";
+import { authenticate, type Session } from "./sessions";
 
 export const INVITATION_TTL_SECONDS = 72 * 3600;
 export const MAX_OPEN_INVITATIONS = 5;
 export const MAX_KIDS = 12;
 const INVITATION_PATTERN = /^zki_[A-Za-z0-9_-]{43}$/;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const AVATAR_PATTERN = /^[a-z0-9-]{1,32}$/;
 // Control characters, and line/paragraph separators: names are shown on one line.
 const CONTROL = /[\p{Cc}\u2028\u2029]/u;
@@ -55,6 +56,11 @@ export async function routeFamilies(request: Request, env: Env, path: string): P
   }
   if ((match = /^\/v1\/families\/([^/]+)\/parents\/invitations$/.exec(path))) {
     return request.method === "POST" ? handleInvite(request, env, match[1] ?? "") : methodNotAllowed();
+  }
+  if ((match = /^\/v1\/families\/([^/]+)\/parents\/([^/]+)$/.exec(path))) {
+    return request.method === "DELETE"
+      ? handleRemoveParent(request, env, match[1] ?? "", match[2] ?? "")
+      : error(405, "method_not_allowed", "Use DELETE.", { allow: "DELETE" });
   }
   if ((match = /^\/v1\/families\/([^/]+)\/kids\/([^/]+)\/pairing$/.exec(path))) {
     const [, familyId = "", kidId = ""] = match;
@@ -229,6 +235,15 @@ async function handleInvite(request: Request, env: Env, familyId: string): Promi
   const session = await authenticate(request, env);
   if (!session) return unauthorized();
   if (!(await memberFamily(env, session.parentId, familyId))) return notFound();
+  // { replaces }: the code replaces the phone of that parent of the family (it's joined by that parent only).
+  const body = await optionalJson(request);
+  onlyFields(body, ["replaces"], "the body");
+  let replaces: string | null = null;
+  if (body.replaces !== undefined && body.replaces !== null) {
+    if (typeof body.replaces !== "string" || !UUID.test(body.replaces)) throw invalid("replaces must be a parent id.");
+    if (!(await memberFamily(env, body.replaces, familyId))) return notFound();
+    replaces = body.replaces;
+  }
 
   const now = new Date();
   const nowIso = now.toISOString();
@@ -244,9 +259,9 @@ async function handleInvite(request: Request, env: Env, familyId: string): Promi
   const code = `zki_${randomBase64Url(32)}`;
   const expiresAt = new Date(now.getTime() + INVITATION_TTL_SECONDS * 1000).toISOString();
   await env.DB.prepare(
-    "INSERT INTO family_invitations (code_hash, family_id, created_by, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+    "INSERT INTO family_invitations (code_hash, family_id, created_by, created_at, expires_at, replaces_account_id) VALUES (?, ?, ?, ?, ?, ?)",
   )
-    .bind(await sha256Hex(code), familyId, session.parentId, nowIso, expiresAt)
+    .bind(await sha256Hex(code), familyId, session.parentId, nowIso, expiresAt, replaces)
     .run();
   return json({ code, expiresAt }, 201);
 }
@@ -264,16 +279,28 @@ async function handleJoinFamily(request: Request, env: Env): Promise<Response> {
   const gone = () => error(410, "invitation_invalid", "This invitation is unknown, expired or already used.");
 
   const invitation = await env.DB.prepare(
-    "SELECT family_id FROM family_invitations WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?",
+    "SELECT family_id, replaces_account_id FROM family_invitations WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?",
   )
     .bind(codeHash, nowIso)
-    .first<{ family_id: string }>();
+    .first<{ family_id: string; replaces_account_id: string | null }>();
   if (!invitation) {
-    // Already a member through this (used) code: answer as for a repeat, so a retried join doesn't fail.
-    const used = await env.DB.prepare("SELECT family_id FROM family_invitations WHERE code_hash = ? AND used_by = ?")
+    // Still a member through this (used) code: answer as for a repeat, so a retried join doesn't fail. A used code
+    // never grants anything itself: once the parent has left or been removed it is just an unknown code.
+    const used = await env.DB.prepare(
+      `SELECT fi.family_id FROM family_invitations fi
+       JOIN family_parents fp ON fp.family_id = fi.family_id AND fp.parent_id = fi.used_by
+       WHERE fi.code_hash = ? AND fi.used_by = ?`,
+    )
       .bind(codeHash, session.parentId)
       .first<{ family_id: string }>();
     return used ? json(await loadFamily(env, used.family_id)) : gone();
+  }
+
+  if (invitation.replaces_account_id) {
+    if (invitation.replaces_account_id !== session.parentId) {
+      return error(403, "invitation_for_other_account", "This code is for another parent's new phone.");
+    }
+    return replacePhone(env, session, invitation.family_id, codeHash, nowIso);
   }
 
   const current = await familyIdOf(env, session.parentId);
@@ -291,23 +318,15 @@ async function handleJoinFamily(request: Request, env: Env): Promise<Response> {
   }
 
   // One transaction: use up the code (only if still open), leave the empty family, join. The last two only run
-  // when this request is the one that used the code.
-  const usedByMe = "EXISTS (SELECT 1 FROM family_invitations WHERE code_hash = ? AND used_by = ? AND used_at = ?)";
-  const onlyIfUsedByMe = { sql: usedByMe, binds: [codeHash, session.parentId, nowIso] };
+  // when this request is the one that used the code (its own claim id, unique per request).
+  const { claim: claimCode, onlyIfUsedByMe } = claimInvitation(env, session, codeHash, nowIso);
+  const usedByMe = onlyIfUsedByMe.sql;
   const [claim] = await env.DB.batch([
-    env.DB.prepare(
-      `UPDATE family_invitations SET used_at = ?, used_by = ?
-       WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?`,
-    ).bind(nowIso, session.parentId, codeHash, nowIso),
-    env.DB.prepare(`DELETE FROM families WHERE id = ? AND ${usedByMe}`).bind(
-      current ?? "",
-      codeHash,
-      session.parentId,
-      nowIso,
-    ),
+    claimCode,
+    env.DB.prepare(`DELETE FROM families WHERE id = ? AND ${usedByMe}`).bind(current ?? "", ...onlyIfUsedByMe.binds),
     env.DB.prepare(
       `INSERT INTO family_parents (family_id, parent_id, joined_at) SELECT ?, ?, ? WHERE ${usedByMe}`,
-    ).bind(invitation.family_id, session.parentId, nowIso, codeHash, session.parentId, nowIso),
+    ).bind(invitation.family_id, session.parentId, nowIso, ...onlyIfUsedByMe.binds),
     ...(current
       ? [
           membershipEvent(
@@ -326,6 +345,119 @@ async function handleJoinFamily(request: Request, env: Env): Promise<Response> {
   if ((claim?.meta.changes ?? 0) !== 1) return gone();
   await flushMembershipEvents(env);
   return json(await loadFamily(env, invitation.family_id));
+}
+
+// The statement that uses up an open invitation code for this request, and the SQL condition (with its binds) that
+// holds only when this request's claim is the one that used it: a random claim id per request, so two redemptions in
+// the same millisecond by the same parent can't both match. The code is claimed only while its creator (and, for a
+// replacement code, the parent it replaces) is still a parent of the family, checked in the same statement, so a
+// code that raced its creator's removal can't let anyone in.
+function claimInvitation(
+  env: Env,
+  session: Session,
+  codeHash: string,
+  nowIso: string,
+): { claim: D1PreparedStatement; onlyIfUsedByMe: { sql: string; binds: unknown[] } } {
+  const claimId = crypto.randomUUID();
+  return {
+    claim: env.DB.prepare(
+      `UPDATE family_invitations SET used_at = ?, used_by = ?, claim_id = ?
+       WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?
+         AND EXISTS (SELECT 1 FROM family_parents fp
+                     WHERE fp.family_id = family_invitations.family_id AND fp.parent_id = family_invitations.created_by)
+         AND (replaces_account_id IS NULL OR EXISTS (SELECT 1 FROM family_parents fp
+              WHERE fp.family_id = family_invitations.family_id AND fp.parent_id = family_invitations.replaces_account_id))`,
+    ).bind(nowIso, session.parentId, claimId, codeHash, nowIso),
+    onlyIfUsedByMe: {
+      sql: "EXISTS (SELECT 1 FROM family_invitations WHERE code_hash = ? AND claim_id = ?)",
+      binds: [codeHash, claimId],
+    },
+  };
+}
+
+// A replacement code, redeemed by the parent it replaces on the new phone: the other sessions and devices of the
+// parent go (device.removed for each), the current session stays. One transaction; the code is used up only here.
+async function replacePhone(
+  env: Env,
+  session: Session,
+  familyId: string,
+  codeHash: string,
+  nowIso: string,
+): Promise<Response> {
+  const { claim: claimCode, onlyIfUsedByMe } = claimInvitation(env, session, codeHash, nowIso);
+  const usedByMe = onlyIfUsedByMe.sql;
+  const claimed = onlyIfUsedByMe.binds;
+  const [claim] = await env.DB.batch([
+    claimCode,
+    deviceRemovedEvents(env, `account_id = ? AND (device_id IS NOT ?) AND ${usedByMe}`, [
+      session.parentId,
+      session.deviceId,
+      ...claimed,
+    ]),
+    env.DB.prepare(`DELETE FROM devices WHERE account_id = ? AND (device_id IS NOT ?) AND ${usedByMe}`).bind(
+      session.parentId,
+      session.deviceId,
+      ...claimed,
+    ),
+    env.DB.prepare(`DELETE FROM sessions WHERE parent_id = ? AND token_hash != ? AND ${usedByMe}`).bind(
+      session.parentId,
+      session.tokenHash,
+      ...claimed,
+    ),
+  ]);
+  if ((claim?.meta.changes ?? 0) !== 1) {
+    return error(410, "invitation_invalid", "This invitation is unknown, expired or already used.");
+  }
+  await flushMembershipEvents(env);
+  return json(await loadFamily(env, familyId));
+}
+
+// DELETE /v1/families/{familyId}/parents/{accountId}: a parent removes another parent (not themselves, and never the
+// last parent). The removed parent's sessions and devices go; their chat tokens stop (sessions_revoked, device.removed);
+// family.member_removed lets the chat service take them out of the family's conversations. The open codes they made
+// (invitations, kid pairing, connection) and replacement codes for their phone go too.
+async function handleRemoveParent(request: Request, env: Env, familyId: string, accountId: string): Promise<Response> {
+  const session = await authenticate(request, env);
+  if (!session) return unauthorized();
+  if (!(await memberFamily(env, session.parentId, familyId))) return notFound();
+  if (accountId === session.parentId) {
+    return error(409, "cannot_remove_self", "You can't remove yourself from the family.");
+  }
+  if (!(await memberFamily(env, accountId, familyId))) return notFound();
+
+  // Every statement is guarded by the same condition: the target is a member and another parent stays. The membership
+  // row is deleted last, so the guards hold for the statements before it.
+  const guard = `EXISTS (SELECT 1 FROM family_parents WHERE family_id = ? AND parent_id = ?)
+    AND (SELECT count(*) FROM family_parents WHERE family_id = ?) > 1`;
+  const guarded = [familyId, accountId, familyId];
+  const results = await env.DB.batch([
+    deviceRemovedEvents(env, `account_id = ? AND ${guard}`, [accountId, ...guarded]),
+    env.DB.prepare(`DELETE FROM devices WHERE account_id = ? AND ${guard}`).bind(accountId, ...guarded),
+    env.DB.prepare(`DELETE FROM sessions WHERE parent_id = ? AND ${guard}`).bind(accountId, ...guarded),
+    env.DB.prepare(`UPDATE parents SET session_epoch = session_epoch + 1 WHERE id = ? AND ${guard}`).bind(
+      accountId,
+      ...guarded,
+    ),
+    sessionsRevokedEvent(env, accountId, { sql: guard, binds: guarded }),
+    membershipEvent(env, { type: "family.member_removed", familyId, accountId }, { sql: guard, binds: guarded }),
+    env.DB.prepare(
+      `DELETE FROM family_invitations WHERE family_id = ? AND used_at IS NULL
+       AND (created_by = ? OR replaces_account_id = ?) AND ${guard}`,
+    ).bind(familyId, accountId, accountId, ...guarded),
+    env.DB.prepare(
+      `DELETE FROM kid_pairings WHERE family_id = ? AND created_by = ? AND used_at IS NULL AND ${guard}`,
+    ).bind(familyId, accountId, ...guarded),
+    env.DB.prepare(
+      `DELETE FROM connection_invitations WHERE family_id = ? AND created_by = ? AND used_at IS NULL AND ${guard}`,
+    ).bind(familyId, accountId, ...guarded),
+    env.DB.prepare(
+      `DELETE FROM family_parents WHERE family_id = ? AND parent_id = ? AND ${guard} RETURNING parent_id`,
+    ).bind(familyId, accountId, ...guarded),
+  ]);
+  // RETURNING: the row is gone (not a race with another removal), so the guard held.
+  if (!results.at(-1)?.results.length) return error(409, "last_parent", "A family keeps at least one parent.");
+  await flushMembershipEvents(env);
+  return empty(204);
 }
 
 async function handleAddKid(request: Request, env: Env, familyId: string): Promise<Response> {
