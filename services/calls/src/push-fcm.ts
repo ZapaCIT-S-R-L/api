@@ -140,9 +140,12 @@ async function send(
 
 export function fcmProvider(config: FcmEnv): PushProvider {
   async function deliver(call: RingingCall, data: Record<string, string>): Promise<void> {
-    const tokens = call.to.flatMap((t) =>
-      t.push?.provider === "fcm" && DEVICE_TOKEN.test(t.push.token) ? [t.push.token] : [],
-    );
+    // One push per token: a phone listed on two device rows must not ring twice, nor be told to stop twice.
+    const tokens = [
+      ...new Set(
+        call.to.flatMap((t) => (t.push?.provider === "fcm" && DEVICE_TOKEN.test(t.push.token) ? [t.push.token] : [])),
+      ),
+    ];
     if (tokens.length === 0) return;
     const credentials = parseCredentials(config.FCM_CREDENTIALS_JSON);
     if (!credentials) {
