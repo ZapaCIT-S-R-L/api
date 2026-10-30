@@ -8,6 +8,7 @@ import { createLocalJWKSet, jwtVerify, type JSONWebKeySet } from "jose";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import worker from "../../src/index";
 import {
+  call,
   ADULT,
   ADULT_GOOGLE,
   appleClaims,
@@ -18,6 +19,7 @@ import {
   primeNonce,
   resetJwksCache,
   sha256Hex,
+  signInParent,
   stubJwks,
   type ErrorBody,
   type JwksStub,
@@ -29,7 +31,8 @@ import { resetPlayIntegrityCache } from "../../src/play-integrity";
 const PACKAGE = "ro.zapakid.app";
 const CERT = "xYzSigningCertDigestBase64UrlNoPadding0123456";
 const SA_EMAIL = "play-integrity@zapakid-test.iam.gserviceaccount.com";
-const WIF_AUDIENCE = "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/cloudflare/providers/api-test";
+const WIF_AUDIENCE =
+  "//iam.googleapis.com/projects/1/locations/global/workloadIdentityPools/cloudflare/providers/api-test";
 const STS_URL = "https://sts.googleapis.com/v1/token";
 const IMPERSONATE_URL = `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${SA_EMAIL}:generateAccessToken`;
 const DECODE_URL = `https://playintegrity.googleapis.com/v1/${PACKAGE}:decodeIntegrityToken`;
@@ -91,7 +94,7 @@ async function sts(init: RequestInit | undefined): Promise<Response> {
 }
 
 // IAM Credentials: the federated principal may impersonate the service account, for the Play Integrity scope only.
-async function impersonate(init: RequestInit | undefined): Promise<Response> {
+function impersonate(init: RequestInit | undefined): Response {
   if (new Headers(init?.headers).get("authorization") !== "Bearer federated-token")
     return new Response("unauthenticated", { status: 401 });
   const { scope } = JSON.parse(init?.body as string) as { scope: string[] };
@@ -436,6 +439,42 @@ describe("policy allowlist (staging)", () => {
   it("a bad Google token without header is 401, not let through", async () => {
     const body = JSON.stringify({ idToken: "a.b.c", ageRange: ADULT_GOOGLE, nonce: pendingNonce()?.nonce });
     await expectError(await send("/v1/auth/google", body, {}, ALLOWLIST(`google:${SUBJECT}`)), 401, "invalid_token");
+  });
+});
+
+// Regression (2026-10-30): an Android kid phone pairing to an iPhone parent on staging got "Something went wrong" —
+// its genuine integrity token met a server with no way to decode it (503). Keyless decode makes it work.
+describe("kid pairing (staging)", () => {
+  it("a genuine token on redeem → 200 kid session, for any parent", async () => {
+    const parent = await signInParent(apple, "ana");
+    const json = { "content-type": "application/json", ...parent.auth };
+    const family = await (
+      await call("/v1/families", { method: "POST", headers: json, body: JSON.stringify({ name: "Pop" }) })
+    ).json<{ id: string }>();
+    const kid = await (
+      await call(`/v1/families/${family.id}/kids`, {
+        method: "POST",
+        headers: json,
+        body: JSON.stringify({ nickname: "Mia", avatar: "robot-1", grade: 1 }),
+      })
+    ).json<{ id: string }>();
+    const { code } = await (
+      await call(`/v1/families/${family.id}/kids/${kid.id}/pairing`, { method: "POST", headers: parent.auth })
+    ).json<{ code: string }>();
+    const body = JSON.stringify({ code });
+    const token = "integrity-token-pairing";
+    verdicts.set(token, verdict(await sha256Hex(body)));
+    const res = await send(
+      "/v1/pairing/redeem",
+      body,
+      { "zapakid-attestation": token },
+      {
+        ...REQUIRED(),
+        ATTESTATION_POLICY: "allowlist",
+        ATTESTATION_ALLOWLIST: "",
+      },
+    );
+    expect(res.status).toBe(200);
   });
 });
 

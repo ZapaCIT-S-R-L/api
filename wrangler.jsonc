@@ -24,6 +24,8 @@
     "ATTESTATION_POLICY": "optional",
     "PLAY_PACKAGE_NAME": "ro.zapakid.app",
     "PLAY_CERT_SHA256": "",
+    "PLAY_INTEGRITY_WIF_AUDIENCE": "",
+    "PLAY_INTEGRITY_SERVICE_ACCOUNT": "",
     "APNS_KEY_ID": "68239BP2QT",
     "APP_ATTEST_APP_ID": "9572LYGZ7S.ro.zapakid.app",
     "APP_ATTEST_ENVIRONMENTS": "development,production",
@@ -73,6 +75,10 @@
         "ATTESTATION_POLICY": "allowlist",
         "PLAY_PACKAGE_NAME": "ro.zapakid.app",
         "PLAY_CERT_SHA256": "",
+        // Play Integrity decode, keyless: Google trusts this API's issuer (CHAT_TOKEN_ISSUER) through this Workload
+        // Identity provider, which may impersonate the service account (README, "Play Integrity").
+        "PLAY_INTEGRITY_WIF_AUDIENCE": "//iam.googleapis.com/projects/64042746735/locations/global/workloadIdentityPools/cloudflare-workers/providers/zapakid-api-staging",
+        "PLAY_INTEGRITY_SERVICE_ACCOUNT": "play-integrity-staging@zapakid.iam.gserviceaccount.com",
         // App Attest: Xcode (development) and TestFlight/App Store (production) keys.
         "APNS_KEY_ID": "68239BP2QT",
         "APP_ATTEST_APP_ID": "9572LYGZ7S.ro.zapakid.app",
@@ -117,10 +123,13 @@
         // Empty (Google sign-in off) until the cutover sets the same client ids as staging.
         "GOOGLE_CLIENT_IDS": "",
         "SESSION_TTL_SECONDS": "2592000",
-        // Required from launch. Set PLAY_CERT_SHA256 and the PLAY_INTEGRITY_CREDENTIALS secret before cutover.
+        // Required from launch. Set PLAY_CERT_SHA256 and the Play Integrity federation before cutover.
         "ATTESTATION_POLICY": "required",
         "PLAY_PACKAGE_NAME": "ro.zapakid.app",
         "PLAY_CERT_SHA256": "",
+        // Set with its own provider and service account before cutover (README, "Play Integrity").
+        "PLAY_INTEGRITY_WIF_AUDIENCE": "",
+        "PLAY_INTEGRITY_SERVICE_ACCOUNT": "",
         // App Attest: App Store builds only.
         "APNS_KEY_ID": "68239BP2QT",
         "APP_ATTEST_APP_ID": "9572LYGZ7S.ro.zapakid.app",

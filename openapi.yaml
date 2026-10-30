@@ -525,6 +525,32 @@ paths:
                         use: { const: sig }
         "503": { $ref: "#/components/responses/NotConfigured" }
 
+  /.well-known/openid-configuration:
+    get:
+      tags: [Chat tokens]
+      operationId: openIdConfiguration
+      summary: OIDC discovery for this API's issuer.
+      description: >-
+        Lets Google's Workload Identity Federation find the JWKS, so the API can call Google (Play Integrity)
+        without a Google key. Cache for up to 5 minutes.
+      security: []
+      responses:
+        "200":
+          description: The discovery document.
+          headers:
+            Cache-Control: { schema: { type: string, const: "public, max-age=300" } }
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [issuer, jwks_uri, id_token_signing_alg_values_supported]
+                properties:
+                  issuer: { type: string, format: uri }
+                  jwks_uri: { type: string, format: uri }
+                  id_token_signing_alg_values_supported: { type: array, items: { const: ES256 } }
+                  response_types_supported: { type: array, items: { type: string } }
+                  subject_types_supported: { type: array, items: { type: string } }
+
   /v1/attestation/challenge:
     post:
       tags: [App attestation]

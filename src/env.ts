@@ -30,8 +30,11 @@ export interface Env {
   CHAT_TOKEN_TTL_SECONDS: string;
   // Secret (scripts/set-chat-token-key.sh): the private P-256 JWK that signs chat tokens.
   CHAT_TOKEN_SIGNING_KEY?: string | undefined;
-  // Secret (wrangler secret put): the Google service account JSON allowed to decode integrity tokens.
-  PLAY_INTEGRITY_CREDENTIALS?: string;
+  // Play Integrity decode, keyless (src/play-integrity.ts): the Workload Identity provider that trusts this API's
+  // issuer ("//iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/<pool>/providers/<id>")
+  // and the service account it may impersonate. Empty: integrity tokens can't be checked (503).
+  PLAY_INTEGRITY_WIF_AUDIENCE?: string;
+  PLAY_INTEGRITY_SERVICE_ACCOUNT?: string;
   // Secret (staging): "provider:subject" test accounts allowed to sign in without attestation, comma separated.
   ATTESTATION_ALLOWLIST?: string;
   // Queue producer for membership events to the chat and calls services (src/membership-events.ts). Optional: until

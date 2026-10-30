@@ -108,12 +108,20 @@ It runs `scripts/bootstrap-secrets.js` with the environment's `CLOUDFLARE_API_TO
 
 Play Integrity (Android app attestation on sign-in, `ATTESTATION_POLICY` in `wrangler.jsonc`):
 
-1. Google Cloud (the project linked to the app in Play Console → Test and release → App integrity): enable the
-   Play Integrity API, create a service account with no project roles, and create a JSON key for it.
-2. Play Console → App integrity → Play Integrity API: link that Cloud project, and grant the service account
-   access (Users and permissions, app `ro.zapakid.app`, "View app information").
-3. Store the key as a Worker secret, never in git: `npx wrangler secret put PLAY_INTEGRITY_CREDENTIALS --env staging`
-   (paste the JSON), then delete the downloaded file.
+No Google key exists anywhere (the org policy blocks service-account keys). The API signs a 5-minute assertion
+(`iss` = `CHAT_TOKEN_ISSUER`, `sub` = `play-integrity`) with its chat token key `CHAT_TOKEN_SIGNING_KEY`; Google's
+Workload Identity Federation trusts that issuer through `/.well-known/openid-configuration` and its JWKS, and the
+federated token impersonates the service account named in `PLAY_INTEGRITY_SERVICE_ACCOUNT`. Rotating the chat key
+needs nothing on Google's side.
+
+1. Google Cloud (the project linked to the app in Play Console → Protected with Play → Play Integrity API): enable the
+   Play Integrity API and create a service account with no project roles (staging: `play-integrity-staging`).
+2. Workload Identity: pool `cloudflare-workers`, OIDC provider per environment (staging: `zapakid-api-staging`,
+   issuer `https://api-staging.zapakid.ro`, default audience, attribute mapping `google.subject=assertion.sub`,
+   condition `assertion.sub == "play-integrity"`). Grant `principal://iam.googleapis.com/projects/<number>/locations/global/workloadIdentityPools/cloudflare-workers/subject/play-integrity`
+   the role `roles/iam.serviceAccountTokenCreator` on that service account only.
+3. Set `PLAY_INTEGRITY_WIF_AUDIENCE` (`//iam.googleapis.com/…/providers/<id>`) and `PLAY_INTEGRITY_SERVICE_ACCOUNT`
+   per environment in `wrangler.jsonc`, in a PR.
 4. Set `PLAY_CERT_SHA256` per environment to the app signing key's SHA-256 as Play Integrity reports it
    (base64url, no padding; Play Console → App integrity → App signing), in a PR.
 5. Staging only, optional: test accounts that may sign in without attestation (debug builds Play doesn't

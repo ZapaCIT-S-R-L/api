@@ -1,8 +1,8 @@
 // GET /health: liveness plus a config check. Problems name the binding or variable only, never its value.
 import type { Env } from "./env";
-import { chatTokenProblems } from "./chat-token";
+import { chatTokenProblems, parseSigningKey } from "./chat-token";
 import { json } from "./http";
-import { parseCredentials } from "./play-integrity";
+import { federation } from "./play-integrity";
 import { ttlSeconds } from "./sessions";
 
 // The types say every field is there; a deployed environment may still lack one (bindings and vars are per
@@ -32,8 +32,10 @@ function problems(env: Env): string[] {
   // Only "required" can't work without them; under "allowlist" (staging) a missing service account makes attested
   // requests answer 503 until it is set, which shouldn't fail every deploy.
   if (present.ATTESTATION_POLICY === "required") {
-    if (!parseCredentials(present.PLAY_INTEGRITY_CREDENTIALS))
-      found.push("PLAY_INTEGRITY_CREDENTIALS missing or invalid");
+    if (!federation(present))
+      found.push("PLAY_INTEGRITY_WIF_AUDIENCE or PLAY_INTEGRITY_SERVICE_ACCOUNT missing or invalid");
+    // Signs the Workload Identity assertion (a missing chat key alone isn't a problem elsewhere).
+    if (!parseSigningKey(present.CHAT_TOKEN_SIGNING_KEY)) found.push("CHAT_TOKEN_SIGNING_KEY missing");
     if (!present.PLAY_CERT_SHA256?.trim()) found.push("PLAY_CERT_SHA256 empty");
   }
   found.push(...chatTokenProblems(present));

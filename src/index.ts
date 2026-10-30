@@ -11,7 +11,7 @@ import {
   handleSetDevicePush,
   handleSetDevicePushAlert,
 } from "./devices";
-import { handleChatToken, handleJwks } from "./chat-token";
+import { handleChatToken, handleJwks, handleOpenIdConfiguration } from "./chat-token";
 import { handleHealth } from "./health";
 import { handleChangeIdentity } from "./identity";
 import { handleKidLogout } from "./kid-sessions";
@@ -52,6 +52,7 @@ const ROUTES: Record<string, { method: string; handler: Handler; limited?: true 
   "/v1/kid/logout": { method: "POST", handler: handleKidLogout },
   "/v1/chat/token": { method: "POST", handler: handleChatToken },
   "/.well-known/jwks.json": { method: "GET", handler: handleJwks },
+  "/.well-known/openid-configuration": { method: "GET", handler: handleOpenIdConfiguration },
 };
 
 // Paths with parameters: the pattern's groups are passed to the handler, in order.

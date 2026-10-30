@@ -38,7 +38,8 @@ export function parseSigningKey(secret: string | undefined): JWK | null {
   return k;
 }
 
-async function signingKey(env: Env): Promise<SigningKey | null> {
+// Also signs the API's Workload Identity assertions for Google (src/play-integrity.ts).
+export async function signingKey(env: Env): Promise<SigningKey | null> {
   const secret = env.CHAT_TOKEN_SIGNING_KEY;
   if (cached && cached.secret === secret) return cached.key;
   const jwk = parseSigningKey(secret);
@@ -102,6 +103,22 @@ export async function handleJwks(_request: Request, env: Env): Promise<Response>
   const key = await signingKey(env);
   if (!key) return notConfigured();
   return json({ keys: [key.publicJwk] }, 200, { "cache-control": "public, max-age=300" });
+}
+
+// OIDC discovery for this issuer: Google's Workload Identity provider for the Play Integrity decode finds the JWKS
+// here (src/play-integrity.ts).
+export function handleOpenIdConfiguration(_request: Request, env: Env): Response {
+  return json(
+    {
+      issuer: env.CHAT_TOKEN_ISSUER,
+      jwks_uri: `${env.CHAT_TOKEN_ISSUER}/.well-known/jwks.json`,
+      id_token_signing_alg_values_supported: ["ES256"],
+      response_types_supported: ["id_token"],
+      subject_types_supported: ["public"],
+    },
+    200,
+    { "cache-control": "public, max-age=300" },
+  );
 }
 
 const signInFirst = () =>

@@ -1,15 +1,19 @@
 // App attestation on sign-in. Android: a standard Play Integrity token in ZapaKid-Attestation, bound to the request
 // (requestHash = SHA-256 hex of the exact body bytes). The server decodes it with Google's decodeIntegrityToken API,
-// authenticated as a service account (OAuth 2.0 JWT bearer grant, signed with jose), and checks the verdicts.
-// iOS: an App Attest assertion (src/app-attest.ts), told apart by its "v1 " prefix.
-import { importPKCS8, SignJWT } from "jose";
+// authenticated as a service account without any Google key: the API signs a 5-minute assertion with its own key
+// (CHAT_TOKEN_SIGNING_KEY; Google finds the public half via /.well-known/openid-configuration), Google's STS trades
+// it for a federated token (Workload Identity Federation), and that impersonates the service account. Then it checks
+// the verdicts. iOS: an App Attest assertion (src/app-attest.ts), told apart by its "v1 " prefix.
+import { SignJWT } from "jose";
 import { isAppAttestHeader, verifyAssertion } from "./app-attest";
 import { AttestationFailed, AttestationUnavailable } from "./attestation-errors";
+import { signingKey } from "./chat-token";
 import { sha256Hex } from "./crypto";
 import type { Env } from "./env";
 
 export const ATTESTATION_HEADER = "zapakid-attestation";
-const TOKEN_URL = "https://oauth2.googleapis.com/token";
+const STS_URL = "https://sts.googleapis.com/v1/token";
+const ASSERTION_SUBJECT = "play-integrity";
 const SCOPE = "https://www.googleapis.com/auth/playintegrity";
 const MAX_AGE_MS = 10 * 60_000;
 const MAX_SKEW_MS = 60_000;
@@ -17,56 +21,70 @@ const TIMEOUT_MS = 5000;
 
 export { AttestationFailed, AttestationUnavailable };
 
-interface Credentials {
-  client_email: string;
-  private_key: string;
+interface Federation {
+  audience: string;
+  serviceAccount: string;
 }
 
-let accessToken: { email: string; token: string; expiresAt: number } | null = null;
+let accessToken: { serviceAccount: string; token: string; expiresAt: number } | null = null;
 
 export function resetPlayIntegrityCache(): void {
   accessToken = null;
 }
 
-export function parseCredentials(raw: string | undefined): Credentials | null {
-  if (!raw) return null;
-  try {
-    const value = JSON.parse(raw) as Partial<Credentials>;
-    if (typeof value.client_email !== "string" || typeof value.private_key !== "string") return null;
-    return { client_email: value.client_email, private_key: value.private_key };
-  } catch {
-    return null;
-  }
+export function federation(env: Partial<Env>): Federation | null {
+  const audience = env.PLAY_INTEGRITY_WIF_AUDIENCE?.trim() ?? "";
+  const serviceAccount = env.PLAY_INTEGRITY_SERVICE_ACCOUNT?.trim() ?? "";
+  if (!audience.startsWith("//iam.googleapis.com/") || !/^[^@\s/]+@[^@\s/]+$/.test(serviceAccount)) return null;
+  return { audience, serviceAccount };
 }
 
-async function getAccessToken(credentials: Credentials): Promise<string> {
-  if (accessToken && accessToken.email === credentials.client_email && accessToken.expiresAt > Date.now() + 60_000) {
+async function getAccessToken(env: Env, fed: Federation): Promise<string> {
+  if (accessToken && accessToken.serviceAccount === fed.serviceAccount && accessToken.expiresAt > Date.now() + 60_000) {
     return accessToken.token;
   }
-  let assertion: string;
-  try {
-    const key = await importPKCS8(credentials.private_key, "RS256");
-    assertion = await new SignJWT({ scope: SCOPE })
-      .setProtectedHeader({ alg: "RS256", typ: "JWT" })
-      .setIssuer(credentials.client_email)
-      .setAudience(TOKEN_URL)
-      .setIssuedAt()
-      .setExpirationTime("10m")
-      .sign(key);
-  } catch {
-    throw new AttestationUnavailable("service account key unusable");
-  }
-  const res = await fetchOrUnavailable(TOKEN_URL, {
+  const key = await signingKey(env);
+  if (!key) throw new AttestationUnavailable("CHAT_TOKEN_SIGNING_KEY not set");
+  // The provider's default audience is its resource name as an https URL.
+  const assertion = await new SignJWT({})
+    .setProtectedHeader({ alg: "ES256", kid: key.kid, typ: "JWT" })
+    .setIssuer(env.CHAT_TOKEN_ISSUER)
+    .setSubject(ASSERTION_SUBJECT)
+    .setAudience(`https:${fed.audience}`)
+    .setIssuedAt()
+    .setExpirationTime("5m")
+    .sign(key.key);
+  const sts = await fetchOrUnavailable(STS_URL, {
     method: "POST",
     headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion }).toString(),
+    body: new URLSearchParams({
+      grant_type: "urn:ietf:params:oauth:grant-type:token-exchange",
+      audience: fed.audience,
+      scope: "https://www.googleapis.com/auth/cloud-platform",
+      requested_token_type: "urn:ietf:params:oauth:token-type:access_token",
+      subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
+      subject_token: assertion,
+    }).toString(),
   });
-  if (!res.ok) throw new AttestationUnavailable(`OAuth token endpoint answered ${res.status}`);
-  const body = (await res.json().catch(() => ({}))) as { access_token?: unknown; expires_in?: unknown };
-  if (typeof body.access_token !== "string") throw new AttestationUnavailable("no access token");
-  const lifetime = typeof body.expires_in === "number" ? body.expires_in : 3600;
-  accessToken = { email: credentials.client_email, token: body.access_token, expiresAt: Date.now() + lifetime * 1000 };
-  return body.access_token;
+  if (!sts.ok) throw new AttestationUnavailable(`STS answered ${sts.status}`);
+  const federated = (await sts.json().catch(() => ({}))) as { access_token?: unknown };
+  if (typeof federated.access_token !== "string") throw new AttestationUnavailable("no federated token");
+  const url = `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${fed.serviceAccount}:generateAccessToken`;
+  const res = await fetchOrUnavailable(url, {
+    method: "POST",
+    headers: { authorization: `Bearer ${federated.access_token}`, "content-type": "application/json" },
+    body: JSON.stringify({ scope: [SCOPE], lifetime: "3600s" }),
+  });
+  if (!res.ok) throw new AttestationUnavailable(`generateAccessToken answered ${res.status}`);
+  const body = (await res.json().catch(() => ({}))) as { accessToken?: unknown; expireTime?: unknown };
+  if (typeof body.accessToken !== "string") throw new AttestationUnavailable("no access token");
+  const expiresAt = typeof body.expireTime === "string" ? Date.parse(body.expireTime) : NaN;
+  accessToken = {
+    serviceAccount: fed.serviceAccount,
+    token: body.accessToken,
+    expiresAt: Number.isFinite(expiresAt) ? expiresAt : Date.now() + 3600_000,
+  };
+  return body.accessToken;
 }
 
 async function fetchOrUnavailable(url: string, init: RequestInit): Promise<Response> {
@@ -84,11 +102,11 @@ interface Verdict {
   accountDetails?: { appLicensingVerdict?: unknown };
 }
 
-async function decode(token: string, env: Env, credentials: Credentials): Promise<Verdict> {
+async function decode(token: string, env: Env, fed: Federation): Promise<Verdict> {
   const url = `https://playintegrity.googleapis.com/v1/${encodeURIComponent(env.PLAY_PACKAGE_NAME)}:decodeIntegrityToken`;
   const res = await fetchOrUnavailable(url, {
     method: "POST",
-    headers: { authorization: `Bearer ${await getAccessToken(credentials)}`, "content-type": "application/json" },
+    headers: { authorization: `Bearer ${await getAccessToken(env, fed)}`, "content-type": "application/json" },
     body: JSON.stringify({ integrity_token: token }),
   });
   // 400: Google can't decode it (forged, for another app, malformed).
@@ -146,9 +164,9 @@ export async function checkAttestation(request: Request, bytes: Uint8Array, env:
     await verifyAssertion(header, bytes, env);
     return "attested";
   }
-  const credentials = parseCredentials(env.PLAY_INTEGRITY_CREDENTIALS);
-  if (!credentials) throw new AttestationUnavailable("PLAY_INTEGRITY_CREDENTIALS not set");
-  check(await decode(header, env, credentials), await sha256Hex(bytes), env);
+  const fed = federation(env);
+  if (!fed) throw new AttestationUnavailable("PLAY_INTEGRITY_WIF_AUDIENCE or PLAY_INTEGRITY_SERVICE_ACCOUNT not set");
+  check(await decode(header, env, fed), await sha256Hex(bytes), env);
   return "attested";
 }
 
