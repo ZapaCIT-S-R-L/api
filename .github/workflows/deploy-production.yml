@@ -22,6 +22,8 @@ concurrency:
 
 jobs:
   production:
+    # Paused until the v1 cutover; retain the valid job and its security/deployment checks.
+    if: false
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment:

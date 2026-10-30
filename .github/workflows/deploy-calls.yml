@@ -123,6 +123,8 @@ jobs:
           exit 1
 
   production:
+    # Paused until the v1 cutover; retain the valid job and its security/deployment checks.
+    if: false
     needs: staging
     runs-on: ubuntu-latest
     timeout-minutes: 50
