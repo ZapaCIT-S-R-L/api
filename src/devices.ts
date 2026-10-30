@@ -281,7 +281,15 @@ export function deviceStatements(
     ).bind(deviceId, ...free),
     membershipEvent(
       env,
-      { type: "device.upserted", accountId: account, deviceId, registrationId: keys.registrationId },
+      {
+        type: "device.upserted",
+        accountId: account,
+        deviceId,
+        registrationId: keys.registrationId,
+        // A new registration has no push targets until the phone sends them again.
+        push: null,
+        alertPush: null,
+      },
       {
         sql: `EXISTS (SELECT 1 FROM devices WHERE account_id = ? AND device_id = ? AND created_at = ?)
           AND EXISTS (SELECT 1 FROM ${table} WHERE token_hash = ? AND device_id = ?)`,
@@ -312,16 +320,19 @@ export async function handleRemoveDevice(request: Request, env: Env, rawId: stri
   return empty(204);
 }
 
-// PUT /v1/devices/{id}/push: where this phone's content-free wake-ups go (an APNs VoIP token for iPhones, FCM for
-// Android). A session may only set its own device. `null` for both clears it. The device.upserted event carries the
-// target, so chat and calls learn it in order (occurredAt).
+// PUT /v1/devices/{id}/push (the PushKit VoIP token for iPhones, FCM for Android) and PUT /v1/devices/{id}/alert-push
+// (the standard APNs token for the visible "new message" alert, iPhones only): where this phone's content-free pushes
+// go. A session may only set its own device. `null` for both clears that target. The device.upserted event carries the
+// slot it changed; `push` and `alertPush` absent means the slot is not in the event (chat keeps it), `null` clears it.
 const PUSH_PROVIDERS = ["apns", "fcm"];
 const MAX_PUSH_TOKEN_LENGTH = 4096;
 
-function pushTarget(body: Record<string, unknown>): { provider: "apns" | "fcm"; token: string } | null {
+type PushTarget = { provider: "apns" | "fcm"; token: string };
+
+function pushTarget(body: Record<string, unknown>, providers: string[]): PushTarget | null {
   if (body.provider === null && body.token === null) return null;
-  if (typeof body.provider !== "string" || !PUSH_PROVIDERS.includes(body.provider)) {
-    throw invalid("provider must be apns or fcm (both null to clear).");
+  if (typeof body.provider !== "string" || !providers.includes(body.provider)) {
+    throw invalid(`provider must be ${providers.join(" or ")} (both null to clear).`);
   }
   if (typeof body.token !== "string" || body.token.length === 0 || body.token.length > MAX_PUSH_TOKEN_LENGTH) {
     throw invalid(`token must be 1 to ${MAX_PUSH_TOKEN_LENGTH} characters.`);
@@ -329,7 +340,7 @@ function pushTarget(body: Record<string, unknown>): { provider: "apns" | "fcm"; 
   return { provider: body.provider as "apns" | "fcm", token: body.token };
 }
 
-export async function handleSetDevicePush(request: Request, env: Env, rawId: string): Promise<Response> {
+async function setPushTarget(request: Request, env: Env, rawId: string, slot: "voip" | "alert"): Promise<Response> {
   const session = await authenticateAccount(request, env);
   if (!session) return unauthorized();
   if (session.deviceId === null) {
@@ -339,32 +350,71 @@ export async function handleSetDevicePush(request: Request, env: Env, rawId: str
   if (deviceId !== session.deviceId) return error(404, "not_found", "No such device on this account.");
   const { body } = await readJsonBody(request);
   onlyFields(body, ["provider", "token"], "the push target");
-  const push = pushTarget(body);
-  const row = await env.DB.prepare("SELECT registration_id FROM devices WHERE account_id = ? AND device_id = ?")
+  const target = pushTarget(body, slot === "alert" ? ["apns"] : PUSH_PROVIDERS);
+  const row = await env.DB.prepare(
+    "SELECT registration_id, push_provider, push_token, alert_push_token FROM devices WHERE account_id = ? AND device_id = ?",
+  )
     .bind(session.id, deviceId)
-    .first<{ registration_id: number }>();
+    .first<{
+      registration_id: number;
+      push_provider: string | null;
+      push_token: string | null;
+      alert_push_token: string | null;
+    }>();
   if (!row) return error(404, "not_found", "No such device on this account.");
-  const provider = push?.provider ?? null;
-  const token = push?.token ?? null;
   // The event is written only when the update happened (the same batch, so the row is still the one we wrote).
-  await env.DB.batch([
-    env.DB.prepare("UPDATE devices SET push_provider = ?, push_token = ? WHERE account_id = ? AND device_id = ?").bind(
-      provider,
-      token,
-      session.id,
-      deviceId,
-    ),
-    membershipEvent(
-      env,
-      { type: "device.upserted", accountId: session.id, deviceId, registrationId: row.registration_id, push },
-      {
-        sql: "EXISTS (SELECT 1 FROM devices WHERE account_id = ? AND device_id = ? AND push_provider IS ? AND push_token IS ?)",
-        binds: [session.id, deviceId, provider, token],
-      },
-    ),
-  ]);
+  if (slot === "voip") {
+    const provider = target?.provider ?? null;
+    const token = target?.token ?? null;
+    await env.DB.batch([
+      env.DB.prepare(
+        "UPDATE devices SET push_provider = ?, push_token = ? WHERE account_id = ? AND device_id = ?",
+      ).bind(provider, token, session.id, deviceId),
+      membershipEvent(
+        env,
+        { type: "device.upserted", accountId: session.id, deviceId, registrationId: row.registration_id, push: target },
+        {
+          sql: "EXISTS (SELECT 1 FROM devices WHERE account_id = ? AND device_id = ? AND push_provider IS ? AND push_token IS ?)",
+          binds: [session.id, deviceId, provider, token],
+        },
+      ),
+    ]);
+  } else {
+    // Validated above: the alert slot takes APNs only.
+    const alertTarget = target?.provider === "apns" ? { provider: "apns" as const, token: target.token } : null;
+    const token = alertTarget?.token ?? null;
+    await env.DB.batch([
+      env.DB.prepare("UPDATE devices SET alert_push_token = ? WHERE account_id = ? AND device_id = ?").bind(
+        token,
+        session.id,
+        deviceId,
+      ),
+      membershipEvent(
+        env,
+        {
+          type: "device.upserted",
+          accountId: session.id,
+          deviceId,
+          registrationId: row.registration_id,
+          alertPush: alertTarget,
+        },
+        {
+          sql: "EXISTS (SELECT 1 FROM devices WHERE account_id = ? AND device_id = ? AND alert_push_token IS ?)",
+          binds: [session.id, deviceId, token],
+        },
+      ),
+    ]);
+  }
   await flushMembershipEvents(env);
   return empty(204);
+}
+
+export function handleSetDevicePush(request: Request, env: Env, rawId: string): Promise<Response> {
+  return setPushTarget(request, env, rawId, "voip");
+}
+
+export function handleSetDevicePushAlert(request: Request, env: Env, rawId: string): Promise<Response> {
+  return setPushTarget(request, env, rawId, "alert");
 }
 
 function parseDeviceId(raw: string): number | null {

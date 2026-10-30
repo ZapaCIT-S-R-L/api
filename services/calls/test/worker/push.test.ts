@@ -165,6 +165,11 @@ describe("APNs VoIP ring", () => {
     expect(sent.map((s) => s.url)).toEqual([`https://api.push.apple.com/3/device/${DEVICE_A}`]);
   });
 
+  it("rings a token once, even when two devices list it (a phone that registered twice)", async () => {
+    await apnsProvider(config()).ring(call([iphone("acc-1", 1, DEVICE_A), iphone("acc-1", 2, DEVICE_A)]));
+    expect(sent.map((s) => s.url)).toEqual([`https://api.push.apple.com/3/device/${DEVICE_A}`]);
+  });
+
   it("cancel sends nothing (the ringing phone learns from the events WebSocket)", async () => {
     await apnsProvider(config()).cancel(call([iphone("acc-1", 1, DEVICE_A)]));
     expect(sent).toEqual([]);
