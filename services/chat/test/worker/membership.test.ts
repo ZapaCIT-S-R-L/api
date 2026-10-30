@@ -161,7 +161,10 @@ describe("graph changes and existing conversations", () => {
     const c = await create(ALEX, [MARIA]);
     const rooms = recordingRooms();
     const at = (iso: string, enabled: boolean) =>
-      applyEvent(env, rooms, { ...event({ type: "kid.oversight_changed", kidAccountId: ALEX, enabled }), occurredAt: iso });
+      applyEvent(env, rooms, {
+        ...event({ type: "kid.oversight_changed", kidAccountId: ALEX, enabled }),
+        occurredAt: iso,
+      });
     const observers = async () => memberIds((await get(ANA, c.id)) as ConversationBody).includes(MUM);
 
     await at("2026-10-29T10:00:02.000Z", true);
