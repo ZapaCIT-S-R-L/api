@@ -37,7 +37,10 @@ test("chat tokens: each environment trusts only its own account service, over ht
 test("deployed conversation objects live in the EU jurisdiction", () => {
   for (const env of [staging, production]) {
     assert.equal(env.vars.ROOMS_JURISDICTION, "eu");
-    assert.deepEqual(env.durable_objects.bindings, [{ name: "ROOMS", class_name: "ConversationRoom" }]);
+    assert.deepEqual(env.durable_objects.bindings, [
+      { name: "ROOMS", class_name: "ConversationRoom" },
+      { name: "ACCOUNTS", class_name: "AccountHub" },
+    ]);
   }
   assert.equal(rawConfig.vars.ROOMS_JURISDICTION, undefined, "workerd has no jurisdictions");
 });
