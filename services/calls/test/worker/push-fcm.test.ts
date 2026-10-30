@@ -180,6 +180,19 @@ describe("FCM ring", () => {
     expect(sends()[0]?.body).toContain(DEVICE_A);
   });
 
+  it("rings a token once, even when two device rows list it", async () => {
+    await fcmProvider(config()).ring(call([android("acc-1", 1, DEVICE_A), android("acc-1", 2, DEVICE_A)]));
+
+    expect(sends()).toHaveLength(1);
+  });
+
+  it("cancels a token once, even when two device rows list it", async () => {
+    await fcmProvider(config()).cancel(call([android("acc-1", 1, DEVICE_A), android("acc-1", 2, DEVICE_A)]));
+
+    expect(sends()).toHaveLength(1);
+    expect(JSON.parse(sends()[0]?.body ?? "")).toMatchObject({ message: { data: { type: "call_cancel" } } });
+  });
+
   it("skips a registration token that is not printable ASCII", async () => {
     await fcmProvider(config()).ring(
       call([android("acc-1", 1, "line\nbreak"), android("acc-2", 1, "x".repeat(4097)), android("acc-3", 1, DEVICE_A)]),

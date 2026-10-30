@@ -132,7 +132,8 @@ export function apnsProvider(config: ApnsEnv): PushProvider {
 
   return {
     async ring(call) {
-      const tokens = call.to.flatMap((t) => (t.push?.provider === "apns" ? [t.push.token] : []));
+      // One push per token: a phone listed twice must not ring twice.
+      const tokens = [...new Set(call.to.flatMap((t) => (t.push?.provider === "apns" ? [t.push.token] : [])))];
       if (tokens.length === 0) return;
       const missing = (["APNS_KEY_ID", "APNS_TEAM_ID", "APNS_TOPIC"] as const).filter((name) => !config[name]?.trim());
       if (missing.length > 0 || !config.APNS_AUTH_KEY) {
