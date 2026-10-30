@@ -628,6 +628,71 @@ describe("DELETE /v1/families/{familyId}/parents/{accountId}", () => {
     expect(await countWhere("kid_pairings", "created_by = ?", ana.id)).toBe(1);
     expect(await countWhere("connection_invitations", "created_by = ?", bob.id)).toBe(0);
   });
+
+  it("a kid pairing code issued after its creator's removal committed isn't stored → 404", async () => {
+    // The request passed its membership check, then the removal committed (revoking the creator's open codes) before
+    // the code was written: the write itself must refuse it, or the code would outlive the removal.
+    const { ana, bob, family } = await twoParents();
+    const kid = await (
+      await send(`/v1/families/${family.id}/kids`, ana.auth, { nickname: "Mia", avatar: "robot-1" })
+    ).json<Kid>();
+    const prepare = env.DB.prepare.bind(env.DB);
+    vi.spyOn(env.DB, "prepare").mockImplementation((sql: string) => {
+      const statement = prepare(sql);
+      if (!sql.includes("SELECT count(*) AS n FROM kid_pairings")) return statement;
+      return {
+        bind: (...binds: unknown[]) => {
+          const bound = statement.bind(...binds);
+          return {
+            first: async <T>() => {
+              await prepare("DELETE FROM family_parents WHERE parent_id = ?").bind(bob.id).run();
+              return bound.first<T>();
+            },
+          };
+        },
+      } as unknown as D1PreparedStatement;
+    });
+    const res = await send(`/v1/families/${family.id}/kids/${kid.id}/pairing`, bob.auth);
+    vi.restoreAllMocks();
+    expect(res.status).toBe(404);
+    expect(await countWhere("kid_pairings", "created_by = ?", bob.id)).toBe(0);
+  });
+
+  it("a kid pairing code whose creator is no longer a parent of the family can't be redeemed → 410, no session", async () => {
+    // A code that raced the removal: inserted after the removal's batch, so the removal didn't revoke it.
+    const { ana, bob, family } = await twoParents();
+    const kid = await (
+      await send(`/v1/families/${family.id}/kids`, ana.auth, { nickname: "Mia", avatar: "robot-1" })
+    ).json<Kid>();
+    const { code } = await (
+      await send(`/v1/families/${family.id}/kids/${kid.id}/pairing`, bob.auth)
+    ).json<{
+      code: string;
+    }>();
+    await env.DB.prepare("DELETE FROM family_parents WHERE parent_id = ?").bind(bob.id).run();
+    const res = await send("/v1/pairing/redeem", {}, { code });
+    expect(res.status).toBe(410);
+    expect(await errorCode(res)).toBe("pairing_code_invalid");
+    expect(await countWhere("kid_sessions", "kid_id = ?", kid.id)).toBe(0);
+  });
+
+  it("the pairing code's creator is removed between the redeem's lookup and its claim → 410, no session", async () => {
+    const { ana, bob, family } = await twoParents();
+    const kid = await (
+      await send(`/v1/families/${family.id}/kids`, ana.auth, { nickname: "Mia", avatar: "robot-1" })
+    ).json<Kid>();
+    const created = await send(`/v1/families/${family.id}/kids/${kid.id}/pairing`, bob.auth, { replacePhones: true });
+    const { code } = await created.json<{ code: string }>();
+    const batch = env.DB.batch.bind(env.DB);
+    vi.spyOn(env.DB, "batch").mockImplementationOnce(async (statements) => {
+      await env.DB.prepare("DELETE FROM family_parents WHERE parent_id = ?").bind(bob.id).run();
+      return batch(statements);
+    });
+    const res = await send("/v1/pairing/redeem", {}, { code });
+    expect(res.status).toBe(410);
+    expect(await countWhere("kid_sessions", "kid_id = ?", kid.id)).toBe(0);
+    expect(await countWhere("kid_pairings", "code_hash = ? AND used_at IS NULL", await sha256Hex(code))).toBe(1);
+  });
 });
 
 const countWhere = async (table: string, where: string, ...binds: unknown[]): Promise<number> =>

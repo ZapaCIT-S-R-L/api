@@ -62,12 +62,17 @@ export async function handleCreatePairing(
 
   const code = `zkp_${randomBase64Url(32)}`;
   const expiresAt = new Date(now.getTime() + PAIRING_TTL_SECONDS * 1000).toISOString();
-  await env.DB.prepare(
+  // Written only while the caller is still a parent of the kid's family, checked in the same statement: a removal
+  // that commits after the check above can't leave a live code behind.
+  const inserted = await env.DB.prepare(
     `INSERT INTO kid_pairings (code_hash, kid_id, family_id, created_by, created_at, expires_at, replaces_phones)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+     SELECT ?1, ?2, ?3, ?4, ?5, ?6, ?7
+     WHERE EXISTS (SELECT 1 FROM kids k JOIN family_parents fp ON fp.family_id = k.family_id
+                   WHERE k.id = ?2 AND k.family_id = ?3 AND fp.parent_id = ?4)`,
   )
     .bind(await sha256Hex(code), kidId, familyId, session.parentId, nowIso, expiresAt, replacePhones ? 1 : 0)
     .run();
+  if (inserted.meta.changes !== 1) return error(404, "not_found", "No such kid.");
   const kid = await loadKid(env, kidId);
   return json({ code, expiresAt, kid }, 201);
 }
@@ -125,11 +130,14 @@ export async function handleRedeemPairing(request: Request, env: Env): Promise<R
           ),
         ]
       : [];
-  // One transaction: use up the code (only if still open), then create the session only for this redemption.
+  // One transaction: use up the code (only if still open and its creator is still a parent of the family), then
+  // create the session only for this redemption. A code that raced its creator's removal is just an unknown code.
   const [claim] = await env.DB.batch([
     env.DB.prepare(
       `UPDATE kid_pairings SET used_at = ?, session_hash = ?
-       WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?`,
+       WHERE code_hash = ? AND used_at IS NULL AND expires_at > ?
+         AND EXISTS (SELECT 1 FROM family_parents fp
+                     WHERE fp.family_id = kid_pairings.family_id AND fp.parent_id = kid_pairings.created_by)`,
     ).bind(nowIso, tokenHash, codeHash, nowIso),
     ...replaced,
     // `id` names the session to parents (GET .../kids/{kidId}/sessions) without exposing the token hash.
