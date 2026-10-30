@@ -26,6 +26,7 @@ export type MembershipEvent = { v: 1; id: string; occurredAt: string } & (
       alertPush?: { provider: "apns"; token: string } | null;
     }
   | { type: "device.removed"; accountId: string; deviceId: number }
+  | { type: "kid.oversight_changed"; kidAccountId: string; enabled: boolean }
   | { type: "account.deleted"; accountId: string }
 );
 
