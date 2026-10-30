@@ -57,7 +57,7 @@ beforeEach(async () => {
   decodeStatus = 200;
   jwks.other = (url, init) => {
     if (url === STS_URL) return sts(init);
-    if (url === IMPERSONATE_URL) return impersonate(init);
+    if (url === IMPERSONATE_URL) return Promise.resolve(impersonate(init));
     if (url === DECODE_URL) return decode(init);
     return undefined;
   };
