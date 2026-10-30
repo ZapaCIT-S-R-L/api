@@ -105,7 +105,7 @@ tags:
         invitation, or a kid is added. `family.member_removed`: a parent leaves an empty family to join another one
         (the empty family is deleted), or a kid is removed. `connection.created`, `connection.removed`,
         `connection.kid_shared` and `connection.kid_unshared` for connections. `device.upserted`: a parent's or
-        kid's device is registered (`POST /v1/devices`, or `PUT /v1/keys/identity` for device 1; no `push` yet).
+        kid's device is registered (`POST /v1/devices`, or `PUT /v1/keys/identity` for device 1). `push` is set with `PUT /v1/devices/{deviceId}/push`.
         `device.removed`: a device is removed (`DELETE /v1/devices/{deviceId}`,
         `POST /v1/auth/logout-all?removeDevices=true` (one per device), an identity change, a kid unpaired or
         removed, a kid's phone revoked or signed out (`POST /v1/kid/logout`), or 90 days without a request). The
@@ -635,6 +635,83 @@ paths:
         "429": { $ref: "#/components/responses/RateLimited" }
         "503": { $ref: "#/components/responses/ProviderUnavailable" }
 
+  /v1/devices/{deviceId}/push:
+    put:
+      tags: [Devices and keys]
+      operationId: setDevicePush
+      summary: Set where this phone's content-free wake-ups go (or clear them).
+      description: |
+        Needs a session bound to this device (`POST /v1/devices` first); a session can set only its own device, and
+        another device is `404`. Call it at launch and whenever the push token changes: APNs rotates the VoIP token.
+        `provider` is `apns` (a PushKit VoIP token, for iPhones) or `fcm` (Android); both `null` clears the target.
+        The phone is then woken only for calls and messages while it has a target. Emits `device.upserted` with
+        `push` (see `Membership events`), in the same D1 batch as the change.
+      parameters:
+        - name: deviceId
+          in: path
+          required: true
+          schema: { $ref: "#/components/schemas/DeviceId" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, token]
+              additionalProperties: false
+              properties:
+                provider: { type: [string, "null"], enum: [apns, fcm, null] }
+                token: { type: [string, "null"], minLength: 1, maxLength: 4096 }
+      responses:
+        "204": { description: Stored. }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: "Not this session's device." }
+        "409":
+          description: "`device_not_registered`: this session has no device yet."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
+  /v1/devices/{deviceId}/alert-push:
+    put:
+      tags: [Devices and keys]
+      operationId: setDeviceAlertPush
+      summary: Set the standard APNs token for this phone's message alerts (or clear it).
+      description: |
+        Needs a session bound to this device (`POST /v1/devices` first); a session can set only its own device, and
+        another device is `404`. The token is the standard APNs device token from `registerForRemoteNotifications`, not
+        the PushKit VoIP token (`PUT /v1/devices/{deviceId}/push`): APNs refuses alerts sent to a VoIP token. `provider`
+        is `apns` only; both `null` clears it. The server sends a content-free alert ("new message", localized by the
+        app) to this token when the phone has offline messages. Emits `device.upserted` with `alertPush` (see
+        `Membership events`), in the same D1 batch as the change.
+      parameters:
+        - name: deviceId
+          in: path
+          required: true
+          schema: { $ref: "#/components/schemas/DeviceId" }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [provider, token]
+              additionalProperties: false
+              properties:
+                provider: { type: [string, "null"], enum: [apns, null] }
+                token: { type: [string, "null"], minLength: 1, maxLength: 4096 }
+      responses:
+        "204": { description: Stored. }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { description: "Not this session's device." }
+        "409":
+          description: "`device_not_registered`: this session has no device yet."
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Error" }
+
   /v1/devices/{deviceId}:
     delete:
       tags: [Devices and keys]
@@ -979,6 +1056,35 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
 
   /v1/families/{familyId}/kids/{kidId}:
+    patch:
+      tags: [Families]
+      operationId: updateKid
+      summary: Rename a kid or change its avatar.
+      description: |
+        Send `nickname`, `avatar` or both, with the same rules as when adding a kid (`grade` can't be changed here).
+        Any parent of the family; a kid gets `401`, a parent of another family `404`. Emits no membership event: the
+        chat service doesn't know names or avatars.
+      parameters: [{ $ref: "#/components/parameters/familyId" }, { $ref: "#/components/parameters/kidId" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              minProperties: 1
+              additionalProperties: false
+              properties:
+                nickname: { type: string, minLength: 1, maxLength: 40, description: Trimmed; one line. }
+                avatar: { $ref: "#/components/schemas/Avatar" }
+      responses:
+        "200":
+          description: The kid, as updated.
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Kid" }
+        "400": { $ref: "#/components/responses/InvalidRequest" }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
     delete:
       tags: [Families]
       operationId: removeKid
@@ -1858,6 +1964,13 @@ components:
               required: [provider, token]
               properties:
                 provider: { type: string, enum: [apns, fcm] }
+                token: { type: string, maxLength: 4096 }
+            alertPush:
+              type: [object, "null"]
+              description: The iPhone's APNs token for the message alert; `null` = none. A left-out key keeps the receiver's value. A new registration sends both targets as `null`.
+              required: [provider, token]
+              properties:
+                provider: { type: string, enum: [apns] }
                 token: { type: string, maxLength: 4096 }
         - title: device.removed
           required: [type, accountId, deviceId]

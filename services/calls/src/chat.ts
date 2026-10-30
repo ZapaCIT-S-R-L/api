@@ -4,12 +4,21 @@
 // loses access to its calls at once; nothing is cached.
 import type { Role } from "./auth";
 import type { Env } from "./env";
+import type { RingTarget } from "./push";
 
 export interface ChatMember {
   accountId: string;
   role: Role;
   // libsignal device ids (1-127).
   devices: number[];
+  // The devices with a push target (iOS: the PushKit VoIP token). Missing from an older chat Worker: no pushes.
+  push?: PushTarget[];
+}
+
+export interface PushTarget {
+  deviceId: number;
+  provider: "apns" | "fcm";
+  token: string;
 }
 
 export interface Membership {
@@ -47,6 +56,17 @@ const OBSERVER: Membership = { member: false, observer: true, members: [] };
 
 const isDevice = (d: unknown): d is number => typeof d === "number" && Number.isInteger(d) && d >= 1 && d <= 127;
 
+const isPushTarget = (p: unknown): p is PushTarget => {
+  if (typeof p !== "object" || p === null) return false;
+  const v = p as Record<string, unknown>;
+  return (
+    isDevice(v.deviceId) &&
+    (v.provider === "apns" || v.provider === "fcm") &&
+    typeof v.token === "string" &&
+    v.token.length > 0
+  );
+};
+
 function isMember(m: unknown): m is ChatMember {
   if (typeof m !== "object" || m === null) return false;
   const v = m as Record<string, unknown>;
@@ -55,7 +75,8 @@ function isMember(m: unknown): m is ChatMember {
     v.accountId.length > 0 &&
     (v.role === "parent" || v.role === "kid") &&
     Array.isArray(v.devices) &&
-    v.devices.every(isDevice)
+    v.devices.every(isDevice) &&
+    (v.push === undefined || (Array.isArray(v.push) && v.push.every(isPushTarget)))
   );
 }
 
@@ -79,7 +100,12 @@ export async function membership(env: Env, conversationId: string, accountId: st
   return {
     member: true,
     observer: false,
-    members: a.members.map((m) => ({ accountId: m.accountId, role: m.role, devices: [...m.devices] })),
+    members: a.members.map((m) => ({
+      accountId: m.accountId,
+      role: m.role,
+      devices: [...m.devices],
+      push: (m.push ?? []).map((p) => ({ deviceId: p.deviceId, provider: p.provider, token: p.token })),
+    })),
   };
 }
 
@@ -109,9 +135,17 @@ export async function revoked(env: Env, who: TokenRef): Promise<boolean> {
   return answer;
 }
 
-// The devices to ring for a call: every device of every other member (not the caller's own devices).
-export function ringTargets(members: ChatMember[], callerAccountId: string): { accountId: string; deviceId: number }[] {
+// The devices to ring for a call: every device of every other member (not the caller's own devices), each with its
+// push target when it has one.
+export function ringTargets(members: ChatMember[], callerAccountId: string): RingTarget[] {
   return members
     .filter((m) => m.accountId !== callerAccountId)
-    .flatMap((m) => m.devices.map((deviceId) => ({ accountId: m.accountId, deviceId })));
+    .flatMap((m) =>
+      m.devices.map((deviceId): RingTarget => {
+        const target = (m.push ?? []).find((p) => p.deviceId === deviceId);
+        return target
+          ? { accountId: m.accountId, deviceId, push: { provider: target.provider, token: target.token } }
+          : { accountId: m.accountId, deviceId };
+      }),
+    );
 }

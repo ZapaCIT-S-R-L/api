@@ -14,7 +14,17 @@ export type MembershipEvent = { v: 1; id: string; occurredAt: string } & (
   | { type: "connection.removed"; connectionId: string }
   | { type: "connection.kid_shared"; connectionId: string; kidAccountId: string }
   | { type: "connection.kid_unshared"; connectionId: string; kidAccountId: string }
-  | { type: "device.upserted"; accountId: string; deviceId: number; registrationId: number }
+  // `push`: where to send content-free wake-ups for this device; null = none (PUT /v1/devices/{id}/push).
+  // `alertPush`: the iPhone's standard APNs token for the message alert; null = none (PUT /v1/devices/{id}/alert-push).
+  // A field left out keeps what the receiver has; a new registration sends both as null.
+  | {
+      type: "device.upserted";
+      accountId: string;
+      deviceId: number;
+      registrationId: number;
+      push?: { provider: "apns" | "fcm"; token: string } | null;
+      alertPush?: { provider: "apns"; token: string } | null;
+    }
   | { type: "device.removed"; accountId: string; deviceId: number }
   | { type: "kid.oversight_changed"; kidAccountId: string; enabled: boolean }
   | { type: "account.deleted"; accountId: string }

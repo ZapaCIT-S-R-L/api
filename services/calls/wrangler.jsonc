@@ -26,9 +26,17 @@
     "TURN_TTL_SECONDS": "3600",
     "RECONNECT_GRACE_SECONDS": "30",
     "CALL_LOG_RETENTION_DAYS": "365",
+    // APNs VoIP pushes (src/push.ts): the key id, the team and the app's bundle id (pushes go to "<topic>.voip").
+    // Only used when the APNS_AUTH_KEY secret is set; locally it isn't, so nothing is sent.
+    "APNS_KEY_ID": "68239BP2QT",
+    "APNS_TEAM_ID": "9572LYGZ7S",
+    "APNS_TOPIC": "ro.zapakid.app",
+    "APNS_ENVIRONMENT": "sandbox",
   },
   // Secrets (the bootstrap-secrets workflow, never vars): REALTIME_APP_ID, REALTIME_APP_SECRET, TURN_KEY_ID,
-  // TURN_KEY_API_TOKEN. Locally: --var on wrangler dev with fake values (scripts/check.sh), or .dev.vars.
+  // TURN_KEY_API_TOKEN; and the push credentials, set by hand until the workflow imports them: APNS_AUTH_KEY (the
+  // APNs .p8 key, api #102) and FCM_CREDENTIALS_JSON (the Firebase service-account JSON, android #57). Locally:
+  // --var on wrangler dev with fake values (scripts/check.sh), or .dev.vars.
   "durable_objects": { "bindings": [{ "name": "CALL", "class_name": "CallRoom" }] },
   // Conversation membership: the chat Worker of the same environment, over Workers RPC (never public HTTP). Locally
   // the tests play it (test/chat-stub). Bindings are not inherited: each environment names its own chat Worker.
@@ -84,6 +92,12 @@
         "TURN_TTL_SECONDS": "3600",
         "RECONNECT_GRACE_SECONDS": "30",
         "CALL_LOG_RETENTION_DAYS": "365",
+        // APNs VoIP pushes (src/push.ts). APNS_KEY_ID comes with the key (api #102); TestFlight and App Store
+        // builds both use the production APNs host.
+        "APNS_KEY_ID": "68239BP2QT",
+        "APNS_TEAM_ID": "9572LYGZ7S",
+        "APNS_TOPIC": "ro.zapakid.app",
+        "APNS_ENVIRONMENT": "sandbox",
       },
       "durable_objects": { "bindings": [{ "name": "CALL", "class_name": "CallRoom" }] },
       // zapakid-chat-staging must be deployed (with ChatMembership) before this binding can be.
@@ -140,6 +154,12 @@
         "TURN_TTL_SECONDS": "3600",
         "RECONNECT_GRACE_SECONDS": "30",
         "CALL_LOG_RETENTION_DAYS": "365",
+        // APNs VoIP pushes (src/push.ts). APNS_KEY_ID comes with the key (api #102); TestFlight and App Store
+        // builds both use the production APNs host.
+        "APNS_KEY_ID": "68239BP2QT",
+        "APNS_TEAM_ID": "9572LYGZ7S",
+        "APNS_TOPIC": "ro.zapakid.app",
+        "APNS_ENVIRONMENT": "production",
       },
       "durable_objects": { "bindings": [{ "name": "CALL", "class_name": "CallRoom" }] },
       // zapakid-chat-production must be deployed (with ChatMembership) before this binding can be.
