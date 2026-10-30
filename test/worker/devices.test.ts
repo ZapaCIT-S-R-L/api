@@ -775,3 +775,55 @@ describe("PUT /v1/devices/{id}/alert-push", () => {
     expect((await stored(a.parent.id, 2))?.alert_push_token).toBeNull();
   });
 });
+
+describe("push targets on sign-out", () => {
+  it.each(["apns", "fcm"])(
+    "logout clears both targets on this phone, preserving the other phone (%s)",
+    async (provider) => {
+      const identity = ec();
+      const a = await signIn();
+      await register(a.session.token, deviceKeys(identity));
+      const b = await signIn();
+      await register(b.session.token, deviceKeys(identity));
+      await env.DB.prepare("UPDATE devices SET push_provider = ?, push_token = 'ring', alert_push_token = 'alert'")
+        .bind(provider)
+        .run();
+      expect((await call("/v1/auth/logout", { method: "POST", headers: bearer(a.session.token) })).status).toBe(204);
+      const rows = await env.DB.prepare(
+        "SELECT device_id, push_provider, push_token, alert_push_token FROM devices ORDER BY device_id",
+      ).all();
+      expect(rows.results).toEqual([
+        { device_id: 1, push_provider: null, push_token: null, alert_push_token: null },
+        { device_id: 2, push_provider: provider, push_token: "ring", alert_push_token: "alert" },
+      ]);
+      expect((await outboxEvents()).at(-1)).toMatchObject({
+        type: "device.upserted",
+        deviceId: 1,
+        push: null,
+        alertPush: null,
+      });
+      expect((await call("/v1/me", { headers: bearer(b.session.token) })).status).toBe(200);
+    },
+  );
+
+  it.each(["push", "alert-push"])("a pending %s update cannot restore the target after logout", async (slot) => {
+    const a = await signIn();
+    await register(a.session.token, deviceKeys());
+    const batch = env.DB.batch.bind(env.DB);
+    vi.spyOn(env.DB, "batch").mockImplementationOnce(async (statements) => {
+      expect((await call("/v1/auth/logout", { method: "POST", headers: bearer(a.session.token) })).status).toBe(204);
+      return batch(statements);
+    });
+    const res = await call(`/v1/devices/1/${slot}`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", ...bearer(a.session.token) },
+      body: JSON.stringify({ provider: "apns", token: "a".repeat(64) }),
+    });
+    expect(res.status).toBe(401);
+    expect(await env.DB.prepare("SELECT push_token, alert_push_token FROM devices").first()).toEqual({
+      push_token: null,
+      alert_push_token: null,
+    });
+    expect((await outboxEvents()).at(-1)).toMatchObject({ push: null, alertPush: null });
+  });
+});

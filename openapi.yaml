@@ -394,7 +394,9 @@ paths:
       tags: [Sign-in]
       operationId: logout
       summary: End this session.
-      description: Deletes the session the token belongs to. Other sessions of the same parent stay valid.
+      description: |
+        Deletes the session and clears both push targets of its registered device (calls and chat alerts).
+        Emits device.upserted with null targets. Other devices and sessions of the same parent stay valid.
       responses:
         "204": { description: "Signed out. The token no longer works." }
         "401": { $ref: "#/components/responses/Unauthorized" }
