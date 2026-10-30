@@ -94,11 +94,11 @@
         "ROOMS_JURISDICTION": "eu",
       },
       "durable_objects": {
-    "bindings": [
-      { "name": "ROOMS", "class_name": "ConversationRoom" },
-      { "name": "ACCOUNTS", "class_name": "AccountHub" },
-    ],
-  },
+        "bindings": [
+          { "name": "ROOMS", "class_name": "ConversationRoom" },
+          { "name": "ACCOUNTS", "class_name": "AccountHub" },
+        ],
+      },
       "ratelimits": [
         { "name": "SEND_LIMITER", "namespace_id": "4201", "simple": { "limit": 120, "period": 60 } },
         { "name": "CREATE_LIMITER", "namespace_id": "4202", "simple": { "limit": 20, "period": 60 } },
@@ -157,11 +157,11 @@
         "ROOMS_JURISDICTION": "eu",
       },
       "durable_objects": {
-    "bindings": [
-      { "name": "ROOMS", "class_name": "ConversationRoom" },
-      { "name": "ACCOUNTS", "class_name": "AccountHub" },
-    ],
-  },
+        "bindings": [
+          { "name": "ROOMS", "class_name": "ConversationRoom" },
+          { "name": "ACCOUNTS", "class_name": "AccountHub" },
+        ],
+      },
       "ratelimits": [
         { "name": "SEND_LIMITER", "namespace_id": "4301", "simple": { "limit": 120, "period": 60 } },
         { "name": "CREATE_LIMITER", "namespace_id": "4302", "simple": { "limit": 20, "period": 60 } },

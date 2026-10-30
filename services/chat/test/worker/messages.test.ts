@@ -481,15 +481,40 @@ describe("GET /v1/events", () => {
     };
     const older = await open(0);
     const newer = await open(2);
-    await applyEvent(
-      env,
-      durableRooms(env),
-      event({ type: "account.sessions_revoked", accountId: MUM, epoch: 2 }),
-    );
+    await applyEvent(env, durableRooms(env), event({ type: "account.sessions_revoked", accountId: MUM, epoch: 2 }));
     await settle();
     expect(older.closed).toEqual([4401]);
     expect(newer.closed).toEqual([]);
     newer.ws.close();
+  });
+
+  // Review of #100: a removed (lost or revoked) phone loses its events socket at once, even when the account is in no
+  // conversation yet, and gets no later frames; the account's other phones keep theirs.
+  it("device.removed closes that device's events socket (4401) and no other", async () => {
+    const open = async (dev: number) => {
+      const l = await listen(MUM, dev);
+      const closed: number[] = [];
+      l.ws.addEventListener("close", (e) => closed.push(e.code));
+      return { ...l, closed };
+    };
+    await applyEvent(
+      env,
+      durableRooms(env),
+      event({ type: "device.upserted", accountId: MUM, deviceId: 2, registrationId: 200 }),
+    );
+    const lost = await open(1);
+    const kept = await open(2);
+    await applyEvent(env, durableRooms(env), event({ type: "device.removed", accountId: MUM, deviceId: 1 }));
+    await settle();
+    expect(lost.closed).toEqual([4401]);
+    expect(kept.closed).toEqual([]);
+
+    // Someone else starts a conversation with MUM: only the kept phone hears about it.
+    const c = await conversation(DAD, [MUM]);
+    await settle();
+    expect(lost.frames).toEqual([]);
+    expect(kept.frames).toEqual([{ type: "conversation_added", conversationId: c.id }]);
+    kept.ws.close();
   });
 
   it("not a WebSocket: 426; no token: 401", async () => {

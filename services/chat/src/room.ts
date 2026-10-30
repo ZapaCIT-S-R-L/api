@@ -334,6 +334,7 @@ export function durableRooms(env: Env): Rooms {
           console.error(JSON.stringify({ msg: "conversation_added_failed", err: String(e) }));
         }),
     revokeAccountSessions: (account, epoch) => hubOf(env, account).revokeSessions(epoch),
+    forgetAccountDevice: (account, device) => hubOf(env, account).forgetDevice(device),
     purge: (id) => roomOf(env, id).purge(),
   };
 }

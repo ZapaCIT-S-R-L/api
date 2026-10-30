@@ -278,6 +278,8 @@ export async function applyEvent(env: Env, rooms: Rooms, event: MembershipEvent)
         await rooms.forgetDevice(id, event.accountId, event.deviceId);
         await rooms.notify(id, "devices_changed", []);
       }
+      // Also when the account is in no conversation yet: the phone must not hear about the next one.
+      await rooms.forgetAccountDevice(event.accountId, event.deviceId);
       return;
     }
     case "account.deleted": {

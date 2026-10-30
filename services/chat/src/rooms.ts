@@ -14,6 +14,8 @@ export interface Rooms {
   conversationAdded(conversationId: string, accountId: string): Promise<void>;
   // Closes the account's events streams opened with a chat token whose session epoch is below `epoch`.
   revokeAccountSessions(accountId: string, epoch: number): Promise<void>;
+  // Closes a removed device's events streams (GET /v1/events).
+  forgetAccountDevice(accountId: string, deviceId: number): Promise<void>;
   purge(conversationId: string): Promise<void>;
 }
 
@@ -25,5 +27,6 @@ export const noRooms: Rooms = {
   revokeSessions: () => Promise.resolve(),
   conversationAdded: () => Promise.resolve(),
   revokeAccountSessions: () => Promise.resolve(),
+  forgetAccountDevice: () => Promise.resolve(),
   purge: () => Promise.resolve(),
 };

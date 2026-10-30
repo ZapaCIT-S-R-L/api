@@ -30,6 +30,14 @@ export class AccountHub extends DurableObject<Env> {
     }
   }
 
+  // The device was removed (a lost or revoked phone): its sockets close at once, the account's other phones keep theirs.
+  forgetDevice(deviceId: number): void {
+    for (const ws of this.ctx.getWebSockets()) {
+      const info = ws.deserializeAttachment() as HubSocket | null;
+      if (info?.deviceId === deviceId) this.close(ws, CLOSE_TOKEN_EXPIRED, "device removed");
+    }
+  }
+
   // The account signed out everywhere: sockets opened with a token from before `epoch` are closed.
   revokeSessions(epoch: number): void {
     for (const ws of this.ctx.getWebSockets()) {
